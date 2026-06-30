@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<!-- ByteFS field guide — "ByteFS: System Support for (CXL-based) Memory-Semantic Solid-State Drives"
+     (Li, Zhou, Ren, Huang — ASPLOS '25, arXiv:2501.04993). Built in the house "friendly field guide" format
+     (mirrors study-site/guides/ucp.html: same CSS, same 8-tab structure, same bottom <script>).
+     Semantic colors:
+       teal      = BYTE path / byte interface (the cacheline-granular MMIO / CXL.mem path)
+       terracotta= BLOCK path / block interface (the legacy 4KB NVMe path)
+       indigo    = SSD-DRAM firmware machinery (log-structured write buffer, skip-list index, TxLog)
+       honey     = NAND flash / durable backing store (the page-granular persistence layer) -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>One Drive, Two Doors — ByteFS, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E0A12B; --honey-deep:#B5790C; --honey-soft:#FAE8C6;   /* NAND flash / durable backing store */
+  --dram:#1F8E84; --dram-soft:#D6EEEA;       /* teal       = BYTE path / byte interface             */
+  --ltram:#5560C2; --ltram-soft:#E4E5F7;     /* indigo     = SSD-DRAM firmware machinery (write log) */
+  --optane:#C25434; --optane-soft:#F7E0D6;   /* terracotta = BLOCK path / block interface           */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,142,132,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(85,96,194,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(224,161,43,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(85,96,194,.05) 31px,rgba(85,96,194,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(224,161,43,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#14635b;font-size:.96rem}
+.primer .ready b{color:#0e4a44}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-byte{background:var(--dram-soft);color:#14635b}
+.chip-flash{background:var(--honey-soft);color:#6e4a09}
+.chip-log{background:var(--ltram-soft);color:#363fa0}
+.chip-block{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B3DFD8;color:#14635b}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-byte{border-color:#96cfc8;background:var(--dram-soft)}
+.node.n-log{border-color:#b9bdec;background:var(--ltram-soft)}
+.node.n-block{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-flash{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dadcf3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:138px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-log{background:linear-gradient(90deg,#6d77d4,#5560C2)}
+.bf-byte{background:linear-gradient(90deg,#2aa094,#1F8E84)}
+.bf-block{background:linear-gradient(90deg,#d2674a,#C25434)}
+.bf-flash{background:linear-gradient(90deg,#e7b248,#C9920F)}
+
+/* PARTITION EXPLORER (reused → CoW interface-selector explorer) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.byte{background:var(--dram)} .way.block{background:var(--optane)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.byte{background:var(--dram-soft);color:#0e4a44;border:1px solid #96cfc8}
+.pverdict.block{background:var(--optane-soft);color:#9a3a22;border:1px solid #e3b4a5}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#14635b}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e0a12b} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6} pre.sketch .by{color:#4fc3b6} pre.sketch .bl{color:#e08a6b}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#14635b}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>ASPLOS 2025 · A Field Guide</span>
+    <h1>One drive, <span class="swash">two doors</span> — and a file system that knows which to use</h1>
+    <p class="lede">A memory-semantic SSD lets you reach NAND flash <strong>two ways at once</strong>: byte-by-byte over CXL/PCIe load-stores, or 4 KB blocks over NVMe. <strong>ByteFS</strong> is the first file system that uses both on purpose — picking the cheaper door per data structure, and reshaping the SSD's own firmware so the byte door doesn't quietly explode into flash writes.</p>
+    <div class="hero-meta">
+      <span>📄 "ByteFS: System Support for (CXL-based) Memory-Semantic SSDs"</span>
+      <span>✍ Li · Zhou · Ren · Huang · UIUC</span>
+      <span>🎓 Some storage/kernel basics assumed — primers cover them</span>
+      <span>⏱ ~35 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🚪</div>
+      <p>For each write, take the <span class="ro">BYTE door</span> when only a handful of bytes really changed; take the <span class="wo">BLOCK door</span> when a whole page is dirty — then absorb the byte writes in an in-SSD <em>log</em> so the page-granular flash underneath never sees the amplification.<br><em style="font-size:.9rem">Right granularity, end to end.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Ten ideas the paper assumes you know</h2>
+      <p class="sub">Each card clears up one concept ByteFS builds on. They're collapsed — tap any open. Read in order the first time, or jump to whatever looks unfamiliar. (If you work on OS-managed DRAM/NVM tiering and CXL, several will feel like home — the framing notes connect them to your world.)</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> byte path / byte interface</span>
+      <span><i style="background:var(--optane)"></i> block path / block interface</span>
+      <span><i style="background:var(--ltram)"></i> SSD-DRAM firmware machinery</span>
+      <span><i style="background:var(--honey)"></i> NAND flash (durable backing store)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What a memory-semantic SSD (M-SSD) is<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A normal SSD is a <b>block device</b>: you talk to it in 4 KB blocks over NVMe. A <b>memory-semantic SSD</b> additionally exposes its <b>internal DRAM</b> as a memory region the CPU can reach with ordinary <code>load</code>/<code>store</code> instructions over PCIe (MMIO) or CXL. So one device offers <i>two interfaces at once</i>: byte-granular memory access <i>and</i> the usual block access.</p>
+          <p>The paper's prototype is a real OpenSSD FPGA board (1 TB flash, 16 channels, 1 GB DRAM, on-board ARM core running the firmware). Samsung's CMM-H is the commercial example it cites.</p>
+          <div class="ready"><b>Now you're ready:</b> ByteFS is a file system designed specifically for this dual-interface device — and the whole paper is about using both interfaces well.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>CXL.mem and load/store over an interconnect<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Historically, anything across PCIe was reached by DMA in blocks. <b>CXL</b> (Compute Express Link) adds a cache-coherent memory protocol, <b>CXL.mem</b>, that lets the CPU issue <i>cacheable</i> <code>load</code>/<code>store</code> accesses to a device as if it were memory. The M-SSD's byte interface can ride either plain PCIe MMIO or CXL.mem.</p>
+          <p>The paper measures the byte path at <b>4.8 µs read / 0.6 µs write</b> per cacheline on its PCIe-3.0×4 prototype, and notes CXL drops cacheline latency further (it models <b>175 ns</b> in a sensitivity study).</p>
+          <div class="ready"><b>Now you're ready:</b> the "byte interface" is exactly the load/store-over-CXL/PCIe path. For a tiering/LtRAM reader, it's the same load-store device door you already think about — only the backing store is flash, not DRAM/NVM.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Byte-addressable persistence (and why it's hard here)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>"Persistent" means a write survives power loss. On NVM you flush a cacheline (<code>clflush</code>/<code>clwb</code>) and it's durable. On an M-SSD it's subtler: the byte write lands in the device's <b>volatile</b> DRAM buffer, and the device uses a <b>battery</b> to flush DRAM to flash on power loss. ByteFS also issues a zero-byte <b>write-verify read</b> after the flush to force any posted PCIe write to actually complete (a non-posted read serializes behind prior writes in the root complex).</p>
+          <div class="ready"><b>Now you're ready:</b> "byte-granular persistence" on an M-SSD = cacheline store → <code>clwb</code> → write-verify read, backed by battery-backed DRAM. Not free, but far cheaper than a 4 KB block write.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>The block-vs-byte interface gap<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The device can be addressed by the byte, but the <b>NAND flash inside it can only be read/written a whole page at a time</b> (4 KB here) — a hard physical limit. So even a 64 B byte write would, naïvely, force a 4 KB read-modify-write of a flash page. The byte door at the top doesn't match the block-only store at the bottom.</p>
+          <p>This <i>internal</i> granularity gap is distinct from the <i>external</i> one (host talks bytes, legacy FS talks blocks). ByteFS has to close <b>both</b>.</p>
+          <div class="ready"><b>Now you're ready:</b> the single hardest problem in the paper is bridging byte-granular access on top of page-granular flash — solved with a log-structured write buffer inside the SSD.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>I/O amplification (read &amp; write)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>I/O amplification</b> = bytes actually moved to/from the device ÷ bytes the application asked for. Persisting a 128 B inode field as a 4 KB block write is 32× write amplification. The paper measures real file systems (Ext4, F2FS) at <b>1.1–6.2× write</b> and <b>1.1–1.7× read</b> amplification across workloads (Table 2).</p>
+          <p>The biggest culprits are tiny <i>metadata</i> updates — inodes, bitmaps, dentries, data pointers, journals — that each ride a full 4 KB block.</p>
+          <div class="ready"><b>Now you're ready:</b> ByteFS's headline win is cutting this amplification by using byte writes for the small stuff. It reports up to <b>5.1×</b> less write traffic.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>The kernel I/O paths: buffered, direct, mmap<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Three ways an app reaches storage. <b>Buffered I/O</b> goes through the <b>page cache</b>: writes dirty a cached page, written back later. <b>Direct I/O</b> (<code>O_DIRECT</code>) bypasses the page cache and goes straight to the device. <b>mmap</b> maps file pages into the address space so loads/stores hit them directly.</p>
+          <p>ByteFS handles all three, and chooses byte vs block <i>differently</i> in each — e.g. in Direct I/O it just checks the request size (≤ 512 B → byte); in buffered I/O it can't see the true write size, so it measures how much of a page actually changed.</p>
+          <div class="ready"><b>Now you're ready:</b> "interface selection" is path-specific. The clever part is buffered I/O, where ByteFS uses copy-on-write to <i>discover</i> the real modified ratio.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>The page cache &amp; copy-on-write (CoW)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The <b>page cache</b> holds file pages in host DRAM; dirty ones are flushed on <code>fsync</code>/<code>msync</code>, by the flush daemon, or under memory pressure. Problem: by writeback time the kernel only knows the page is "dirty," not <i>which bytes</i> changed.</p>
+          <p>ByteFS solves this with <b>copy-on-write</b>: on first modification it snapshots the original page (tracked in an <code>XArray</code> keyed by file offset). At writeback it <b>XORs</b> original vs current (AVX2, ~936 cycles/op) to find exactly the dirty 64 B cachelines.</p>
+          <div class="ready"><b>Now you're ready:</b> CoW + XOR is how ByteFS recovers byte-level change info that the page cache normally throws away — costing ~16% extra page-cache space.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Log-structured writes &amp; data coalescing<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>log-structured</b> store appends every write to the end of a log instead of updating in place. Many small appends to nearby addresses can then be <b>coalesced</b> — merged — into one big sequential write to the slow medium, and a background <b>cleaner</b> reclaims stale log space.</p>
+          <p>ByteFS applies this <i>inside the SSD firmware</i>: byte writes append to a <b>256 MB circular log</b> in SSD DRAM at 64 B granularity; a background cleaner (kicks in at 85% utilization) coalesces and flushes whole pages to flash.</p>
+          <div class="ready"><b>Now you're ready:</b> the in-SSD log is what turns a storm of 64 B byte writes into a few coalesced 4 KB flash writes — bridging the internal granularity gap.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>SSD firmware: the FTL and its DRAM<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Every SSD runs <b>firmware</b> with a <b>Flash Translation Layer (FTL)</b> that maps logical addresses to physical flash pages, does wear-leveling and garbage collection, and uses the device's <b>internal DRAM</b> for the mapping table and write buffers. On the prototype, the address-mapping table alone uses 512 MB of the 1 GB SSD DRAM; the write buffer 16 MB.</p>
+          <p>ByteFS doesn't replace the FTL — it <i>extends</i> the firmware (≈1.5 K lines of C, no hardware change) to add the log, its index, and transaction support alongside the existing FTL.</p>
+          <div class="ready"><b>Now you're ready:</b> ByteFS is a hardware/software co-design — host file system <i>and</i> SSD firmware change together. The firmware side is where the byte/flash gap gets closed.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">10</span>Crash consistency, journaling &amp; redo logs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A file system must survive a crash mid-update without corrupting itself. The classic tool is a <b>journal</b>: write the change to a log first, then apply it in place — so on reboot you replay or discard. Ext4's ordered-mode journaling alone is <b>30.7%</b> of its traffic on average (double writes of critical metadata).</p>
+          <p>ByteFS reuses its in-SSD write log as a <b>redo log</b>: metadata updates are already in the log, so it needn't double-write them. A 4 B transaction ID (TxID) tags each update; a 2 MB <b>TxLog</b> in SSD DRAM records commit order; <code>RECOVER()</code> replays committed entries on reboot.</p>
+          <div class="ready"><b>Now you're ready:</b> ByteFS gets crash consistency almost for free by making the byte-write log double as the journal — no separate double write.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>ByteFS in a nutshell</h2>
+      <p class="sub">The mismatch, the two-sided fix, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>A memory-semantic SSD offers two doors to the same NAND flash: a <span class="mem-chip chip-byte">byte interface</span> (cacheline load/store over PCIe MMIO or CXL.mem) and a <span class="mem-chip chip-block">block interface</span> (4 KB NVMe). Existing file systems use exactly one. Block-based ones (Ext4, F2FS) waste the byte door and pay <b>1.1–6.2× write amplification</b> persisting tiny metadata as full pages. NVM file systems (NOVA, PMFS) assume the byte door is near-DRAM-fast and lean on it exclusively — but on an M-SSD the byte path is microseconds, not nanoseconds, and flash is page-granular, so that assumption breaks.</p>
+      <p>ByteFS's insight is that <b>the right granularity is per-data-structure and per-access</b>, and it must be enforced <i>end to end</i>. On the host side, it characterizes every core file-system structure (Table 3) and routes each through the cheaper door: small metadata updates (inode fields, bitmaps, dentries, extents) go <span class="mem-chip chip-byte">byte</span>; bulk reads and large/dirty pages go <span class="mem-chip chip-block">block</span>. For buffered writes, where the kernel only knows "page is dirty," it uses copy-on-write + an XOR to recover the true <b>modified ratio</b> and pick the door.</p>
+      <p>But a byte write still has to land on page-granular flash. So ByteFS also rewrites the <b>SSD firmware</b>: it turns the in-device DRAM into a <span class="mem-chip chip-log">log-structured write buffer</span> (256 MB circular log, 64 B entries), indexed by a three-layer skip list, with a background cleaner that <b>coalesces</b> many small byte writes into a few sequential <span class="mem-chip chip-flash">flash</span> page writes. The same log doubles as a <b>redo log</b> for crash consistency, avoiding journaling's double writes. And to spend the precious SSD DRAM well, ByteFS uses <b>coordinated caching</b>: flash pages are cached only in the host page cache, never duplicated in SSD DRAM, leaving that DRAM entirely for the write log.</p>
+      <p><strong>The payoff:</strong> versus Ext4, F2FS, NOVA, and PMFS, ByteFS is faster by <b>up to 2.7×</b> (e.g. 6.0× on file create vs Ext4, 4.1× on OLTP), and it cuts write traffic to the SSD by <b>up to 5.1×</b> — all while preserving crash consistency and recovering in ~4.2 s.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>An M-SSD exposes <b>byte</b> (CXL/PCIe load-store) and <b>block</b> (NVMe) interfaces to the same flash; ByteFS is the first file system to use <b>both, adaptively</b>.</li>
+        <li>Per-structure routing: small metadata → <b>byte</b> writes; bulk reads &amp; large dirty pages → <b>block</b> (Table 3 characterization).</li>
+        <li>Buffered writes use <b>copy-on-write + XOR</b> to find the modified ratio; if &lt; 1/8 of a page (512 B) is dirty, take the byte door.</li>
+        <li>The SSD firmware manages its DRAM as a <b>256 MB log-structured buffer</b>, indexed by a three-layer skip list, that <b>coalesces</b> byte writes into page-granular flash writes.</li>
+        <li>The write log doubles as a <b>redo log</b> → crash consistency without journaling's double writes (Ext4 journaling alone is 30.7% of traffic).</li>
+        <li><b>Coordinated caching:</b> flash pages cached only in the host page cache, never duplicated in SSD DRAM — that DRAM is reserved for the write log.</li>
+        <li>Result: up to <b>2.7×</b> faster and <b>5.1×</b> less write traffic vs SOTA, with crash consistency preserved and ~4.2 s recovery.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE: the two doors over one flash, with the in-SSD log bridging -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">two host doors · one in-SSD log · page-granular flash</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> byte path (load/store)</span>
+        <span><i style="background:var(--optane)"></i> block path (4 KB NVMe)</span>
+        <span><i style="background:var(--ltram)"></i> SSD-DRAM log + skip-list index</span>
+        <span><i style="background:var(--honey)"></i> NAND flash (page-granular)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 410" role="img" aria-label="ByteFS routes byte and block writes through an in-SSD log to page-granular flash">
+        <!-- host band -->
+        <rect x="40" y="20" width="680" height="64" rx="10" fill="#fff" stroke="#D8C8AC"/>
+        <text x="60" y="46" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">Host file system (ByteFS) — interface selection</text>
+        <text x="60" y="66" font-family="JetBrains Mono" font-size="10.5" fill="#6E6456">small metadata / hot cachelines → BYTE     ·     bulk reads / large dirty pages → BLOCK</text>
+        <!-- byte door -->
+        <rect x="120" y="110" width="200" height="50" rx="9" fill="var(--dram-soft)" stroke="var(--dram)" stroke-width="2"/>
+        <text x="220" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#0e4a44">BYTE interface</text>
+        <text x="220" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#14635b">64 B store · clwb · CXL.mem / MMIO</text>
+        <!-- block door -->
+        <rect x="440" y="110" width="200" height="50" rx="9" fill="var(--optane-soft)" stroke="var(--optane)" stroke-width="2"/>
+        <text x="540" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#9a3a22">BLOCK interface</text>
+        <text x="540" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">4 KB · NVMe command</text>
+        <line x1="220" y1="84" x2="220" y2="110" stroke="var(--dram)" stroke-width="2"/>
+        <line x1="540" y1="84" x2="540" y2="110" stroke="var(--optane)" stroke-width="2"/>
+        <!-- SSD DRAM band -->
+        <rect x="40" y="196" width="680" height="96" rx="12" fill="var(--ltram-soft)" stroke="var(--ltram)" stroke-width="1.6"/>
+        <text x="60" y="220" font-family="Fraunces" font-size="14" font-weight="600" fill="#363fa0">M-SSD firmware · SSD DRAM (1 GB)</text>
+        <!-- log region -->
+        <rect x="120" y="232" width="240" height="44" rx="8" fill="#fff" stroke="var(--ltram)" stroke-width="1.4"/>
+        <text x="240" y="250" text-anchor="middle" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="#363fa0">log-structured write buffer</text>
+        <text x="240" y="266" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#5560C2">256 MB circular · 64 B entries · skip-list index</text>
+        <!-- transfer buffer for block -->
+        <rect x="420" y="232" width="200" height="44" rx="8" fill="#fff" stroke="var(--optane)" stroke-width="1.4" stroke-dasharray="5 3"/>
+        <text x="520" y="250" text-anchor="middle" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="#9a3a22">FTL write buffer (16 MB)</text>
+        <text x="520" y="266" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#9a3a22">4 KB pages pass straight through</text>
+        <line x1="220" y1="160" x2="240" y2="232" stroke="var(--dram)" stroke-width="2"/>
+        <line x1="540" y1="160" x2="520" y2="232" stroke="var(--optane)" stroke-width="2"/>
+        <!-- coalesce arrow -->
+        <path d="M240 276 q0 26 90 30" fill="none" stroke="var(--ltram)" stroke-width="2" marker-end="url(#ah)"/>
+        <text x="300" y="300" font-family="JetBrains Mono" font-size="10" fill="#363fa0">background cleaner coalesces (≥85%)</text>
+        <!-- flash band -->
+        <rect x="40" y="332" width="680" height="56" rx="12" fill="var(--honey-soft)" stroke="var(--honey)" stroke-width="1.6"/>
+        <text x="380" y="360" text-anchor="middle" font-family="Fraunces" font-size="15" font-weight="600" fill="#6e4a09">NAND flash — page-granular only (4 KB)</text>
+        <text x="380" y="378" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">many small byte writes → a few coalesced 4 KB page writes</text>
+        <line x1="330" y1="306" x2="430" y2="332" stroke="var(--honey-deep)" stroke-width="2" marker-end="url(#ah)"/>
+        <line x1="520" y1="276" x2="520" y2="332" stroke="var(--optane)" stroke-width="2" marker-end="url(#ah)"/>
+        <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="#6E6456"/></marker></defs>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> ByteFS routes each write through the cheaper door. Byte writes pour into the in-SSD <span style="color:var(--ltram)">log</span>, where the cleaner coalesces them into a few <span style="color:var(--honey-deep)">flash</span> page writes — so a storm of 64 B updates doesn't become a storm of 4 KB flash writes. Block writes pass through the FTL buffer unchanged. The flash underneath is <i>always</i> page-granular; the log is what reconciles that with byte access. (Paper, Fig. 2–3)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">characterize → route → buffer → coalesce → persist</div>
+      <div class="flow-row">
+        <div class="node n-block"><div class="nt">Problem</div><div class="nd">Block FS amplifies tiny metadata (1.1–6.2×); NVM FS assumes byte=DRAM-fast — both wrong for M-SSD</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-byte"><div class="nt">Characterize &amp; route</div><div class="nd">Per-structure interface choice (Table 3); CoW+XOR finds the modified ratio for buffered writes</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-log"><div class="nt">Buffer (firmware)</div><div class="nd">SSD DRAM = 256 MB log-structured write buffer, skip-list indexed</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-log"><div class="nt">Coalesce &amp; clean</div><div class="nd">Background cleaner merges byte writes into page-granular flash writes (kicks in at 85%)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-flash"><div class="nt">Persist + recover</div><div class="nd">Same log = redo log; TxID + 2 MB TxLog give crash consistency, ~4.2 s recovery</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-byte"><div class="nt">Coordinated cache</div><div class="nd">Pages cached only in host page cache; SSD DRAM reserved for the log</div></div>
+      </div>
+    </figure>
+
+    <div class="callout note"><span class="ic">🔗</span><div><b>If you work on OS-managed tiering / LtRAM:</b> ByteFS is the storage-stack mirror of your problem. You decide DRAM-vs-NVM placement; ByteFS decides byte-vs-block <i>granularity</i> for the same bytes. Its CoW+XOR modified-ratio detector is essentially a hot/cold classifier at cacheline grain inside the page cache — a mechanism you could lift for page promotion/demotion. And its core lesson echoes tiering: a device's load-store interface is not automatically the cheap one; the cost model (here, page-granular flash underneath) has to drive the policy.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Seven everyday pictures</div>
+      <h2>How to think about ByteFS</h2>
+      <p class="sub">Each picture stands alone — read them in any order. Every card ends with an honest note about where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="22" width="48" height="56" rx="4" fill="#D6EEEA" stroke="#1F8E84" stroke-width="2.5"/>
+          <rect x="78" y="22" width="48" height="56" rx="4" fill="#F7E0D6" stroke="#C25434" stroke-width="2.5"/>
+          <rect x="30" y="44" width="16" height="34" fill="#1F8E84"/>
+          <rect x="94" y="44" width="16" height="34" fill="#C25434"/>
+          <circle cx="40" cy="30" r="3" fill="#1F8E84"/><circle cx="104" cy="30" r="3" fill="#C25434"/>
+          <text x="38" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#0e4a44">byte</text>
+          <text x="102" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">block</text>
+        </svg></div>
+        <span class="term">The core idea · Dual interface</span>
+        <h3>A narrow door and a loading dock</h3>
+        <p>A warehouse has two entrances to the same storeroom: a narrow side <b>door</b> for one person carrying a small parcel, and a big <b>loading dock</b> for a forklift and a pallet. Sending one envelope through the loading dock means powering up a forklift for nothing; carrying a whole pallet through the side door means a hundred trips. ByteFS sizes the entrance to the shipment: a 64 B inode field takes the byte door; a freshly-written 16 KB file takes the block dock.</p>
+        <div class="breaks"><b>Where it misleads:</b> a real warehouse's two doors are independent. Here both doors lead to the <i>same</i> page-granular shelves (flash), so even the byte door's parcels eventually get boxed into pallets — that's the in-SSD log's job, not visible in this picture.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="20" width="20" height="14" rx="2" fill="#E4E5F7" stroke="#5560C2" stroke-width="1.8"/>
+          <rect x="40" y="20" width="14" height="14" rx="2" fill="#E4E5F7" stroke="#5560C2" stroke-width="1.8"/>
+          <rect x="58" y="20" width="22" height="14" rx="2" fill="#E4E5F7" stroke="#5560C2" stroke-width="1.8"/>
+          <rect x="84" y="20" width="12" height="14" rx="2" fill="#E4E5F7" stroke="#5560C2" stroke-width="1.8"/>
+          <path d="M20 48 q40 16 80 0" stroke="#5560C2" stroke-width="2" fill="none" stroke-linecap="round"/>
+          <rect x="40" y="58" width="56" height="20" rx="3" fill="#FAE8C6" stroke="#C9920F" stroke-width="2.5"/>
+          <text x="68" y="72" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">1 page</text>
+        </svg></div>
+        <span class="term">The in-SSD log · Coalescing</span>
+        <h3>Bundling errands into one trip</h3>
+        <p>Five small errands, all near each other across town. Driving out and back for each is five tanks of gas. Instead you jot them on a running list, and once the list is full you make a single loop that hits them all. ByteFS's firmware does this: byte writes are appended to a 256 MB log; a background cleaner waits until the log is ~85% full, then coalesces nearby updates into one sequential 4 KB flash write.</p>
+        <div class="breaks"><b>Where it breaks:</b> errands you batch can be done in any order; the log must respect <i>commit order</i> and only flush committed transactions — so the cleaner isn't free to reorder arbitrarily. Also, batching adds latency the picture hides; ByteFS relies on the flush being fully in the background.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="24" width="42" height="48" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="74" y="24" width="42" height="48" rx="4" fill="#D6EEEA" stroke="#1F8E84" stroke-width="2"/>
+          <line x1="32" y1="36" x2="58" y2="36" stroke="#9A8E7C" stroke-width="2"/>
+          <line x1="32" y1="48" x2="58" y2="48" stroke="#9A8E7C" stroke-width="2"/>
+          <line x1="82" y1="36" x2="108" y2="36" stroke="#1F8E84" stroke-width="2"/>
+          <line x1="82" y1="48" x2="95" y2="48" stroke="#C25434" stroke-width="3"/>
+          <line x1="82" y1="60" x2="108" y2="60" stroke="#1F8E84" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Buffered writes · CoW + XOR</span>
+        <h3>Spot-the-difference on two photos</h3>
+        <p>You photocopy a page before editing it, then lay the copy over the original on a lightbox: only the changed lines stand out. ByteFS keeps a copy-on-write snapshot of each dirty page and XORs it against the current version at writeback. Wherever the XOR is non-zero, a 64 B cacheline changed. Few changes (&lt; 512 B of the 4 KB page) → byte door; lots → block door.</p>
+        <div class="breaks"><b>Where it breaks:</b> spotting differences on paper is free; here the snapshot costs real DRAM (~16% of the page cache) and the XOR costs CPU (~936 cycles/page). It's worth it because it converts a "page is dirty" bit into precise byte-level knowledge — but it isn't a free lunch.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="40" width="100" height="18" rx="3" fill="#E4E5F7" stroke="#5560C2" stroke-width="2"/>
+          <circle cx="34" cy="49" r="4" fill="#5560C2"/><circle cx="62" cy="49" r="4" fill="#5560C2"/><circle cx="96" cy="49" r="4" fill="#5560C2"/>
+          <rect x="22" y="22" width="24" height="12" rx="2" fill="#fff" stroke="#5560C2" stroke-width="1.5"/>
+          <rect x="50" y="22" width="24" height="12" rx="2" fill="#fff" stroke="#5560C2" stroke-width="1.5"/>
+          <line x1="34" y1="34" x2="34" y2="45" stroke="#5560C2" stroke-width="1.5"/>
+          <line x1="62" y1="34" x2="62" y2="45" stroke="#5560C2" stroke-width="1.5"/>
+          <path d="M22 70 h96" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="3 3"/>
+          <text x="70" y="82" text-anchor="middle" font-family="monospace" font-size="8" fill="#6E6456">3-layer index</text>
+        </svg></div>
+        <span class="term">Finding data in the log · Skip list</span>
+        <h3>A book's index, in three depths</h3>
+        <p>To find a fact you don't read the whole book — you check the index, which points to a chapter, then a section, then a page. ByteFS indexes its byte-write log the same way: layer 1 picks a 16 MB partition (just divide the address), layer 2 a per-page skip-list entry, layer 3 an ordered chunk list within the page. A lookup in a full 256 MB log takes ~89 ns — trivial next to microsecond flash.</p>
+        <div class="breaks"><b>Where it breaks:</b> a book index is static; this one is rebuilt constantly as writes append and the cleaner reclaims space, and it costs ~21 MB of SSD DRAM. The "three depths" also aren't just for speed — they bound each skip list's size so no single structure grows unwieldy.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="40" height="40" rx="4" fill="#D6EEEA" stroke="#1F8E84" stroke-width="2.5"/>
+          <rect x="80" y="30" width="40" height="40" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="2.5" stroke-dasharray="4 3"/>
+          <text x="40" y="55" text-anchor="middle" font-family="monospace" font-size="9" fill="#0e4a44">host</text>
+          <text x="100" y="50" text-anchor="middle" font-family="monospace" font-size="9" fill="#9A8E7C">SSD</text>
+          <text x="100" y="62" text-anchor="middle" font-family="monospace" font-size="8" fill="#9A8E7C">(empty)</text>
+          <path d="M64 50 h12" stroke="#1F8E84" stroke-width="2" marker-end="url(#a2)"/>
+          <defs><marker id="a2" markerWidth="8" markerHeight="8" refX="5" refY="3" orient="auto"><path d="M0 0 L5 3 L0 6 z" fill="#1F8E84"/></marker></defs>
+        </svg></div>
+        <span class="term">Coordinated caching · No duplication</span>
+        <h3>Don't keep two copies of one file</h3>
+        <p>Two people sharing a project don't each keep a private copy of every document — they agree on one canonical location. ByteFS refuses to cache flash pages in <i>both</i> the host page cache and the SSD DRAM. Read pages live only in the host cache; the scarce SSD DRAM is reserved entirely for the write log that absorbs persistent byte writes — the resource it actually needs.</p>
+        <div class="breaks"><b>Where it breaks:</b> for a co-runner with great write locality, a page-granular SSD-side cache <i>can</i> absorb more writes (NOVA/PMFS do this). ByteFS deliberately gives that up to keep SSD DRAM for the log; the paper shows it sometimes pays slightly more flash traffic as a result, but wins overall because flushing is in the background.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="24" width="100" height="14" rx="2" fill="#E4E5F7" stroke="#5560C2" stroke-width="1.8"/>
+          <text x="70" y="34" text-anchor="middle" font-family="monospace" font-size="8" fill="#363fa0">write log = redo log</text>
+          <rect x="36" y="46" width="14" height="14" rx="2" fill="#fff" stroke="#5560C2" stroke-width="1.5"/>
+          <rect x="54" y="46" width="14" height="14" rx="2" fill="#fff" stroke="#5560C2" stroke-width="1.5"/>
+          <rect x="72" y="46" width="14" height="14" rx="2" fill="#FAE8C6" stroke="#C9920F" stroke-width="1.5"/>
+          <text x="79" y="56" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e4a09">TxID</text>
+          <path d="M43 60 v8 M61 60 v8 M79 60 v8" stroke="#9A8E7C" stroke-width="1.3"/>
+          <rect x="36" y="70" width="50" height="12" rx="2" fill="#FAE8C6" stroke="#C9920F" stroke-width="1.5"/>
+          <text x="61" y="79" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e4a09">flash (in order)</text>
+        </svg></div>
+        <span class="term">Crash consistency · Redo log reuse</span>
+        <h3>The to-do list that's also the receipt</h3>
+        <p>You jot every task before doing it, then check it off. If you're interrupted, the list itself tells you what was finished and what to redo — no separate ledger needed. ByteFS's byte-write log already holds every metadata update, so it doubles as the journal: each entry carries a 4 B TxID, a 2 MB TxLog records commit order, and recovery replays only committed entries. No second "double write" of metadata.</p>
+        <div class="breaks"><b>Where it breaks:</b> a paper list never gets corrupted mid-stroke; here durability hinges on battery-backed DRAM actually flushing the log on power loss, plus the write-verify read forcing posted writes to complete. The "free" journal assumes that hardware contract holds.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="36" cy="48" r="18" fill="#D6EEEA" stroke="#1F8E84" stroke-width="2.5"/>
+          <text x="36" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#0e4a44">ns</text>
+          <circle cx="86" cy="48" r="22" fill="#FAE8C6" stroke="#C9920F" stroke-width="2.5"/>
+          <text x="86" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">µs</text>
+          <path d="M58 48 h6" stroke="#9A8E7C" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Why not just reuse NOVA · The latency gap</span>
+        <h3>A sports car on a dirt road</h3>
+        <p>NVM file systems (NOVA, PMFS) are tuned for a medium where every byte access is ~100 ns — a smooth highway, so they floor the byte interface and bypass caches. Bolt that onto an M-SSD and you're driving a sports car down a dirt road: the byte path is microseconds, and a cache miss means a slow flash page fetch. ByteFS instead designs <i>for</i> the rough surface — block reads to exploit locality, byte writes only where they pay, coalescing to hide flash latency.</p>
+        <div class="breaks"><b>Where it breaks:</b> it's not that NOVA is badly built — it's optimal on its intended road. The analogy can imply NVM FS are "slow," but on real NVM they win. The point is fit-to-device, not absolute speed. With CXL lowering byte latency (175 ns), the road gets smoother and the gap narrows.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section through ByteFS's design, with the paper's key diagrams rebuilt as visuals you can read at a glance, and pseudocode where it helps.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The motivation — where amplification actually comes from (§3)</h3>
+      <p>Before designing anything, the authors profile Ext4 and F2FS per data structure (Table 3 + Fig. 1). The verdict: most metadata updates are <i>tiny</i> but ride a full <span class="mem-chip chip-block">block</span>, while most reads benefit from block locality. Concretely, from the paper:</p>
+      <table class="tbl">
+        <thead><tr><th>Structure</th><th>Why it amplifies</th><th>Paper's number</th><th>Preferred</th></tr></thead>
+        <tbody>
+          <tr class="best"><td><b>Inode</b></td><td>128 B field update persisted as a 4 KB write</td><td class="mono">35% / 24.4% of writes (Ext4/F2FS)</td><td>W: byte · R: block</td></tr>
+          <tr><td><b>Block/inode bitmap</b></td><td>a few bits flipped, whole block written</td><td class="mono">5.4% writes avg · up to 25.2% reads</td><td>W: byte · R: block</td></tr>
+          <tr><td><b>Directory entry</b></td><td>one dentry changed, block rewritten</td><td class="mono">23% writes avg · 8% reads</td><td>W: byte · R: block</td></tr>
+          <tr><td><b>Data pointer</b></td><td>out-of-place updates churn pointers</td><td class="mono">up to 26% writes · 16% reads (F2FS)</td><td>W: byte · R: block</td></tr>
+          <tr><td><b>Data journal</b></td><td>double writes for consistency</td><td class="mono">30.7% of traffic avg (Ext4 ordered)</td><td>byte/block by size</td></tr>
+          <tr><td><b>Page cache / file data</b></td><td>depends on how much of a page is dirty</td><td class="mono">read amp 1.1–1.7×, write 1.1–6.2×</td><td>byte/block by locality</td></tr>
+        </tbody>
+      </table>
+      <div class="callout note"><span class="ic">🌱</span><div><b>The design rule that falls out:</b> use the <span class="mem-chip chip-byte">byte</span> interface for small metadata <i>writes</i>; use the <span class="mem-chip chip-block">block</span> interface for <i>reads</i> (to exploit host-cache locality) and for large/dense writes. That single table drives every routing decision in §4.5–4.6.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Enabling byte access &amp; persistence (§4.2)</h3>
+      <p>The host maps the whole SSD into its address space via the PCIe <b>BAR</b>, so any SSD address is reachable by <code>load</code>/<code>store</code> (MMIO), or with <b>CXL.mem</b> as cacheable load/store. ByteFS notes it needs <i>no</i> cache coherency between SSD DRAM and host CPU cache — the host always holds the latest copy and the firmware never modifies host-written data behind its back.</p>
+      <p>Persisting a byte write is two steps, because the CPU's Write-Combining buffers and PCIe posting can leave a write in flight:</p>
+      <pre class="sketch"><span class="cm"># persist a byte (cacheline) write to the M-SSD</span>
+store(mapped_addr, data)        <span class="cm"># MMIO / CXL.mem store</span>
+<span class="kw">clflush</span> / <span class="kw">clwb</span>(mapped_addr)       <span class="cm"># 1) push the dirty line out of CPU cache</span>
+x = <span class="hl">read</span>(mapped_addr, 0 bytes)     <span class="cm"># 2) write-verify read: a non-posted read</span>
+                                <span class="cm">#    serializes behind the posted write in</span>
+                                <span class="cm">#    the PCIe root complex → write completed</span></pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Tiering connection:</b> this is the M-SSD analogue of the persist barrier you know from NVM (<code>clwb</code>+<code>sfence</code>), but with an extra device round-trip (the write-verify read) because the durability point is across PCIe, not on the memory bus. It's a big reason the byte path costs 0.6 µs, not 90 ns.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · The in-SSD log-structured memory (§4.3)</h3>
+      <p>The crux. Flash is page-granular; byte writes are not. ByteFS reorganizes the SSD's DRAM into a <span class="mem-chip chip-log">log-structured write buffer</span> at cacheline granularity. Every byte write is <b>appended</b> as a 64 B-aligned entry to a 256 MB circular log (head/tail pointers) — so it never touches flash on the critical path. A three-layer skip list indexes the log for fast lookup; a background cleaner coalesces and flushes.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The three-layer log index</div>
+      <div class="viz-kicker">partition table → per-page skip list → ordered chunk list</div>
+      <svg class="full" viewBox="0 0 720 270" role="img" aria-label="three layer skip list indexing the write log">
+        <!-- layer 1 -->
+        <text x="20" y="28" font-family="JetBrains Mono" font-size="11" fill="#363fa0">Layer 1 · partition table (LPA ÷ 16 MB)</text>
+        <g font-family="JetBrains Mono" font-size="11">
+          <rect x="20" y="38" width="60" height="34" rx="6" fill="var(--ltram-soft)" stroke="var(--ltram)"/><text x="50" y="59" text-anchor="middle" fill="#363fa0">P0</text>
+          <rect x="84" y="38" width="60" height="34" rx="6" fill="var(--ltram-soft)" stroke="var(--ltram)"/><text x="114" y="59" text-anchor="middle" fill="#363fa0">P1</text>
+          <rect x="148" y="38" width="60" height="34" rx="6" fill="#fff" stroke="var(--ltram)" stroke-width="2"/><text x="178" y="59" text-anchor="middle" font-weight="700" fill="#363fa0">P2</text>
+          <rect x="212" y="38" width="60" height="34" rx="6" fill="var(--ltram-soft)" stroke="var(--ltram)"/><text x="242" y="59" text-anchor="middle" fill="#363fa0">…</text>
+        </g>
+        <!-- layer 2 -->
+        <text x="20" y="110" font-family="JetBrains Mono" font-size="11" fill="#363fa0">Layer 2 · per-page skip list (keyed by LPA)</text>
+        <line x1="178" y1="72" x2="178" y2="120" stroke="var(--ltram)" stroke-width="1.6"/>
+        <g font-family="JetBrains Mono" font-size="10.5">
+          <rect x="120" y="120" width="56" height="30" rx="6" fill="#fff" stroke="var(--ltram)"/><text x="148" y="139" text-anchor="middle" fill="#363fa0">LPA 0</text>
+          <rect x="190" y="120" width="56" height="30" rx="6" fill="#fff" stroke="var(--ltram)" stroke-width="2"/><text x="218" y="139" text-anchor="middle" font-weight="700" fill="#363fa0">LPA 2</text>
+          <rect x="260" y="120" width="56" height="30" rx="6" fill="#fff" stroke="var(--ltram)"/><text x="288" y="139" text-anchor="middle" fill="#363fa0">LPA 12</text>
+          <line x1="176" y1="135" x2="190" y2="135" stroke="#9A8E7C"/><line x1="246" y1="135" x2="260" y2="135" stroke="#9A8E7C"/>
+        </g>
+        <!-- layer 3 -->
+        <text x="360" y="110" font-family="JetBrains Mono" font-size="11" fill="#363fa0">Layer 3 · ordered chunk list (by block offset in page)</text>
+        <line x1="218" y1="150" x2="218" y2="172" stroke="var(--ltram)" stroke-width="1.6"/>
+        <g font-family="JetBrains Mono" font-size="9.5">
+          <rect x="360" y="172" width="150" height="42" rx="6" fill="var(--dram-soft)" stroke="var(--dram)"/>
+          <text x="435" y="189" text-anchor="middle" fill="#0e4a44">chunk entry (9 B)</text>
+          <text x="435" y="205" text-anchor="middle" fill="#14635b">blkoff 1B · logoff 4B · len 4B</text>
+          <rect x="520" y="172" width="150" height="42" rx="6" fill="#fff" stroke="var(--dram)" stroke-dasharray="4 3"/>
+          <text x="595" y="189" text-anchor="middle" fill="#0e4a44">→ points into</text>
+          <text x="595" y="205" text-anchor="middle" fill="#14635b">global log region</text>
+        </g>
+        <line x1="246" y1="135" x2="360" y2="193" stroke="#9A8E7C" stroke-width="1.4" stroke-dasharray="3 3"/>
+        <!-- log strip -->
+        <text x="20" y="200" font-family="JetBrains Mono" font-size="11" fill="#363fa0">Global log region (256 MB circular)</text>
+        <rect x="20" y="210" width="300" height="34" rx="6" fill="var(--honey-soft)" stroke="var(--honey)"/>
+        <g font-family="JetBrains Mono" font-size="9" fill="#6e4a09">
+          <rect x="28" y="216" width="34" height="22" rx="3" fill="#fff" stroke="var(--honey)"/><text x="45" y="231" text-anchor="middle">64B</text>
+          <rect x="66" y="216" width="34" height="22" rx="3" fill="#fff" stroke="var(--honey)"/><text x="83" y="231" text-anchor="middle">64B</text>
+          <rect x="104" y="216" width="34" height="22" rx="3" fill="#fff" stroke="var(--honey)"/><text x="121" y="231" text-anchor="middle">64B</text>
+          <text x="200" y="231" fill="#6e4a09">… append at tail →</text>
+        </g>
+      </svg>
+      <figcaption><b>Lookup walks three depths:</b> divide the logical page address by 16 MB to pick a partition's skip list (layer 1); find the page's entry by LPA (layer 2); binary-walk the chunk list ordered by in-page block offset (layer 3). Each chunk entry is just <b>9 bytes</b> (block offset 1 B + log offset 4 B + length 4 B) and points into the 64 B-entry log. A full 256 MB log resolves in ~89 ns; the index costs ~21 MB of SSD DRAM. (Paper, Fig. 3 + §4.3)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <p>The <b>cleaner</b> (Algorithm 1 in the paper) runs in the background once log utilization passes 85%. It walks the layer-2 skip lists, and for each modified page: allocates a write-buffer slot, loads the old flash page only if the update is partial, merges the latest committed chunk versions, and writes coalesced 4 KB pages out with channel-level parallelism. <b>Double buffering</b> serves new writes in a fresh log region while the old one drains, so cleaning never blocks foreground I/O.</p>
+      <pre class="sketch"><span class="cm"># Algorithm 1 (paraphrased): flush/clean the log</span>
+<span class="kw">for</span> page <span class="kw">in</span> traverse(layer2_skiplists):
+    buf = alloc_write_buffer(page)
+    <span class="kw">if</span> partial_update(page):
+        read_flash_page(page, buf)          <span class="cm"># read-modify-write only if needed</span>
+    <span class="kw">for</span> chunk <span class="kw">in</span> page.chunk_list:             <span class="cm"># layer-3, ordered</span>
+        <span class="kw">if</span> <span class="hl">not committed</span>(chunk):
+            migrate_to_new_log(chunk)         <span class="cm"># keep uncommitted data</span>
+        entry = latest_committed_version(chunk)
+        memcpy(buf + chunk.off, entry.data, entry.size)
+    <span class="kw">if</span> buf_full: flush_to_flash(buf)          <span class="cm"># coalesced page write</span>
+clean_log_region()                            <span class="cm"># reclaim space + index</span></pre>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Read &amp; write through the dual interface (§4.4)</h3>
+      <p>Putting the two doors together at the device:</p>
+      <table class="tbl">
+        <thead><tr><th></th><th>Byte interface</th><th>Block interface</th></tr></thead>
+        <tbody>
+          <tr><td><b>Read</b></td><td>MMIO load → firmware looks up log; hit returns data; miss fetches flash page, returns <i>only</i> the requested cacheline</td><td>NVMe read → load page to transfer buffer; merge any dirty log entries; return full 4 KB page</td></tr>
+          <tr><td><b>Write</b></td><td>64 B store + <code>clwb</code>; firmware appends to log, inserts chunk entry; concurrent writers update the chunk to newest version</td><td>4 KB block via PCIe → FTL write buffer → flash; firmware invalidates any overlapping log entries (page is now authoritative)</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Subtlety the paper is careful about:</b> a block write makes the whole page authoritative, so existing log entries for that page are invalidated immediately — safe because ByteFS guarantees written-back pages from the host page cache are up to date. Mixing byte and block writes to the same page without this rule would risk a stale log entry resurrecting old bytes.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Host-side metadata &amp; the modified-ratio detector (§4.5–4.6)</h3>
+      <p>On the host, ByteFS reshapes each metadata structure so the common update is a clean 64 B byte write, and caches them in host DRAM (radix trees), loading on a miss via block:</p>
+      <ul style="color:var(--ink-soft)">
+        <li><b>Inode</b> (128 B) is split into a <b>lower 64 B</b> (hot: size, mtime, access rights) and <b>upper 64 B</b> (cold). A typical update is one atomic 64 B byte write.</li>
+        <li><b>Bitmaps</b> are divided into <b>64 B groups</b> as the update unit; allocation flips just a group via byte writes.</li>
+        <li><b>Dentries</b> (inode# 4 B + type 2 B + namelen 2 B + name ≤256 B) update in <b>64 B–320 B</b> byte writes.</li>
+        <li><b>Data pointers</b> use Ext4-style extents (leaf node 16 B = offset 8 B + LBA 4 B + length 4 B), updated in place via byte writes.</li>
+      </ul>
+      <p>For <b>buffered I/O</b>, the kernel only knows a page is dirty, not which bytes. ByteFS recovers that with copy-on-write: snapshot the page on first write, then at writeback XOR snapshot vs current to compute the <b>modified ratio</b> <code>r = Modified / total</code> (counts of dirty 64 B cachelines). The rule:</p>
+      <pre class="sketch"><span class="cm"># buffered-write interface selection (per dirty page)</span>
+dup   = cow_snapshot(page)               <span class="cm"># tracked in an XArray by file offset</span>
+diff  = <span class="hl">avx2_xor</span>(page, dup)            <span class="cm"># ~936 cycles, up to 14 GB/s</span>
+r     = popcount_dirty_cachelines(diff) / 64
+<span class="kw">if</span> r &lt; 1/8:                              <span class="cm"># &lt; 512 B of the 4 KB page changed</span>
+    persist via <span class="by">BYTE</span> interface          <span class="cm"># write only the dirty 64B chunks</span>
+<span class="kw">else</span>:
+    persist via <span class="bl">BLOCK</span> interface         <span class="cm"># whole-page writeback is cheaper</span></pre>
+      <div class="callout note"><span class="ic">🌱</span><div>For <b>Direct I/O</b> the size is known up front, so the rule is just: request ≤ 512 B → byte, else block. <b>mmap</b> reuses the buffered-I/O machinery (CoW on mapped pages). The CoW snapshots cost ~16% extra page-cache space on average (max page cache 8 GB in their runs).</div></div>
+    </div>
+
+    <!-- INTERACTIVE: modified-ratio interface selector -->
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: how dirty is the page?</div>
+      <div class="viz-kicker">drag the number of dirty 64 B cachelines — watch ByteFS pick the door</div>
+      <div class="part-viz">
+        <div>
+          <div class="ways-strip" id="waysStrip"></div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">dirty cachelines (of 64):</span>
+            <input type="range" min="1" max="64" value="4" id="partRange">
+            <span class="mono" id="partRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">4</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-set="1">1 line (inode field)</button>
+            <button class="tbtn" data-set="8">8 lines (= threshold)</button>
+            <button class="tbtn" data-set="40">40 lines (heavy edit)</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">dirty bytes<b id="pBytes">—</b></div>
+            <div class="pstat">modified ratio r<b id="pRatio">—</b></div>
+            <div class="pstat">byte-write cost<b id="pCost">—</b></div>
+          </div>
+          <div class="pverdict byte" id="pVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>What you'll find:</b> the threshold is <code>r &lt; 1/8</code>, i.e. fewer than 8 of the 64 cachelines dirty (&lt; 512 B). Below it, writing just the dirty 64 B chunks beats a 4 KB block write; at or above it, the block door is cheaper and ByteFS switches. The strip shows dirty (teal) vs clean (terracotta) cachelines. (Threshold and page geometry from §4.6; the per-write costs are illustrative of the 64 B-vs-4 KB trade-off.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>6 · Crash consistency for free, and recovery (§4.7)</h3>
+      <p>Because every metadata update is already in the in-SSD write log, ByteFS uses that log as a <b>redo log</b> — no separate double write. A transaction gets a 4 B TxID from a global counter; the host's TxTable tracks in-flight transactions; updates are persisted into the log tagged with their TxID. On commit, a custom NVMe <code>COMMIT(TxID)</code> appends a 4 B entry to the 2 MB <b>TxLog</b> in SSD DRAM, fixing commit order. The firmware later propagates committed updates to flash in TxLog order via log cleaning.</p>
+      <pre class="sketch"><span class="cm"># transaction commit (firmware-assisted)</span>
+tx = new_transaction()                 <span class="cm"># 4B TxID from global counter; tracked in host TxTable</span>
+<span class="kw">for</span> upd <span class="kw">in</span> tx.updates:
+    append_to_log(encode(upd, tx.id))  <span class="cm"># 1  persist (byte interface)</span>
+nvme_cmd(<span class="hl">COMMIT</span>, tx.id)               <span class="cm"># 2  firmware appends TxID to 2MB TxLog</span>
+<span class="cm"># 3  firmware flushes committed updates to flash in TxLog order (background)</span></pre>
+      <p><b>Recovery</b> (<code>RECOVER()</code>): scan the log; for each entry check its trailing 4 B TxID against the TxLog — discard if absent (uncommitted), else flush remaining committed entries to flash in TxID order; then replay data journals if enabled. Measured recovery is <b>4.2 s</b> on average: 0.9 s to load SSD DRAM content + 2.7 s to scan the log + TxLog and flush committed entries.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>For data</b> (not just metadata), small writes ride the same byte-log transaction mechanism; large writes combine <b>JBD2</b> (Ext4's journaling layer) with a ByteFS commit entry carrying the TxID — so ByteFS offers the equivalent of Ext4 ordered-mode <i>plus</i> optional data journaling.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>7 · Coordinated caching (§4.3, end)</h3>
+      <p>SSD DRAM is scarce and shared with the FTL (512 MB mapping table + 16 MB write buffer on the prototype). ByteFS refuses to cache flash pages on <i>both</i> sides: it keeps <b>no page-granular cache inside the SSD</b>, caching loaded pages only in the host page cache. That frees the SSD DRAM to be the 256 MB write log — the resource that actually moves the needle for persistent byte writes. The trade is honest: with poor host-cache locality this can cost extra flash reads, and ByteFS sometimes pays more flash <i>write</i> traffic than NOVA/PMFS — but those flushes are in the background and are outweighed by the write-log's benefits.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Five traces, each carried all the way through with the paper's actual numbers — an inode update, the modified-ratio decision, a full open/write/fsync trace, the firmware storage budget, and a recovery tally. Arithmetic is recomputed here.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The inode-update write amplification, computed</h3>
+      <p style="color:var(--ink-soft)">An application updates a file's size and mtime — a few fields of its 128 B inode. Compare Ext4's block path with ByteFS's byte path.</p>
+      <ol class="seq">
+        <li><b>Ext4 (block):</b> the inode lives in a 4 KB on-disk inode block. Persisting any field forces a whole 4 KB write. Amplification = 4096 / 128 = <b>32× </b> over the 128 B inode (and far more over the handful of bytes that truly changed).</li>
+        <li><b>ByteFS splits the inode</b> into a hot lower 64 B (size, mtime, access rights) and a cold upper 64 B. The changed fields are all in the lower half.</li>
+        <li><b>ByteFS (byte):</b> persist just the 64 B lower region with one atomic byte write. Versus Ext4's 4 KB: 4096 / 64 = <b>64× less</b> data moved for that update.</li>
+        <li><b>Why this dominates:</b> inodes are 35% (Ext4) and 24.4% (F2FS) of all write traffic — they're touched on nearly every file/dir operation. Shrinking each from 4 KB to 64 B is the single biggest lever.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the win isn't a clever algorithm, it's matching the write size to the change size — and the inode split makes "the change" reliably fit in one 64 B cacheline so the byte door is always available.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② The modified-ratio decision (buffered write)</h3>
+      <p style="color:var(--ink-soft)">A cached 4 KB page is written back. ByteFS must choose byte vs block. Recompute the threshold and decide for two cases.</p>
+      <ol class="seq">
+        <li><b>Page geometry:</b> a 4 KB page = 4096 / 64 = <b>64 cachelines</b> of 64 B each.</li>
+        <li><b>The rule (§4.6):</b> use the byte interface when <code>r = Modified/total &lt; 1/8</code>. That threshold in bytes is 4096 / 8 = <b>512 B</b>, i.e. fewer than 512/64 = <b>8 dirty cachelines</b>.</li>
+        <li><b>Case A — a 200 B record updated:</b> touches ⌈200/64⌉ = 4 cachelines → r = 4/64 = 0.0625 &lt; 0.125. <b>Byte door:</b> write ~256 B instead of 4 KB (≈16× less).</li>
+        <li><b>Case B — a 1 KB region rewritten:</b> touches 16 cachelines → r = 16/64 = 0.25 ≥ 0.125. <b>Block door:</b> a single 4 KB writeback beats 16 separate byte persists.</li>
+        <li><b>The cost of <i>knowing</i>:</b> finding the dirty cachelines needs the CoW snapshot + an AVX2 XOR (~936 cycles/page, up to 14 GB/s) and ~16% extra page-cache DRAM.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Slide the interactive on the "How It Works" tab to 8 cachelines and watch the verdict flip from byte to block — that's exactly the r = 1/8 knee computed here.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ A full open → write → fsync trace (Fig. 5)</h3>
+      <p style="color:var(--ink-soft)">The paper's running example: open and read a 16 KB file, overwrite the first 1 KB, then fsync. Follow the doors.</p>
+      <ol class="seq">
+        <li><b>open (R1–R3):</b> path lookup walks the tree; uncached components are fetched via the <span class="mem-chip chip-block">block</span> interface (whole block, to exploit dentry/inode locality in the host cache).</li>
+        <li><b>read 16 KB (R4):</b> file data read in <span class="mem-chip chip-block">blocks</span> and cached in the host page cache — block reads everywhere, by design.</li>
+        <li><b>write first 1 KB (W1–W2):</b> ByteFS finds the cached page via the inode's <code>address_space</code> and does <b>copy-on-write</b> on it, recording the duplicate.</li>
+        <li><b>persist inode (W3):</b> a transaction (TxID) is opened; the inode update goes to the firmware <span class="mem-chip chip-log">write log</span> via the byte interface — atomic 64 B.</li>
+        <li><b>fsync (S1–S5):</b> XOR original vs copied page (S2) → here 1 KB dirty = 16 cachelines = r = 0.25 ≥ 1/8, so the <span class="mem-chip chip-block">block</span> interface is chosen for the data writeback (S3); since metadata is already persisted, <code>TxCommit(TxID)</code> finalizes after the block I/O (S4); committed data flushes to <span class="mem-chip chip-flash">flash</span> in the background (S5).</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> a single syscall sequence uses <i>both</i> doors — block for the bulk 16 KB read and the 1 KB data writeback, byte for the small inode metadata — and the commit is ordered through the firmware log so a crash mid-fsync is recoverable.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ The firmware storage budget on the prototype</h3>
+      <p style="color:var(--ink-soft)">Where does the 1 GB of SSD DRAM go, and how big is the log index? Add it up from §4.3 and §4.9.</p>
+      <ol class="seq">
+        <li><b>FTL essentials:</b> address-mapping table = 512 MB; FTL write buffer = 16 MB. (For a 1 TB SSD at 4 KB pages that's 1 TB/4 KB = 268,435,456 pages → 512 MB / that ≈ <b>2 B of mapping per page</b>, a sane page-table-entry size.)</li>
+        <li><b>ByteFS write log:</b> 256 MB circular region of 64 B-aligned entries.</li>
+        <li><b>Log index:</b> ~21 MB on average for a 256 MB log → index overhead ≈ 21/256 = <b>8.2%</b> of the log region. Each chunk entry is just 1 + 4 + 4 = <b>9 B</b>.</li>
+        <li><b>TxLog:</b> 2 MB, holding 4 B commit entries → room for ~500 K in-flight committed TxIDs.</li>
+        <li><b>Tally:</b> 512 + 16 + 256 + 21 + 2 ≈ <b>807 MB</b> of the 1 GB, leaving headroom — and notably <i>no</i> page-granular SSD-side data cache (coordinated caching reclaims that space for the log).</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The punchline of the budget: the design spends DRAM on <i>indexing and buffering writes</i>, not on a second copy of read data. That's the coordinated-caching decision, made concrete in bytes.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>⑤ Recovery time, decomposed</h3>
+      <p style="color:var(--ink-soft)">After a power cut mid-YCSB, how long is reboot-to-consistent, and what dominates? (§5.5)</p>
+      <ol class="seq">
+        <li><b>Load SSD DRAM content</b> from battery-backed DRAM: 0.9 s.</li>
+        <li><b>Scan the global log + TxLog</b>, discard uncommitted entries (TxID absent from TxLog), flush committed entries to flash in TxID order: 2.7 s.</li>
+        <li><b>Sum of the two named phases:</b> 0.9 + 2.7 = <b>3.6 s</b>.</li>
+        <li><b>Reported average total:</b> <b>4.2 s</b> — so ≈ 0.6 s is the remaining work (data-journal replay if enabled, log-region + TxLog cleanup, bring-up). The log scan dominates, as expected for a redo-log recovery.</li>
+      </ol>
+      <div class="callout note"><span class="ic">🌱</span><div><b>Honesty note:</b> the paper states the 0.9 s and 2.7 s sub-steps and the 4.2 s average; the ~0.6 s residual is our subtraction, attributable to the §4.7 steps the paper lists (data-journal recovery, cleanup) but doesn't separately time.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the common misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">An M-SSD exposes a byte (load/store) interface. Why can't ByteFS just treat it like NVM and persist every write byte-by-byte, the way NOVA does?</div>
+      <details><summary>Show answer</summary><div class="ans">Two reasons. (1) The byte path is microseconds, not nanoseconds — 0.6 µs write / 4.8 µs read per cacheline on the prototype, vs ~90–300 ns for NVM — so spamming it for large writes is slow. (2) The flash underneath is page-granular (4 KB), so a byte write that misses the in-SSD buffer triggers a flash page access anyway. ByteFS therefore uses byte writes only where they pay (small metadata) and block for bulk, and coalesces byte writes in an in-SSD log so flash sees page-granular traffic.<span class="mis">Misconception: that a load/store interface implies DRAM-like cost. The interface is byte-addressable; the medium and the interconnect are not byte-cheap.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">A 4 KB page is written back in buffered mode with 300 B of changes spread across 5 separate 64 B cachelines. Does ByteFS pick byte or block? Show the threshold computation.</div>
+      <details><summary>Show answer</summary><div class="ans">A page is 4096/64 = 64 cachelines. The threshold is r &lt; 1/8, i.e. fewer than 8 dirty cachelines (&lt; 512 B). Here 5 cachelines are dirty → r = 5/64 ≈ 0.078 &lt; 0.125 → <b>byte interface</b>. ByteFS persists ~5×64 = 320 B of byte writes instead of a 4 KB block — about 12.8× less data. Note it's the <i>number of dirty cachelines</i>, found by the CoW+XOR, not the 300 raw bytes, that matters.<span class="mis">Misconception: that 300 B "obviously fits" so byte is trivial — but if those 300 B were smeared across 9+ cachelines, r would exceed 1/8 and block would win. Granularity, not raw byte count, decides.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">ByteFS reuses its in-SSD write log as a redo log for crash consistency. What concrete cost does this avoid, and roughly how big was that cost in Ext4?</div>
+      <details><summary>Show answer</summary><div class="ans">It avoids the <b>double write</b> of journaling: a journaled FS writes critical metadata once to the journal and again in place. Since ByteFS's metadata updates are already durably in the byte-write log, the log <i>is</i> the journal — only a 4 B TxID and a TxLog commit entry are added. In Ext4 ordered mode, journaling is <b>30.7% of total traffic on average</b>, so eliminating the double write is a large saving on top of the per-update amplification win.<span class="mis">Misconception: that crash consistency requires a dedicated, separate journal. Here a structure built for another purpose (absorbing byte writes) provides the ordering and durability the journal would.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Suppose ByteFS allowed a byte write and a 4 KB block write to the same page to coexist in the log without invalidation. Construct a sequence where this resurrects stale data, and state the rule ByteFS uses to prevent it.</div>
+      <details><summary>Show answer</summary><div class="ans">Sequence: (1) byte-write cacheline X of page P → log entry e₁ = {P, off=X, new}. (2) later, the host page cache writes the <i>whole</i> page P back via the block interface with an even newer X. If e₁ is left in the log, a subsequent read or a log flush could merge e₁ over the block-written page and restore the old X — stale data resurrected. ByteFS's rule (§4.4): on a block write of page P, the firmware <b>scans the skip list and invalidates all log entries for P immediately</b>, because a written-back page from the host cache is guaranteed up to date. So the page becomes the single source of truth and no log entry can override it.<span class="mis">Misconception: that byte and block writes are independent fast paths. They alias the same page, so block writes must authoritatively supersede overlapping byte-log entries.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">ByteFS deliberately keeps no page-granular cache inside the SSD, caching read pages only in the host page cache. Name one workload pattern where this <i>hurts</i> ByteFS, and explain why it accepts the cost.</div>
+      <details><summary>Show answer</summary><div class="ans">A write-heavy workload with strong page-level write locality (the paper points to create/Fileserver for reads and mkdir/rmdir for writes). A page-granular SSD-side cache — which NOVA/PMFS keep — could absorb repeated writes to the same page before it ever reaches flash, so ByteFS may incur higher flash traffic via its read-modify-write during log cleaning. ByteFS accepts this because (a) the freed SSD DRAM becomes the 256 MB write log, which is the bigger win, and (b) the extra flash work happens in the background via double-buffered cleaning, off the critical path.<span class="mis">Misconception: that "no duplication" is always a pure win. It's a deliberate trade — give up SSD-side absorption to fund the write log; net positive on average, not universally.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">The byte-write persist sequence is store → clwb → zero-byte "write-verify" read. Why is the write-verify read necessary, and what hardware property makes a plain read sufficient to guarantee the prior write completed?</div>
+      <details><summary>Show answer</summary><div class="ans">PCIe posted writes return immediately and may still be in flight (buffered in CPU Write-Combining buffers or pending in the root complex) after the store/clwb retire — so durability isn't yet guaranteed. The fix exploits ordering in the PCIe <b>root complex</b>: reads are <i>non-posted</i> and are serialized behind earlier posted writes to the same path. Issuing a (zero-byte) read therefore cannot complete until the preceding posted write has drained to the device. The returning read is proof the write landed. This is the M-SSD analogue of an NVM persist barrier, but with a device round-trip — a major reason byte-writes cost ~0.6 µs.<span class="mis">Misconception: that clwb alone makes the write durable on an M-SSD. clwb evicts from CPU cache, but the durability point is across PCIe; you need the read to flush the posted write to the device.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">In a sensitivity run, the authors emulate a CXL-based M-SSD with 175 ns cacheline access instead of the prototype's 4.8 µs. Qualitatively, what should happen to ByteFS's advantage, and why doesn't it vanish?</div>
+      <details><summary>Show answer</summary><div class="ans">Lower byte-path latency (CXL.mem) makes the byte interface cheaper, so both ByteFS and NOVA improve on some workloads. But ByteFS's advantage doesn't vanish because its wins also come from sources CXL doesn't touch: reduced <i>flash</i> traffic via coalescing, fewer 4 KB writes for tiny metadata, and hiding flash write latency by background log flushing. NOVA still doesn't optimize for the high flash access latency, so ByteFS stays ahead.<span class="mis">Misconception: that ByteFS's benefit is purely "byte writes are faster." Much of it is reducing the <i>amount</i> of flash I/O and ordering it well — orthogonal to interconnect speed.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">The three-layer skip list resolves a lookup in a full 256 MB log in ~89 ns, while a flash page access is microseconds. Why did the authors still bother making the index three layers and per-partition instead of one big skip list or a hash table?</div>
+      <details><summary>Show answer</summary><div class="ans">Two reasons given in §4.3. (1) Splitting into 16 MB partitions keeps each skip list small, bounding lookup latency and avoiding one giant structure — layer 1 is a cheap divide to pick the partition. (2) A skip list (vs a hash table) supports <b>arbitrary chunk sizes and range lookups</b>: file systems issue variable-size accesses, and an ordered chunk list (layer 3, by in-page block offset) lets a range request be served without breaking it into fixed-size keys. 89 ns is already negligible vs flash, but the structure also keeps memory bounded (~21 MB) and supports the access patterns hash tables handle poorly.<span class="mis">Misconception: that since 89 ns ≪ flash latency, index design doesn't matter. It matters for memory footprint, range queries, and keeping worst-case lookup bounded as the log fills.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Twelve questions a systems reader asks first. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly is a "memory-semantic SSD," and how is it different from NVM?<span class="chev">▾</span></summary><div class="a">An M-SSD is a flash SSD that <i>also</i> exposes its internal DRAM as a memory region the CPU reaches by load/store over PCIe MMIO or CXL.mem — so it has both a byte and a block interface to the same NAND. Unlike NVM (e.g. Optane), which sits on the processor memory bus with near-DRAM latency and a PCM-like medium, an M-SSD is PCIe-attached, microsecond-latency on the byte path, built on commodity NAND, and ~40× cheaper per GB (~$0.22/GB vs NVM's ~$3.6/GB in the paper's Table 1).</div></details>
+      <details><summary><span class="q">Q2</span>Why not just run Ext4 or NOVA on the M-SSD?<span class="chev">▾</span></summary><div class="a">Ext4/F2FS use only the block interface, so they pay 1.1–6.2× write amplification persisting tiny metadata as 4 KB blocks. NOVA/PMFS are built for NVM and assume the byte path is DRAM-fast, leaning on it exclusively and bypassing caches — but on an M-SSD the byte path is microseconds and flash is page-granular, so that assumption misfires. Neither uses both interfaces adaptively or addresses the internal byte/page granularity gap. ByteFS is designed for exactly this device.</div></details>
+      <details><summary><span class="q">Q3</span>How does ByteFS decide byte vs block for a given write?<span class="chev">▾</span></summary><div class="a">It depends on the I/O path. Direct I/O: by request size (≤ 512 B → byte). Buffered I/O: it can't see the true write size, so it copy-on-writes the page, XORs original vs current at writeback to find the dirty 64 B cachelines, and uses byte if the modified ratio r &lt; 1/8 (under 512 B of the 4 KB page), else block. mmap reuses the buffered path. Metadata structures are reshaped so their common update is a clean 64 B byte write.</div></details>
+      <details><summary><span class="q">Q4</span>How does a byte write avoid blowing up into a 4 KB flash write?<span class="chev">▾</span></summary><div class="a">The SSD firmware turns its DRAM into a 256 MB log-structured write buffer at 64 B granularity. Byte writes are appended to the log (never touching flash on the critical path) and indexed by a three-layer skip list. A background cleaner, triggered at 85% utilization, coalesces many nearby byte writes into a few sequential 4 KB flash page writes — so the page-granular flash sees coalesced traffic, not a storm of tiny RMWs.</div></details>
+      <details><summary><span class="q">Q5</span>Where does CXL come in?<span class="chev">▾</span></summary><div class="a">CXL.mem lets the host issue <i>cacheable</i> load/store accesses to the device, a faster realization of the byte interface than plain PCIe MMIO. ByteFS's byte path works over either; the paper's prototype uses PCIe 3.0 ×4 (byte writes 0.6 µs), and a sensitivity study models a CXL-based M-SSD with 175 ns cacheline latency, where byte access (and thus several workloads) gets faster. CXL is the trajectory that makes the byte interface more attractive over time.</div></details>
+      <details><summary><span class="q">Q6</span>How does ByteFS stay crash-consistent without journaling's double write?<span class="chev">▾</span></summary><div class="a">Its in-SSD byte-write log doubles as a redo log. Each update is tagged with a 4 B TxID and persisted in the log; a custom NVMe COMMIT(TxID) appends to a 2 MB TxLog that fixes commit order; the firmware later flushes committed updates to flash in that order. On reboot, RECOVER() scans the log, discards entries whose TxID isn't in the TxLog (uncommitted), and flushes the rest. So the structure that absorbs byte writes also provides atomicity and ordering — no separate double write (Ext4 journaling alone is 30.7% of traffic).</div></details>
+      <details><summary><span class="q">Q7</span>What is the "coordinated caching" decision and why does it matter?<span class="chev">▾</span></summary><div class="a">SSD DRAM is scarce (the FTL mapping table alone is 512 MB of 1 GB on the prototype). ByteFS keeps no page-granular data cache inside the SSD — read pages are cached only in the host page cache — so the SSD DRAM can be the 256 MB write log. It's a deliberate trade: you give up SSD-side write absorption (which NOVA/PMFS keep) to fund the log. Net positive because the log + coalescing + background flushing outweigh the occasional extra flash traffic.</div></details>
+      <details><summary><span class="q">Q8</span>What does CoW + XOR cost, and is it worth it?<span class="chev">▾</span></summary><div class="a">The copy-on-write snapshots occupy ~16% of the page cache on average (max page cache 8 GB in their runs), and each writeback XOR is ~936 CPU cycles (AVX2, up to 14 GB/s). It's worth it because the page cache otherwise discards <i>which</i> bytes changed; recovering that lets ByteFS take the byte door for lightly-modified pages, which is where the amplification savings live. The paper judges the DRAM cost "less of a concern" against the speedups.</div></details>
+      <details><summary><span class="q">Q9</span>How big are the actual speedups, and where do they come from?<span class="chev">▾</span></summary><div class="a">Up to 2.7× over state-of-the-art file systems. Micro-benchmarks: 2.5× over Ext4, 1.48× over F2FS on average; file create 6.0× (Ext4) / 2.4× (F2FS). Macro: OLTP 4.1× over Ext4, Varmail 1.9× over F2FS, Fileserver 2.2× over Ext4. Write traffic to the SSD drops up to 5.1×; metadata traffic up to 25.3× (Ext4) / 17.2× (F2FS); flash traffic 2.1–3.2× across baselines. Gains come from byte writes for small metadata, dynamic interface selection for data, and the firmware log's coalescing + cheap consistency.</div></details>
+      <details><summary><span class="q">Q10</span>Does ByteFS ever lose, or cost more, than the baselines?<span class="chev">▾</span></summary><div class="a">Yes, honestly reported. On read-only/range workloads (YCSB-C, YCSB-E) it's roughly tied — there's little write amplification to remove. On create and Fileserver it can incur higher flash <i>read</i> traffic than Ext4/F2FS, and on mkdir/rmdir higher flash <i>write</i> traffic than NOVA/PMFS, due to the read-modify-write pattern during log cleaning and its no-SSD-side-cache choice. It also spends ~16% extra page-cache DRAM for CoW. These are outweighed on average because cleaning is in the background.</div></details>
+      <details><summary><span class="q">Q11</span>Is this real hardware, and how much code is it?<span class="chev">▾</span></summary><div class="a">Both. A real prototype on an OpenSSD FPGA board (1 TB flash, 16 channels, 1 GB DRAM, on-board ARM running the firmware), plus an FEMU-based emulator for sensitivity studies. ByteFS is built on Ext4 in Linux 5.1: ~3.9 K LoC host file system (1.3 K to reorganize on-disk metadata, 0.6 K for CoW), plus ~1.5 K lines of C in the SSD firmware (0.8 K for the log + skip list, 0.4 K for cleaning + transactions, 0.1 K for the custom NVMe byte command). No SSD hardware changes.</div></details>
+      <details><summary><span class="q">Q12</span>Why should a DRAM/NVM tiering (LtRAM) researcher care?<span class="chev">▾</span></summary><div class="a">ByteFS is the storage-stack counterpart to memory tiering. Its CoW+XOR modified-ratio detector is a per-page, cacheline-grain hot/cold classifier living inside the page cache — directly reusable for promotion/demotion decisions. Its core thesis — a load/store-capable device's "cheap" interface isn't automatically cheap; the cost model of the backing medium (page-granular flash) must drive policy — is the same lesson tiering keeps learning about NVM and CXL memory. And as an M-SSD is itself a CXL memory device with byte access, it's a natural tier <i>below</i> DRAM/NVM in an LtRAM hierarchy.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results &amp; source notes</h2>
+      <p class="sub">Every term in one place, the headline numbers, an honest provenance block, and where to read next.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>ByteFS</b><span>The paper's file system for memory-semantic SSDs: a host/firmware co-design that adaptively uses byte and block interfaces and reshapes SSD firmware to bridge the byte/flash granularity gap.</span></div>
+      <div class="term-def"><b>Memory-semantic SSD (M-SSD)</b><span>A flash SSD that exposes its internal DRAM as a CPU-addressable memory region (byte interface) in addition to the normal NVMe block interface.</span></div>
+      <div class="term-def"><b>Byte interface</b><span>Cacheline-granular load/store access to the SSD via PCIe MMIO or CXL.mem; 0.6 µs write / 4.8 µs read per cacheline on the prototype.</span></div>
+      <div class="term-def"><b>Block interface</b><span>Conventional 4 KB NVMe access; used for reads (locality) and large/dense writes.</span></div>
+      <div class="term-def"><b>I/O amplification</b><span>Bytes moved to/from the device ÷ bytes the app requested. Ext4/F2FS: 1.1–6.2× write, 1.1–1.7× read.</span></div>
+      <div class="term-def"><b>Log-structured write buffer</b><span>ByteFS's reorganization of SSD DRAM: a 256 MB circular log of 64 B entries that absorbs byte writes, coalesced into flash page writes by a background cleaner.</span></div>
+      <div class="term-def"><b>Three-layer skip list</b><span>The log index: partition table (16 MB partitions) → per-page skip list (by LPA) → ordered chunk list (by in-page offset). ~89 ns lookup, ~21 MB DRAM.</span></div>
+      <div class="term-def"><b>Modified ratio (r)</b><span>Fraction of a 4 KB page's 64 B cachelines that are dirty, found by CoW + XOR. r &lt; 1/8 (&lt; 512 B) → byte interface; else block.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>CXL.mem</b><span>Compute Express Link's memory protocol: cacheable load/store to a device over the interconnect. A faster realization of the byte interface (175 ns modeled).</span></div>
+      <div class="term-def"><b>Copy-on-write (CoW)</b><span>Snapshotting a page on first modification (tracked in an XArray by offset) so the writeback XOR can recover which bytes changed. ~16% page-cache overhead.</span></div>
+      <div class="term-def"><b>Coalescing / log cleaning</b><span>The background process (≥85% utilization) that merges nearby byte-log entries into sequential 4 KB flash writes and reclaims log space; double-buffered so it never blocks foreground I/O.</span></div>
+      <div class="term-def"><b>Coordinated caching</b><span>Caching flash pages only in the host page cache, never duplicated in SSD DRAM, freeing that DRAM for the write log.</span></div>
+      <div class="term-def"><b>Redo log / TxID / TxLog</b><span>The write log doubles as a redo log; a 4 B TxID tags each transaction; a 2 MB TxLog records commit order for consistency and recovery.</span></div>
+      <div class="term-def"><b>Write-verify read</b><span>A zero-byte non-posted read after a byte write, exploiting PCIe root-complex ordering to force the posted write to complete (durability point).</span></div>
+      <div class="term-def"><b>FTL</b><span>Flash Translation Layer: SSD firmware that maps logical to physical pages. ByteFS extends, not replaces, it (mapping table 512 MB, write buffer 16 MB on the prototype).</span></div>
+      <div class="term-def"><b>JBD2</b><span>Ext4's journaling block device layer; ByteFS combines it with its own commit entries for large-write data journaling.</span></div>
+      <div class="term-def"><b>Inode split</b><span>Dividing the 128 B inode into a hot lower 64 B (size, mtime, rights) and cold upper 64 B, so the common update is one atomic 64 B byte write.</span></div>
+      <div class="term-def"><b>NOVA / PMFS</b><span>State-of-the-art NVM file systems used as baselines; byte-only, tuned for near-DRAM NVM, suboptimal on the microsecond/page-granular M-SSD.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What ByteFS buys (vs prior file systems)</div>
+      <div class="viz-kicker">peak factors from §5 · higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Speedup (peak)<small>vs SOTA</small></div><div class="bar-track"><div class="bar-fill bf-byte" data-w="2.7"><span>up to 2.7×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">File create<small>vs Ext4</small></div><div class="bar-track"><div class="bar-fill bf-byte" data-w="6.0"><span>6.0×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">OLTP<small>vs Ext4</small></div><div class="bar-track"><div class="bar-fill bf-byte" data-w="4.1"><span>4.1×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Write traffic cut<small>peak</small></div><div class="bar-track"><div class="bar-fill bf-log" data-w="5.1"><span>5.1× less</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Metadata traffic cut<small>vs Ext4, peak</small></div><div class="bar-track"><div class="bar-fill bf-log" data-w="25.3"><span>25.3× less (capped on scale)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Flash traffic cut<small>vs NOVA, avg</small></div><div class="bar-track"><div class="bar-fill bf-flash" data-w="3.2"><span>3.2× less</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 1× ▏▏▏▏▏▏▏▏▏▏ 8× (metadata bar saturates)</p>
+      <figcaption><b>Speedups are factors, not percentages.</b> The metadata-traffic reduction (25.3× peak) exceeds the chart's 8× scale, so its bar is pinned full — the label states the true value. (Paper §5.2–5.3.)</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes — provenance &amp; honesty</div>
+    <div class="card" style="background:var(--paper-2);border-color:var(--line-strong)">
+      <p style="margin-bottom:.6em"><b>Grounded in the paper (verbatim numbers/mechanisms):</b> the dual byte/block interface and M-SSD definition; Table 1 device numbers (M-SSD 4.8/0.6 µs, 3.5/2.5 GB/s, ~$0.22/GB; NVM 300/90 ns, $3.6/GB; DRAM 100 ns, $8.6/GB); Table 2 amplification (write 1.1–6.2×, read 1.1–1.7×); Table 3 per-structure interface preferences and the §3 traffic shares (inode 35%/24.4%, bitmap 5.4% write/25.2% read, dentry 23%/8%, data pointer 26%/16%, journaling 30.7%); the 256 MB log, 64 B entries, 85% clean threshold, three-layer skip list with 16 MB partitions and 9 B chunk entries, ~89 ns lookup, ~21 MB index; persist sequence (clflush/clwb + write-verify read); inode split (128 B → 64 B+64 B), 64 B bitmap groups, dentry 64–320 B, 16 B extent leaf; CoW modified ratio r &lt; 1/8, AVX2 XOR 936 cycles / up to 14 GB/s, ~16% page-cache overhead; TxID 4 B, TxLog 2 MB, COMMIT/RECOVER; coordinated caching (no SSD-side page cache); recovery 4.2 s = 0.9 s + 2.7 s + residual; LoC counts; prototype (OpenSSD, 1 TB, 16 ch, 1 GB DRAM) and FEMU emulator; config (Xeon E5-2683 v3, 28-core, 128 GB; flash 40/60 µs, cacheline 4.8/0.6 µs, 8 ch, 32 GB emulated); all §5 speedup/traffic factors; CXL 175 ns sensitivity point.</p>
+      <p style="margin-bottom:.6em"><b>My framing / recomputed arithmetic (not lifted from the paper):</b> the 32× (4096/128) and 64× (4096/64) inode-write derivations; the "64 cachelines, 8-cacheline threshold, 512 B" decomposition of r &lt; 1/8; the ~2 B/page mapping-entry and ~807 MB DRAM-budget tally; the ~0.6 s recovery residual (4.2 − 3.6); the modified-ratio interactive's per-write cost numbers (illustrative of 64 B-vs-4 KB, not measured); the four-color semantic mapping; all analogies; and the LtRAM/tiering connections, which are my editorial bridge to the reader's field, not claims the paper makes.</p>
+      <p style="margin:0"><b>Flagged uncertainties:</b> (1) The paper's extracted text renders some symbols oddly (e.g. skip-list complexity shows as "(())" — it is O(log n)); I've used the standard reading. (2) "up to 2.7×" is the paper's stated peak over SOTA; individual per-benchmark factors above are the specific ones it reports and may not all be the same comparison baseline — each label states its baseline. (3) The 14 GB/s XOR throughput is the paper's peak; a single-pass 4 KB XOR at 936 cycles / 2.7 GHz computes to ~11.8 GB/s, consistent with "up to 14 GB/s" under pipelining. (4) Figures 1 and 6–13 are bar charts whose exact per-bar values aren't all in the text; I cite only the factors the prose states.</p>
+    </div>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>SSD internals: FTL, NAND pages, garbage collection <span class="diff easy">easy</span></h4><div class="meta">explainer · 30–45 min</div><p>Why flash is page/block-granular and what the FTL does. Search "SSD FTL garbage collection explained." This is the constraint the whole firmware design fights.</p></div>
+    <div class="read-item reveal"><h4>The Linux page cache, writeback, and address_space <span class="diff med">medium</span></h4><div class="meta">kernel docs · 30 min</div><p>How dirty pages are tracked and flushed, and where ByteFS hooks CoW. Search "Linux page cache writeback address_space."</p></div>
+    <div class="read-item reveal"><h4>CXL.mem and load/store over the interconnect <span class="diff med">medium</span></h4><div class="meta">overview · 30 min</div><p>What cacheable device load/store buys you. Das Sharma, "Compute Express Link," HOTI 2022 (the paper's ref [41], source of the 175 ns figure).</p></div>
+
+    <div class="subhead">Related papers (from the paper's own bibliography)</div>
+    <div class="read-item reveal"><h4>FlatFlash: Exploiting the Byte-Accessibility of SSDs <span class="diff hard">hard</span></h4><div class="meta">Abulila et al. · ASPLOS '19 · ref [10]</div><p>A unified memory-storage hierarchy that maps the SSD into virtual memory — the closest prior byte-addressable-SSD work; ByteFS builds the file-system layer FlatFlash lacked.</p></div>
+    <div class="read-item reveal"><h4>2B-SSD: Dual, Byte- and Block-Addressable SSDs <span class="diff hard">hard</span></h4><div class="meta">Bae et al. · ISCA 2018 · ref [12]</div><p>The dual-interface SSD hardware case; foundational to the M-SSD device model ByteFS targets.</p></div>
+    <div class="read-item reveal"><h4>NOVA: A Log-structured File System for Hybrid Memories <span class="diff hard">hard</span></h4><div class="meta">Xu &amp; Swanson · FAST 16 · ref [48]</div><p>The per-inode log-structured NVM file system used as a baseline — the "sports car on a dirt road" ByteFS contrasts itself against.</p></div>
+    <div class="read-item reveal"><h4>System Software for Persistent Memory (PMFS) <span class="diff med">medium</span></h4><div class="meta">Dulloor et al. · EuroSys '14 · ref [19]</div><p>Direct-access NVM file system; the other byte-only baseline, and a reference point for crash-consistency mechanisms.</p></div>
+    <div class="read-item reveal"><h4>Hello Bytes, Bye Blocks: PCIe Storage meets CXL (CXL-SSD) <span class="diff med">medium</span></h4><div class="meta">Jung · HotStorage '22 · ref [26]</div><p>The CXL-SSD vision and an FPGA emulator for mapping an SSD as a memory extension — the CXL framing behind the paper's title.</p></div>
+    <div class="read-item reveal"><h4>Overcoming the Memory Wall with CXL-Enabled SSDs <span class="diff med">medium</span></h4><div class="meta">Yang et al. · USENIX ATC '23 · ref [49]</div><p>CXL-attached SSDs as memory expanders — directly relevant to placing an M-SSD as a tier below DRAM/NVM in an LtRAM hierarchy.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Li, Zhou, Ren &amp; Huang, "ByteFS: System Support for (CXL-based) Memory-Semantic Solid-State Drives" (ASPLOS '25)</span>
+    <span><b>Source:</b> arXiv:2501.04993v1 · DOI 10.1145/3669940.3707250</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the PDF</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 8;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- MODIFIED-RATIO INTERFACE SELECTOR (interactive) ---- */
+  var TOTAL = 64;            // 64 cachelines in a 4KB page
+  var THRESH = TOTAL/8;      // r < 1/8  → byte interface (8 cachelines / 512 B)
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(dirty){
+    if(!strip) return;
+    // 64 cachelines is a lot of cells; show 32 cells, each = 2 cachelines, rounded
+    var cells = 32, perCell = TOTAL/cells, html = '';
+    var dirtyCells = Math.round(dirty/perCell);
+    for(var i=0;i<cells;i++){ html += '<div class="way '+(i<dirtyCells?'byte':'block')+'"></div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(dirty){
+    var range = document.getElementById('partRange'); if(!range) return;
+    dirty = Math.max(1, Math.min(TOTAL, dirty));
+    range.value = dirty;
+    document.getElementById('partRangeVal').textContent = dirty;
+    var bytes = dirty*64, r = dirty/TOTAL;
+    document.getElementById('pBytes').textContent = bytes + ' B';
+    document.getElementById('pRatio').textContent = r.toFixed(3);
+    document.getElementById('pCost').textContent  = bytes + ' B';
+    buildStrip(dirty);
+    var verd = document.getElementById('pVerdict');
+    if(dirty < THRESH){
+      verd.className = 'pverdict byte';
+      verd.textContent = '→ BYTE interface: only ' + dirty + ' cacheline(s) dirty (r = ' + r.toFixed(3) + ' < 0.125). Persist ' + bytes + ' B instead of a 4 KB block — ~' + (4096/bytes).toFixed(1) + '× less data.';
+    } else {
+      verd.className = 'pverdict block';
+      verd.textContent = '→ BLOCK interface: ' + dirty + ' cachelines dirty (r = ' + r.toFixed(3) + ' ≥ 0.125). A single 4 KB writeback now beats ' + dirty + ' separate byte persists.';
+    }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(4);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+</body>
+</html>
