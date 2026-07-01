@@ -574,8 +574,8 @@ pre.sketch .kw{color:#e0a12b} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         </svg></div>
         <span class="term">Finding data in the log · Skip list</span>
         <h3>A book's index, in three depths</h3>
-        <p>To find a fact you don't read the whole book — you check the index, which points to a chapter, then a section, then a page. ByteFS indexes its byte-write log the same way: layer 1 picks a 16 MB partition (just divide the address), layer 2 a per-page skip-list entry, layer 3 an ordered chunk list within the page. A lookup in a full 256 MB log takes ~89 ns — trivial next to microsecond flash.</p>
-        <div class="breaks"><b>Where it breaks:</b> a book index is static; this one is rebuilt constantly as writes append and the cleaner reclaims space, and it costs ~21 MB of SSD DRAM. The "three depths" also aren't just for speed — they bound each skip list's size so no single structure grows unwieldy.</div>
+        <p>To find a fact you don't read the whole book — the index sends you to a shelf, then you flip to a page, then scan its lines. ByteFS locates a byte in its 256 MB write-log the same way, in three hops: <b>layer 1</b> divides the address to pick 1 of ~16 partitions (no search — just walking to the right shelf); <b>layer 2</b> is a <b>skip list</b> keyed by page, whose stacked "express-lane" pointers let you <b>skip over</b> the pages you don't want and land on yours in ~log(n) hops; <b>layer 3</b> is a short sorted list of the writes inside that page. ~89 ns total — trivial next to microsecond flash.</p>
+        <div class="breaks"><b>The word "skip" trips people up:</b> it's the name of the <i>data structure</i> — a skip list jumps over sorted entries during a search; nothing is dropped from storage. And unlike a book's index this one is rebuilt constantly as writes append and the cleaner reclaims space (~21 MB of SSD DRAM); the three depths also bound each skip list's size so no single structure grows unwieldy.</div>
       </div>
 
       <div class="analogy reveal">
@@ -671,7 +671,7 @@ x = <span class="hl">read</span>(mapped_addr, 0 bytes)     <span class="cm"># 2)
 
     <div class="prose">
       <h3>3 · The in-SSD log-structured memory (§4.3)</h3>
-      <p>The crux. Flash is page-granular; byte writes are not. ByteFS reorganizes the SSD's DRAM into a <span class="mem-chip chip-log">log-structured write buffer</span> at cacheline granularity. Every byte write is <b>appended</b> as a 64 B-aligned entry to a 256 MB circular log (head/tail pointers) — so it never touches flash on the critical path. A three-layer skip list indexes the log for fast lookup; a background cleaner coalesces and flushes.</p>
+      <p>The crux. Flash is page-granular; byte writes are not. ByteFS reorganizes the SSD's DRAM into a <span class="mem-chip chip-log">log-structured write buffer</span> at cacheline granularity. Every byte write is <b>appended</b> as a 64 B-aligned entry to a 256 MB circular log (head/tail pointers) — so it never touches flash on the critical path. That log holds the <b>data</b>; a separate <b>three-layer index</b> (~21 MB) holds only <b>pointers</b> that locate the current bytes for an address without scanning all 256 MB. A background cleaner coalesces the log into flash pages.</p>
     </div>
 
     <figure class="viz reveal">
@@ -717,8 +717,20 @@ x = <span class="hl">read</span>(mapped_addr, 0 bytes)     <span class="cm"># 2)
           <text x="200" y="231" fill="#6e4a09">… append at tail →</text>
         </g>
       </svg>
-      <figcaption><b>Lookup walks three depths:</b> divide the logical page address by 16 MB to pick a partition's skip list (layer 1); find the page's entry by LPA (layer 2); binary-walk the chunk list ordered by in-page block offset (layer 3). Each chunk entry is just <b>9 bytes</b> (block offset 1 B + log offset 4 B + length 4 B) and points into the 64 B-entry log. A full 256 MB log resolves in ~89 ns; the index costs ~21 MB of SSD DRAM. (Paper, Fig. 3 + §4.3)</figcaption>
+      <figcaption><b>Lookup walks three depths:</b> divide the address to pick a partition — arithmetic, no search (layer 1); <b>skip-list</b> search by page, hopping over the pages you don't want (layer 2); binary-walk that page's chunk list, sorted by in-page block offset (layer 3). Each chunk entry is just <b>9 bytes</b> of <i>pointer</i> — block offset 1 B + log offset 4 B + length 4 B — into the 64 B-entry log; the log itself holds the data. A full 256 MB log resolves in ~89 ns; the index costs ~21 MB of SSD DRAM. (Paper, Fig. 3 + §4.3)</figcaption>
     </figure>
+
+    <div class="prose">
+      <p><b>The log holds data; the index holds only the map.</b> A <b>log entry</b> is the real written bytes (≤64 B) plus its address tag — a read ultimately lands here. A <b>chunk (index) entry</b> is just 9 B of pointer — <span style="font-family:var(--mono);font-size:.88em">block-offset (1 B) · log-offset (4 B) · length (4 B)</span> — saying "the 64 B block at offset N lives <i>there</i> in the log, this long." Index = table of contents; log = the book.</p>
+      <p><b>Worked read — the app reads 8 bytes at page 1, byte 4:</b></p>
+      <ol>
+        <li><b>Layer 1:</b> divide the address → partition <b>P0</b>. Pure arithmetic, no search.</li>
+        <li><b>Layer 2:</b> skip-list search keyed by page → <b>skip past</b> pages 0, 12, … and land on page 1's node. This is the <i>only</i> "skipping" — hopping over sorted entries, not dropping data.</li>
+        <li><b>Layer 3:</b> page 1's chunk list is sorted by in-page offset; binary-walk to the chunk covering byte 4 → <span style="font-family:var(--mono);font-size:.88em">{blkoff, logoff = 0x3A00, len = 8}</span>.</li>
+        <li><b>Follow</b> <span style="font-family:var(--mono);font-size:.88em">logoff</span> into the 256 MB log and read the 8 bytes. ≈ 89 ns total.</li>
+      </ol>
+      <p>Overwrite that block later? A fresh entry is appended at the log's tail and the chunk's log-offset is repointed to it — the index always names the <i>current</i> location; the background cleaner later garbage-collects the stale bytes.</p>
+    </div>
 
     <div class="prose">
       <p>The <b>cleaner</b> (Algorithm 1 in the paper) runs in the background once log utilization passes 85%. It walks the layer-2 skip lists, and for each modified page: allocates a write-buffer slot, loads the old flash page only if the update is partial, merges the latest committed chunk versions, and writes coalesced 4 KB pages out with channel-level parallelism. <b>Double buffering</b> serves new writes in a fresh log region while the old one drains, so cleaning never blocks foreground I/O.</p>
