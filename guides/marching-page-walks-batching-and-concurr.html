@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<!-- Marching Page Walks (MPW) — field guide. Lee, Ko, Yoon, Jeong, Oh, Ro (Yonsei/Ewha/Korea Univ.), HPCA 2025.
+     Built in the house "friendly field guide" format (see study-site/guides/ucp.html). <style> and <script> reused
+     essentially verbatim from ucp.html; only the :root theme colors are re-themed for this paper's semantics.
+     Source ground truth: the paper PDF (Marching_Page_Walks..._HPCA2025). Semantic colors:
+     teal  = batching / concurrent walks (the win)   · honey = queueing latency / contention (the problem)
+     indigo = MPW machinery (walker, WST, bloom filter, PW queue) · terracotta = baseline single-request walker. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Walking Many Page Tables at Once — Marching Page Walks, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;   /* honey = queueing latency / contention (the problem) */
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;      /* teal  = batching / concurrent walks (the win)       */
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;    /* indigo = MPW machinery (walker/WST/bloom/PW queue)  */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = baseline single-request walker         */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--optane)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HPCA 2025 · A Field Guide</span>
+    <h1>One page walker, walking <span class="swash">many tables</span> at once</h1>
+    <p class="lede">Thousands of GPU threads miss the TLB in bursts, but each page-table walker serves one walk at a time. The queue explodes. This is the plain-English story of <strong>Marching Page Walks</strong> — a small change that lets each walker batch and fire many walks together.</p>
+    <div class="hero-meta">
+      <span>📄 "Marching Page Walks" · Lee, Ko, Yoon, Jeong, Oh, Ro (Yonsei/Ewha/Korea Univ.)</span>
+      <span>🎓 GPU + virtual-memory basics assumed — the primers cover them</span>
+      <span>⏱ ~35 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🚶‍♂️🚶‍♀️🚶</div>
+      <p>Let each walker <span class="ro">BATCH pending walks to the same page-table level and issue all their loads at once</span> — instead of <span class="wo">draining the queue one walk at a time</span>.<br><em style="font-size:.9rem">Widen the throughput of the walkers you already have, don't add more.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Ten ideas the paper assumes you know</h2>
+      <p class="sub">Each card clears up one concept MPW builds on. They're collapsed — tap any open. Read in order the first time, or jump to whatever looks unfamiliar. If you already live in the Linux memory stack, most of this maps directly onto what you know from the CPU side.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> batching / concurrent walks (the win)</span>
+      <span><i style="background:var(--honey-deep)"></i> queueing latency / contention (the problem)</span>
+      <span><i style="background:var(--ltram)"></i> MPW machinery</span>
+      <span><i style="background:var(--optane)"></i> baseline single-request walker</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Virtual memory &amp; the page table walk<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Programs use <b>virtual addresses</b>; hardware must translate each to a <b>physical address</b> before touching memory. The map lives in a <b>page table</b>. On a translation miss, the hardware performs a <b>page table walk (PTW)</b>: it chases pointers down the table until it finds the leaf entry that holds the physical frame.</p>
+          <p>This is exactly the mechanism you know from x86-64 and the Linux MM — just running on a GPU, under vastly more thread pressure.</p>
+          <div class="ready"><b>Now you're ready:</b> the whole paper is about making page table walks faster on GPUs — not by caching more, but by servicing many walks in parallel.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>A multi-level (radix) page table: L4→L3→L2→L1<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The paper assumes a <b>4-level radix tree</b>, naming the levels <b>L4 (root)</b>, L3, L2, and <b>L1 (leaf)</b>. Each page-table page holds <b>512 entries of 8 bytes = 4 KB</b>. A walk starts at L4 and issues one memory access per level, following pointers down until the L1 leaf gives the final 4 KB-page mapping.</p>
+          <p>(Note the naming is <i>inverted</i> from x86's PML4→…→PTE convention: here L1 is the leaf, L4 is the root. Same tree, opposite labels.)</p>
+          <div class="ready"><b>Now you're ready:</b> "walking L1" means fetching the leaf PTE — and the paper finds that <b>~89–92%</b> of all walk work is exactly these L1 leaf accesses.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>TLBs and page walk caches (PWCs)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>TLB</b> caches finished translations so most accesses skip the walk entirely. GPUs use a two-level TLB: a private <b>L1 TLB</b> per streaming multiprocessor (SM) and a shared <b>L2 TLB</b>. When the last-level TLB misses, a walk is dispatched.</p>
+          <p>To speed the walk itself, GPUs add <b>page walk caches (PWCs)</b> that store partial translations from the upper levels (L4, L3, L2). In this paper's setup the upper-level PWCs almost always hit, so upper levels are cheap — the cost is dominated by L1 leaf walks that PWCs cannot cover.</p>
+          <div class="ready"><b>Now you're ready:</b> MPW leaves TLBs and PWCs untouched; it only changes the <i>walkers</i> that handle the leftover L1-heavy walk traffic.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Why GPUs pressure the walkers so hard<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A GPU runs <b>thousands of threads</b> concurrently. When they miss the TLB — often in a burst — they generate a flood of walk requests. But each hardware walker is a finite-state machine that handles <b>exactly one walk at a time</b>. The mismatch is the entire problem.</p>
+          <p>The paper measures it: contention raises average PTW latency <b>3.0×</b> (almost all of it queueing delay) and drags GPU performance down by <b>1.6×</b> versus a walker-unconstrained ideal.</p>
+          <div class="ready"><b>Now you're ready:</b> the bottleneck isn't the walk itself — it's the <i>waiting in line</i> for a free walker. That queue is what MPW drains.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>The page walk subsystem: PW queue + walkers + PWCs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Requests land in a <b>page walk queue (PW queue)</b>; a pool of <b>walkers</b> pull from it. The baseline here uses <b>32 concurrent walkers</b> and a <b>256-entry PW queue</b>, with requests distributed round-robin into per-walker queues.</p>
+          <p>To track outstanding memory requests, the subsystem needs a <b>CAM</b> (content-addressable memory) that it searches associatively — and CAMs get expensive fast as you add walkers or ports.</p>
+          <div class="ready"><b>Now you're ready:</b> MPW's changes live entirely inside this subsystem — it extends the PW queue, adds a small status table, and adds a bloom filter per walker.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Why not just add more walkers?<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The obvious fix. The paper shows peak performance needs about <b>192 walkers</b> (6× the baseline's 32) — and up to <b>512</b> on a big V100-class chip. But every walker needs associative CAM lookups when it starts and finishes a walk.</p>
+          <p>Scaling to 192 walkers demands an <b>18-port CAM</b>; going 4→18 ports blows CAM area up <b>9.1×</b> (≈3.9% of a whole TU106 die). Adding walkers trades the queueing problem for an area/energy problem.</p>
+          <div class="ready"><b>Now you're ready:</b> MPW's goal is to get 192-walkers-worth of throughput out of just 32 walkers, without the CAM explosion.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>The prior art: neighborhood-aware coalescing<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An earlier scheme, <b>neighborhood-aware translation</b>, coalesces walk requests that fall within a <b>single memory access</b>. A 32 B cache sector holds four 8-byte PTEs, so it can merge up to <b>4</b> walks — one memory read serves all four.</p>
+          <p>That helps (≈1.52× walker throughput, +16.6% performance) but is capped by the sector: it can only merge walks whose PTEs are physically adjacent. GPU threads scatter far wider than that.</p>
+          <div class="ready"><b>Now you're ready:</b> MPW's key move is batching <i>beyond</i> a single memory access — merging walks to any page-table page at the same level, not just adjacent ones.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Batch size = concurrency = throughput<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>If a walker can issue several independent memory loads at once (non-blocking) instead of one, it services several walks per "cycle" of work. The <b>batch size</b> — how many walks it groups together — directly sets the effective walker throughput.</p>
+          <p>The paper models a "batched PTW" walker that handles up to <b>8</b> requests at a time, and shows the achievable batch size grows as you widen the <i>scope</i> of what may be batched together.</p>
+          <div class="ready"><b>Now you're ready:</b> the question the paper answers is <i>which</i> walks should be allowed into a batch — and the answer is "any at the same level," which needs the widest scope.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>A CAM, and why associative search is costly<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>CAM</b> answers "which entry holds this value?" by comparing against every entry in parallel. It's fast but power-hungry, and both area and energy grow super-linearly with size and port count.</p>
+          <p>MPW's naïve version would need CAM searches over a big monolithic PW queue every time it batches a walk, and over every walker's records every time a PTE returns. That energy cost is what the bloom filters and partitioned queues exist to tame.</p>
+          <div class="ready"><b>Now you're ready:</b> half of MPW's design is about <i>shrinking</i> those associative searches, not just enabling batching.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">10</span>Bloom filters — cheap "definitely-not" tests<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>bloom filter</b> is a tiny hash-indexed structure that answers "have I seen this?" It can produce <b>false positives</b> (says maybe-yes when the answer is no) but never false negatives. A <b>counter-based</b> bloom filter also supports removals by incrementing/decrementing counters.</p>
+          <p>MPW puts one 128-entry, 3-bit-counter bloom filter per walker so that when a PTE returns, it can skip the CAM search on walkers that <i>definitely</i> didn't request it — cutting associative searches from 32 down to ~1.84.</p>
+          <div class="ready"><b>Now you're ready:</b> the bloom filter is the energy-saving twist that makes wide batching affordable in hardware.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>MPW in a nutshell</h2>
+      <p class="sub">The bottleneck, the batching insight that fixes it, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>GPUs run thousands of threads that miss the TLB in bursts, but each page-table walker is a state machine that services <span class="mem-chip chip-lru">one walk at a time</span>. Requests pile up in the page walk queue. The paper measures the damage: contention inflates page-walk latency by <b>3.0×</b> — almost entirely <span class="mem-chip chip-sat">queueing delay</span> — and cuts GPU performance by <b>1.6×</b>. You could reach peak throughput by scaling to ~<b>192 walkers</b>, but the associative CAM hardware that tracks in-flight walks would balloon (an 18-port CAM, ≈9.1× the area), so brute force is out.</p>
+      <p>The fix, <strong>Marching Page Walks (MPW)</strong>, keeps 32 walkers but lets each one <span class="mem-chip chip-hi">batch multiple pending walks and fire all their memory loads concurrently</span>. The critical design choice is the <b>batching scope</b>: the prior scheme (neighborhood-aware) could only merge walks inside one 32 B memory access — at most 4 adjacent PTEs. MPW instead batches any walks heading to the <b>same page-table level</b>, regardless of how far apart their pages are, because GPU workloads scatter accesses across tens to hundreds of MB. Widening the scope from "single page-table page" to "any page-table page" lifts walker throughput from <b>3.10×</b> to <b>3.90×</b>.</p>
+      <p>To keep the extra associative searches cheap, MPW <b>partitions</b> the monolithic PW queue (one small split queue per walker) so batching scans only a few entries, and adds a <b>counter-based bloom filter</b> per walker so returning PTEs skip CAM searches on walkers that didn't request them — dropping average searches from 32 to <b>1.84</b>. A small <b>walker status table (WST)</b> tracks which walks each walker is handling.</p>
+      <p><strong>The payoff:</strong> MPW reduces the queueing latency of page walks by <b>86.7%</b> and improves GPU performance by <b>55.6%</b> over the baseline — landing within <b>1.0%</b> of an idealized GPU with infinite walkers — for just <b>3.02 KB</b> of extra storage, <b>0.11%</b> of a TU106 die, and <b>0.004%</b> of its power budget.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>The bottleneck is <b>queueing</b> for a free walker, not the walk itself: contention → 3.0× PTW latency, 1.6× slowdown.</li>
+        <li>Adding walkers works (peak ≈ 192) but needs a huge multi-ported CAM (18 ports, ~9.1× area) — impractical.</li>
+        <li>MPW keeps 32 walkers but lets each <b>batch</b> up to 8 walks and issue their loads <b>concurrently</b>.</li>
+        <li>Batching scope is everything: <b>any page-table page at the same level</b> beats single/adjacent scopes (3.90× vs 3.10×/3.37×).</li>
+        <li>Wins come from <b>L1 leaf walks</b> (~89–92% of all walks); upper levels are covered by PWCs.</li>
+        <li><b>Partitioned PW queues</b> + <b>per-walker bloom filters</b> shrink associative searches (32 → 1.84) for energy efficiency.</li>
+        <li>Result: −86.7% queueing latency, +55.6% performance, within 1.0% of infinite-walker ideal, for 3.02 KB / 0.11% area.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE: queue draining, one-at-a-time vs batched -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">a burst of walks · one-at-a-time vs batch-and-march</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> baseline — 1 walk per walker</span>
+        <span><i style="background:var(--dram)"></i> MPW — batch same-level walks, fire together</span>
+        <span><i style="background:var(--honey-deep)"></i> requests still waiting in the queue</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 380" role="img" aria-label="Baseline drains the page walk queue one walk at a time while MPW batches same-level walks and issues loads concurrently">
+        <!-- BASELINE row -->
+        <text x="20" y="34" font-family="Fraunces" font-size="15" font-weight="600" fill="#9a3a22">Baseline: 1 walker, 1 walk — the rest wait</text>
+        <!-- queue of 8 waiting requests -->
+        <g font-family="JetBrains Mono" font-size="10">
+          <rect x="20" y="46" width="34" height="30" rx="5" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.6"/><text x="37" y="65" text-anchor="middle" fill="#1f5b51">L1</text>
+          <rect x="58" y="46" width="34" height="30" rx="5" fill="#FBEACB" stroke="#C27D14" stroke-width="1.4"/><text x="75" y="65" text-anchor="middle" fill="#6e4a09">L1</text>
+          <rect x="96" y="46" width="34" height="30" rx="5" fill="#FBEACB" stroke="#C27D14" stroke-width="1.4"/><text x="113" y="65" text-anchor="middle" fill="#6e4a09">L1</text>
+          <rect x="134" y="46" width="34" height="30" rx="5" fill="#FBEACB" stroke="#C27D14" stroke-width="1.4"/><text x="151" y="65" text-anchor="middle" fill="#6e4a09">L1</text>
+          <rect x="172" y="46" width="34" height="30" rx="5" fill="#FBEACB" stroke="#C27D14" stroke-width="1.4"/><text x="189" y="65" text-anchor="middle" fill="#6e4a09">L2</text>
+          <rect x="210" y="46" width="34" height="30" rx="5" fill="#FBEACB" stroke="#C27D14" stroke-width="1.4"/><text x="227" y="65" text-anchor="middle" fill="#6e4a09">L1</text>
+          <rect x="248" y="46" width="34" height="30" rx="5" fill="#FBEACB" stroke="#C27D14" stroke-width="1.4"/><text x="265" y="65" text-anchor="middle" fill="#6e4a09">L1</text>
+          <rect x="286" y="46" width="34" height="30" rx="5" fill="#FBEACB" stroke="#C27D14" stroke-width="1.4"/><text x="303" y="65" text-anchor="middle" fill="#6e4a09">L1</text>
+        </g>
+        <text x="340" y="65" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">7 stuck waiting →</text>
+        <!-- single walker + single load -->
+        <rect x="560" y="42" width="90" height="38" rx="9" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/><text x="605" y="66" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">walker</text>
+        <line x1="650" y1="61" x2="700" y2="61" stroke="#C0563B" stroke-width="2" marker-end="url(#arrO)"/>
+        <rect x="700" y="46" width="46" height="30" rx="6" fill="#fff" stroke="#C0563B" stroke-width="1.6"/><text x="723" y="65" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">1 load</text>
+
+        <line x1="20" y1="104" x2="740" y2="104" stroke="#E7DBC6"/>
+
+        <!-- MPW row -->
+        <text x="20" y="138" font-family="Fraunces" font-size="15" font-weight="600" fill="#16463e">MPW: scan the split queue, batch the L1 walks, fire all loads at once</text>
+        <g font-family="JetBrains Mono" font-size="10">
+          <rect x="20" y="150" width="34" height="30" rx="5" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.8"/><text x="37" y="169" text-anchor="middle" fill="#1f5b51">L1</text>
+          <rect x="58" y="150" width="34" height="30" rx="5" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.8"/><text x="75" y="169" text-anchor="middle" fill="#1f5b51">L1</text>
+          <rect x="96" y="150" width="34" height="30" rx="5" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.8"/><text x="113" y="169" text-anchor="middle" fill="#1f5b51">L1</text>
+          <rect x="134" y="150" width="34" height="30" rx="5" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.8"/><text x="151" y="169" text-anchor="middle" fill="#1f5b51">L1</text>
+          <rect x="172" y="150" width="34" height="30" rx="5" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.8"/><text x="189" y="169" text-anchor="middle" fill="#1f5b51">L1</text>
+          <rect x="210" y="150" width="34" height="30" rx="5" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.8"/><text x="227" y="169" text-anchor="middle" fill="#1f5b51">L1</text>
+          <rect x="248" y="150" width="34" height="30" rx="5" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.8"/><text x="265" y="169" text-anchor="middle" fill="#1f5b51">L1</text>
+          <rect x="286" y="150" width="34" height="30" rx="5" fill="#FBEACB" stroke="#C27D14" stroke-width="1.4"/><text x="303" y="169" text-anchor="middle" fill="#6e4a09">L2</text>
+        </g>
+        <path d="M20 190 h300" fill="none" stroke="#2C8C7C" stroke-width="1.4" stroke-dasharray="5 4"/>
+        <text x="24" y="204" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">batch: 7 L1 walks to any pages, same level</text>
+        <rect x="560" y="146" width="90" height="38" rx="9" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/><text x="605" y="170" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">walker</text>
+        <g stroke="#2C8C7C" stroke-width="2">
+          <line x1="650" y1="150" x2="700" y2="140" marker-end="url(#arrT)"/>
+          <line x1="650" y1="158" x2="700" y2="156" marker-end="url(#arrT)"/>
+          <line x1="650" y1="166" x2="700" y2="172" marker-end="url(#arrT)"/>
+          <line x1="650" y1="174" x2="700" y2="188" marker-end="url(#arrT)"/>
+        </g>
+        <rect x="700" y="132" width="46" height="66" rx="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.6"/><text x="723" y="160" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">many</text><text x="723" y="174" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">loads</text>
+
+        <!-- outcome strip -->
+        <text x="20" y="252" font-family="JetBrains Mono" font-size="11" fill="#6E6456">Queueing latency of page walks</text>
+        <rect x="20" y="262" width="620" height="26" rx="6" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.4"/>
+        <text x="330" y="279" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">baseline queueing delay (the tall striped bars in Fig. 15)</text>
+        <rect x="20" y="296" width="82" height="26" rx="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.6"/>
+        <text x="61" y="313" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">MPW</text>
+        <text x="112" y="313" font-family="JetBrains Mono" font-size="11" fill="#16463e">−86.7% queueing latency  →  +55.6% GPU performance</text>
+
+        <text x="20" y="352" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">Same 32 walkers · no change to TLBs or memory hierarchy · +3.02 KB storage (0.11% of a TU106 die)</text>
+
+        <defs>
+          <marker id="arrO" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="#C0563B"/></marker>
+          <marker id="arrT" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="#2C8C7C"/></marker>
+        </defs>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> a burst of walks arrives (mostly to L1 leaves). The baseline walker drains them one memory load at a time, so most sit in the queue — that waiting is the 3.0× latency. MPW scans its split queue, batches every walk heading to the same level, and issues all their loads concurrently, draining the burst in one shot. The queueing latency falls 86.7% and GPU performance rises 55.6%. (Paper Figs. 1, 6, 10, 13, 15)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → insight → batch → make it cheap → payoff</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">1 walk per walker; 32 walkers can't drain the burst → 3.0× queueing latency, 1.6× slowdown</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Insight</div><div class="nd">Batch walks to <b>any</b> same-level page (not just one memory access) → 3.90× throughput</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Batch (WST)</div><div class="nd">Walker scans its split queue, groups same-PL walks, fires their loads concurrently</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Cut CAM cost</div><div class="nd">Partition the PW queue per walker → smaller associative searches when batching</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Bloom filter</div><div class="nd">Per-walker filter skips walkers that didn't request a returning PTE (32 → 1.84 searches)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Payoff</div><div class="nd">−86.7% queueing, +55.6% perf, within 1.0% of infinite walkers, 3.02 KB / 0.11% area</div></div>
+      </div>
+    </figure>
+
+    <div class="callout why"><span class="ic">🔌</span><div><b>Why this should interest a tiering / CXL person:</b> MPW is a queueing-theory fix — it attacks the <i>service rate</i> of the translation path, not its cache hit rate. That framing transfers directly to CPU-side page-walk pressure under CXL-attached and tiered memory, where fragmentation and huge working sets similarly flood the walker. See the tiering callouts throughout "How It Works."</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Seven everyday pictures</div>
+      <h2>How to think about MPW</h2>
+      <p class="sub">Each picture stands alone — read them in any order. Every card ends with an honest note about where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="34" width="18" height="30" rx="3" fill="#F7E1D8" stroke="#C0563B" stroke-width="2.2"/>
+          <text x="25" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">1</text>
+          <rect x="52" y="30" width="72" height="40" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2.2"/>
+          <line x1="70" y1="30" x2="70" y2="70" stroke="#2C8C7C" stroke-width="1.4"/><line x1="88" y1="30" x2="88" y2="70" stroke="#2C8C7C" stroke-width="1.4"/><line x1="106" y1="30" x2="106" y2="70" stroke="#2C8C7C" stroke-width="1.4"/>
+          <text x="88" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">many</text>
+          <path d="M40 20 v-6 M60 20 v-6 M80 20 v-6 M100 20 v-6" stroke="#C27D14" stroke-width="2" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">The core idea · Batching</span>
+        <h3>A ferry, not a rowboat</h3>
+        <p>A crowd waits to cross a river. A rowboat carries one person per trip — everyone else queues on the bank (that's the baseline walker draining its queue one walk at a time). A <b>ferry</b> loads many passengers and crosses once. MPW turns each walker into a ferry: it scans the queue, gathers every walk headed the same way (same page-table level), and issues all their memory loads in one crossing.</p>
+        <div class="breaks"><b>Where it misleads:</b> a ferry departs on a schedule; an MPW walker batches <i>opportunistically</i> — only whatever same-level walks happen to be waiting when it becomes free.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="24" width="46" height="48" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2.2"/>
+          <text x="43" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">near</text>
+          <rect x="76" y="24" width="46" height="48" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2.2"/>
+          <text x="99" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">any</text>
+          <circle cx="30" cy="16" r="2.5" fill="#C0563B"/><circle cx="38" cy="16" r="2.5" fill="#C0563B"/>
+          <circle cx="82" cy="16" r="2.5" fill="#2C8C7C"/><circle cx="99" cy="16" r="2.5" fill="#2C8C7C"/><circle cx="116" cy="16" r="2.5" fill="#2C8C7C"/>
+        </svg></div>
+        <span class="term">The key move · Batching scope</span>
+        <h3>Carpool: neighbors vs anyone</h3>
+        <p>The prior scheme carpools only <b>immediate neighbors</b> — riders whose PTEs sit in the same 32 B cache sector (at most 4). But GPU threads live all over town: their target pages scatter across tens to hundreds of MB. MPW's carpool takes <b>anyone going to the same level</b>, no matter where their page lives — so it fills far more seats and lifts throughput from 3.10× to 3.90×.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real carpool must detour to each rider's house; MPW pays no such penalty because all batched loads are independent and issued in parallel to the memory system.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="20" width="104" height="56" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="1.6" stroke-dasharray="4 3"/>
+          <rect x="24" y="28" width="46" height="40" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <rect x="74" y="28" width="42" height="40" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <text x="47" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">W0</text>
+          <text x="95" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">W1</text>
+        </svg></div>
+        <span class="term">Cutting cost · Partitioned queue</span>
+        <h3>Splitting one big mailroom</h3>
+        <p>Searching one giant mailroom for every parcel is slow and power-hungry (a big monolithic CAM search). MPW gives each walker its <b>own small mailroom</b> — a partitioned slice of the PW queue. Now a walker scans only its own few entries to find batchable walks, so each associative search is tiny.</p>
+        <div class="breaks"><b>Where it breaks:</b> splitting means a walker can only batch walks in its own slice — it can't grab a batchable walk sitting in a neighbor's queue, trading a little batching potential for much cheaper search.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="20" rx="10" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <circle cx="38" cy="40" r="5" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.6"/>
+          <circle cx="70" cy="40" r="5" fill="#fff" stroke="#9A8E7C" stroke-width="1.6"/>
+          <circle cx="102" cy="40" r="5" fill="#fff" stroke="#9A8E7C" stroke-width="1.6"/>
+          <path d="M30 66 h80" stroke="#C0563B" stroke-width="2" stroke-linecap="round"/>
+          <text x="70" y="82" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">skip the empty ones</text>
+        </svg></div>
+        <span class="term">Cutting cost · Bloom filter</span>
+        <h3>A guest list at the door</h3>
+        <p>When a parcel (a returned PTE) arrives, someone must find which walker ordered it — checking every walker's mailroom is wasteful. Each walker keeps a <b>guest list</b> (a bloom filter) of what it ordered. The doorman checks the lists first and only searches the mailrooms whose list says "maybe mine." That drops associative searches from 32 to just <b>1.84</b>.</p>
+        <div class="breaks"><b>Where it breaks:</b> a bloom filter can say "maybe" when the answer is no (a false positive, ~2.6% here) — costing an extra wasted search — but it never misses a real match, so correctness is safe.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="60" width="20" height="16" rx="2" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <rect x="46" y="48" width="20" height="28" rx="2" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <rect x="72" y="34" width="20" height="42" rx="2" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <rect x="98" y="26" width="20" height="50" rx="2" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="30" y="88" text-anchor="middle" font-family="monospace" font-size="7" fill="#9a3a22">32</text>
+          <text x="108" y="88" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">192</text>
+        </svg></div>
+        <span class="term">Why not brute force · Scaling walkers</span>
+        <h3>Hiring more toll booths</h3>
+        <p>Traffic jams at the toll plaza? Just build more booths (more walkers). Peak flow needs about <b>192</b> booths — but every booth needs a live wire into one shared control board (the CAM), and wiring 192 booths means an 18-lane board whose cost explodes <b>9.1×</b>. MPW instead makes each of the 32 existing booths process a whole busload at once.</p>
+        <div class="breaks"><b>Where it breaks:</b> toll booths are independent; walkers share the CAM and PW queue, which is exactly why simply "adding booths" is so much costlier than it looks.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 76 h100" stroke="#9A8E7C" stroke-width="1.6"/>
+          <circle cx="30" cy="30" r="3" fill="#2C8C7C"/><circle cx="34" cy="36" r="3" fill="#2C8C7C"/><circle cx="40" cy="30" r="3" fill="#2C8C7C"/>
+          <circle cx="60" cy="24" r="3" fill="#C27D14"/><circle cx="88" cy="52" r="3" fill="#C27D14"/><circle cx="104" cy="34" r="3" fill="#C27D14"/><circle cx="72" cy="62" r="3" fill="#C27D14"/><circle cx="112" cy="60" r="3" fill="#C27D14"/>
+          <text x="34" y="18" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">ST</text>
+          <text x="96" y="18" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e4a09">BH</text>
+        </svg></div>
+        <span class="term">Why it works · Scattered accesses</span>
+        <h3>Errands clustered vs all over town</h3>
+        <p>Some workloads (ST) run errands close together — a tight cluster of pages. Others (BH) scatter errands across the whole city (a 128 MB range). If your carpool only accepts near-neighbors, the scattered runner gets no help. Because MPW batches walks to <b>any</b> same-level page, it's precisely the scattered, irregular workloads — the ones that pressure walkers most — that benefit the most.</p>
+        <div class="breaks"><b>Where it breaks:</b> "scattered" here means scattered <i>page indices</i>, but all the batched walks still touch the <i>same page-table level</i> — the batch's common thread is level, not locality.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="18" width="80" height="14" rx="2" fill="#fff" stroke="#332C24" stroke-width="1.8"/>
+          <rect x="38" y="34" width="64" height="14" rx="2" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.8"/>
+          <rect x="46" y="50" width="48" height="14" rx="2" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.8"/>
+          <rect x="54" y="66" width="32" height="14" rx="2" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="70" y="61" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">L2</text>
+          <text x="70" y="77" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">L1 leaf</text>
+        </svg></div>
+        <span class="term">Where the cost lives · Leaf-heavy walks</span>
+        <h3>The last mile is the whole trip</h3>
+        <p>A delivery's early legs (airport to depot) are fast and pre-arranged — that's the upper page-table levels, which the PWCs almost always hit. The cost is the <b>last mile</b> to each doorstep: the L1 leaf lookups, which are <b>89–92%</b> of all walk work and can't be cached in advance. MPW pours its batching effort exactly there, into concurrent L1 leaf walks.</p>
+        <div class="breaks"><b>Where it breaks:</b> the last mile isn't <i>all</i> of it — a small slice (≈6.5–11%) still hits L2, and MPW batches those too, just with less payoff.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key structures rebuilt as visuals you can read at a glance. Tiering/CXL connections are flagged in green callouts.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem — one walk per walker, thousands of threads</h3>
+      <p>On a GPU the translation path looks like the CPU's: L1 TLB per SM, a shared L2 TLB, then a <span class="mem-chip chip-ucp">page walk subsystem</span> of a PW queue plus hardware walkers. The mismatch is quantitative: thousands of threads miss the TLB in bursts, but each <span class="mem-chip chip-lru">walker services one walk at a time</span>. Requests back up in the queue.</p>
+      <p>The paper isolates the cost by sweeping the walker count. With a 256-entry PW queue, 256 walkers eliminate queueing entirely, so any latency above that is pure waiting. The baseline's <b>32 walkers see 3.0× higher PTW latency</b> — the excess is queueing delay — and that translates to a <b>1.6× GPU slowdown</b> versus the walker-unconstrained ideal (192 walkers reach peak). A real-hardware check on an RTX 3090 with 4 KB vs 2 MB pages shows the gap growing <i>super-linearly</i> with working-set size, confirming that a real GPU can only service a limited number of concurrent walks.</p>
+      <div class="callout note"><span class="ic">📉</span><div><b>Concretely:</b> the applications that pressure walkers hardest (<span class="mem-chip chip-hi">DR</span>, <span class="mem-chip chip-hi">BIC</span>, BF, GUP) each need ~192 walkers to reach peak — 6× the baseline. That 6× gap is the throughput MPW has to recover from just 32 walkers.</div></div>
+      <div class="callout why"><span class="ic">🔌</span><div><b>Tiering link:</b> this is a service-rate bottleneck, not a hit-rate one. In tiered/CXL memory, walker pressure rises the same way — smaller effective pages, fragmentation, and multi-TB footprints mean more TLB misses and thus more walks queued. MPW's lesson is that widening translation <i>throughput</i> can matter as much as improving TLB reach.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Why more walkers isn't the answer</h3>
+      <p>Adding walkers works on paper — but each walker performs associative <span class="mem-chip chip-ucp">CAM searches</span> both when it starts and finishes a walk, to track in-flight memory requests. Scaling the CAM to 192 walkers means either serializing on a single port (a synthesized single-ported CAM costs <b>10 cycles</b> at 1,365 MHz, re-inflating the queueing delay) or adding ports.</p>
+      <table class="tbl">
+        <thead><tr><th>Design lever</th><th>What it buys</th><th>What it costs</th></tr></thead>
+        <tbody>
+          <tr><td><b>32 walkers (baseline)</b></td><td>—</td><td>3.0× PTW latency, 1.6× slowdown</td></tr>
+          <tr><td><b>192 walkers</b></td><td>peak throughput (1.6× over baseline)</td><td>needs an 18-port CAM</td></tr>
+          <tr><td class="mono">CAM 4 → 18 ports</td><td>peak perf for 192 walkers</td><td class="mono">9.1× area ≈ 3.9% of TU106 die</td></tr>
+          <tr><td class="mono">512 walkers (V100, 80 SMs)</td><td>peak for larger GPU</td><td class="mono">20-port CAM ≈ 4.4% of 815 mm² die</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>The trap:</b> brute-forcing walker count converts a queueing problem into an area/energy problem. MPW's whole premise is to raise per-walker throughput instead — keep 32 walkers, make each do the work of many.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · The insight — batch beyond a single memory access</h3>
+      <p>The prior <span class="mem-chip chip-lru">neighborhood-aware</span> scheme merges only walks inside one memory access: a 32 B sector holds four 8-byte PTEs, so it coalesces up to 4, giving 1.52× throughput. But that's capped by physical adjacency. The paper models a "batched PTW" walker (up to 8 requests) and evaluates three <b>batching scopes</b>:</p>
+      <table class="tbl">
+        <thead><tr><th>Batching scope</th><th>What can be batched together</th><th>Walker throughput</th></tr></thead>
+        <tbody>
+          <tr><td><b>Single PT page</b></td><td>walks into the same 512-entry page-table page (up to 512 adjacent PTEs)</td><td class="mono">3.10×</td></tr>
+          <tr><td><b>Adjacent 4 PT pages</b></td><td>walks into any of 4 neighboring page-table pages (inter-page locality)</td><td class="mono">3.37×</td></tr>
+          <tr class="best"><td><b>Any PT page</b></td><td>any walks heading to the same page-table level, however far apart</td><td class="mono">3.90×</td></tr>
+        </tbody>
+      </table>
+      <p>Wider is strictly better because GPU workloads scatter accesses across tens to hundreds of MB. And the throughput comes overwhelmingly from <b>L1 leaf walks</b> — <b>89.0–92.5%</b> of all walks target L1 — because the upper-level PWCs almost always hit. (As batching widens, the L2 share of walks rises modestly, from 7.5% to 11.0%, since L1 pressure clears faster.)</p>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>The load-bearing observation:</b> the batch's common thread is the <i>page-table level</i>, not spatial locality. That decouples batching from address contiguity — the reason MPW beats neighborhood-aware coalescing on exactly the scattered, irregular workloads (like BH's 128 MB spread) that hurt walkers most.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · The mechanism — PW queue + WST</h3>
+      <p>MPW extends the page walk subsystem and nothing else — TLBs and the memory hierarchy are untouched. Two structures do the work:</p>
+      <ul>
+        <li><b>Extended PW queue.</b> Each entry keeps the target VPN and a valid bit (baseline), plus MPW's additions to carry a <i>partial translation</i>: a 37-bit <b>PFN</b> (next physical frame of the target page table), a 7-bit <b>offset</b> (cache-sector index), a 2-bit <b>PL</b> (target page-table level), and a 1-bit <b>W</b> flag (this walk is being serviced). Carrying partial state lets a walker serve a request one level at a time.</li>
+        <li><b>Walker Status Table (WST).</b> One entry per walker: a 2-bit <b>status</b> (idle / batching / issuing / waiting), a 2-bit <b>PL</b> (the level this walker is currently batching), and a <b>PTW-request bit vector</b> marking which queue entries this walker is handling.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The four-step batch, on real WST/PW-queue state</div>
+      <div class="viz-kicker">select → detect same level → issue loads concurrently → update</div>
+      <svg class="full" viewBox="0 0 720 300" role="img" aria-label="MPW batching steps: select a request, detect same-level requests, issue concurrent loads, update results">
+        <!-- step boxes -->
+        <g font-family="JetBrains Mono" font-size="10">
+          <!-- step 1 -->
+          <rect x="10" y="24" width="150" height="150" rx="10" fill="#fff" stroke="#E7DBC6"/>
+          <text x="20" y="44" font-family="Fraunces" font-size="12" font-weight="600" fill="#3a409a">1 · Select (FCFS)</text>
+          <rect x="20" y="54" width="130" height="20" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.6"/><text x="26" y="68" fill="#1f5b51">L1  W=1  ← picked</text>
+          <rect x="20" y="76" width="130" height="20" rx="3" fill="#fff" stroke="#D8C8AC"/><text x="26" y="90" fill="#6E6456">L1  W=0</text>
+          <rect x="20" y="98" width="130" height="20" rx="3" fill="#fff" stroke="#D8C8AC"/><text x="26" y="112" fill="#6E6456">L1  W=0</text>
+          <rect x="20" y="120" width="130" height="20" rx="3" fill="#fff" stroke="#D8C8AC"/><text x="26" y="134" fill="#6E6456">L2  W=0</text>
+          <text x="20" y="160" fill="#9A8E7C">WST: status 00→01,</text><text x="20" y="171" fill="#9A8E7C">copy PL = L1</text>
+
+          <!-- step 2 -->
+          <rect x="185" y="24" width="150" height="150" rx="10" fill="#fff" stroke="#E7DBC6"/>
+          <text x="195" y="44" font-family="Fraunces" font-size="12" font-weight="600" fill="#3a409a">2 · Detect same PL</text>
+          <rect x="195" y="54" width="130" height="20" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.6"/><text x="201" y="68" fill="#1f5b51">L1  W=1</text>
+          <rect x="195" y="76" width="130" height="20" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.6"/><text x="201" y="90" fill="#1f5b51">L1  W=1  ✓</text>
+          <rect x="195" y="98" width="130" height="20" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.6"/><text x="201" y="112" fill="#1f5b51">L1  W=1  ✓</text>
+          <rect x="195" y="120" width="130" height="20" rx="3" fill="#fff" stroke="#D8C8AC"/><text x="201" y="134" fill="#6E6456">L2  W=0  (skip)</text>
+          <text x="195" y="160" fill="#9A8E7C">scan PL in parallel,</text><text x="195" y="171" fill="#9A8E7C">set W=1, mark vector 1110</text>
+
+          <!-- step 3 -->
+          <rect x="360" y="24" width="150" height="150" rx="10" fill="#fff" stroke="#E7DBC6"/>
+          <text x="370" y="44" font-family="Fraunces" font-size="12" font-weight="600" fill="#3a409a">3 · Issue loads</text>
+          <rect x="370" y="60" width="60" height="24" rx="5" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.6"/><text x="400" y="76" text-anchor="middle" fill="#3a409a">walker</text>
+          <g stroke="#2C8C7C" stroke-width="2">
+            <line x1="430" y1="66" x2="480" y2="58" marker-end="url(#h_a)"/>
+            <line x1="430" y1="72" x2="480" y2="72" marker-end="url(#h_a)"/>
+            <line x1="430" y1="78" x2="480" y2="86" marker-end="url(#h_a)"/>
+          </g>
+          <rect x="480" y="50" width="24" height="18" rx="3" fill="#fff" stroke="#2C8C7C"/><rect x="480" y="72" width="24" height="18" rx="3" fill="#fff" stroke="#2C8C7C"/><rect x="480" y="94" width="24" height="18" rx="3" fill="#fff" stroke="#2C8C7C"/>
+          <text x="370" y="132" fill="#9A8E7C">PFN‖offset → addr,</text><text x="370" y="143" fill="#9A8E7C">shift by 5 (32B sector),</text><text x="370" y="154" fill="#9A8E7C">back-to-back reads.</text><text x="370" y="167" fill="#9A8E7C">WST status → 10 → 11</text>
+
+          <!-- step 4 -->
+          <rect x="535" y="24" width="150" height="150" rx="10" fill="#fff" stroke="#E7DBC6"/>
+          <text x="545" y="44" font-family="Fraunces" font-size="12" font-weight="600" fill="#3a409a">4 · Update</text>
+          <rect x="545" y="54" width="130" height="20" rx="3" fill="#fff" stroke="#D8C8AC"/><text x="551" y="68" fill="#6E6456">— (freed, leaf done)</text>
+          <rect x="545" y="76" width="130" height="20" rx="3" fill="#fff" stroke="#D8C8AC"/><text x="551" y="90" fill="#6E6456">— (freed)</text>
+          <rect x="545" y="98" width="130" height="20" rx="3" fill="#fff" stroke="#D8C8AC"/><text x="551" y="112" fill="#6E6456">— (freed)</text>
+          <rect x="545" y="120" width="130" height="20" rx="3" fill="#FBEACB" stroke="#C27D14"/><text x="551" y="134" fill="#6e4a09">L2 waits next round</text>
+          <text x="545" y="160" fill="#9A8E7C">leaf → cache in TLB;</text><text x="545" y="171" fill="#9A8E7C">reset WST vector, walker free</text>
+        </g>
+        <!-- flow arrows between steps -->
+        <g stroke="#C27D14" stroke-width="1.6" fill="none">
+          <line x1="162" y1="99" x2="183" y2="99" marker-end="url(#h_b)"/>
+          <line x1="337" y1="99" x2="358" y2="99" marker-end="url(#h_b)"/>
+          <line x1="512" y1="99" x2="533" y2="99" marker-end="url(#h_b)"/>
+        </g>
+        <defs>
+          <marker id="h_a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="#2C8C7C"/></marker>
+          <marker id="h_b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="#C27D14"/></marker>
+        </defs>
+      </svg>
+      <figcaption><b>One walker's batch cycle.</b> It selects the oldest pending walk (FCFS), copies that walk's level into its WST entry, scans its split queue to gather every other walk at the same level (setting their W flags so no one else grabs them), issues all their memory reads back-to-back, and on return updates or frees each entry. Because ~87% of walks finish at the L1 leaf, most complete together and the walker frees up fast. (Paper Figs. 11, 12)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · Making it cheap — partitioned queues + bloom filters</h3>
+      <p>Batching over a big <i>monolithic</i> PW queue would need large associative searches on every batch (when selecting) and on every returning PTE (to find the owner walker) — a serious energy cost. MPW attacks both:</p>
+      <pre class="sketch"><span class="cm"># 1) Partition the PW queue — one small split queue per walker</span>
+<span class="kw">batch</span>(walker w):
+    scan <span class="hl">only w's split queue</span>            <span class="cm"># small CAM search, not the whole 256 entries</span>
+    group entries whose PL == w.PL      <span class="cm"># same page-table level → batchable</span>
+
+<span class="cm"># 2) On a returning PTE, avoid searching every walker's queue</span>
+<span class="kw">on_return</span>(pte):
+    for each walker's <span class="hl">bloom filter</span>:
+        if filter[hash(pte.addr)] != 0:  <span class="cm"># "maybe requested this"</span>
+            CAM-search that walker's split queue
+    <span class="cm"># bloom filters cut avg searches from 32 → 1.84 (2.6% false positives)</span></pre>
+      <p>The bloom filter is <b>counter-based</b> (128 entries, 3-bit counters per walker): issuing a load increments the hashed entry; matching a return decrements it. False positives cost only an extra wasted search, never a wrong result. This design skips on average <b>30.2</b> redundant CAM searches for just <b>1.5 KB</b> of storage.</p>
+    </div>
+
+    <div class="prose">
+      <h3>6 · The bill — storage, area, power</h3>
+      <p>Everything MPW adds, summed:</p>
+      <pre class="sketch"><span class="cm"># PW queue extension: 37 PFN + 7 offset + 2 PL + 1 W = 47 bits/entry</span>
+PW queue  = 47 * 256 / 8      = <span class="hl">1504 B</span>
+<span class="cm"># WST: 2 status + 2 PL + 8-bit PTW vector = 12 bits/walker</span>
+WST       = 12 * 32  / 8      =   <span class="hl">48 B</span>
+<span class="cm"># bloom: 128 entries * 3-bit counter = 48 B/walker</span>
+bloom     = 128 * 3 * 32 / 8  = <span class="hl">1536 B</span>
+                        total  = <span class="hl">3088 B = 3.02 KB</span></pre>
+      <p>Via CACTI 7.0, that's an added <b>0.473 mm²</b> — <b>0.11%</b> of a TU106 die (445 mm²) — and <b>6.6 mW</b>, or <b>0.004%</b> of its 160 W TDP. And the batching compare logic (an 8-entry split queue) synthesizes to <b>0.33 ns</b>, within one 1,365 MHz cycle; even a pessimistic +2-cycle batching penalty costs only 0.06% performance.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why so cheap?</b> MPW doesn't add walkers or a big CAM — it reuses the 32 walkers and adds a few bits per queue entry plus tiny per-walker structures. All of it sits <i>off</i> the memory-access critical path, so normal walks aren't slowed.</div></div>
+    </div>
+
+    <!-- INTERACTIVE: batching scope explorer -->
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: widen the batching scope yourself</div>
+      <div class="viz-kicker">drag to change how many concurrent walks a walker can group — watch queueing latency drain</div>
+      <div class="part-viz">
+        <div>
+          <div class="ways-strip" id="waysStrip"></div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">batch size (concurrent walks):</span>
+            <input type="range" min="1" max="8" value="1" id="partRange">
+            <span class="mono" id="partRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">1</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-set="1">Baseline (1 walk)</button>
+            <button class="tbtn" data-set="2">Neighbor-aware (~1.5)</button>
+            <button class="tbtn" data-set="4">MPW L1 avg (~3.1)</button>
+            <button class="tbtn" data-set="8">MPW max (up to 8)</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">walker throughput<b id="pVpr">—</b></div>
+            <div class="pstat">requests waiting<b id="pEq">—</b></div>
+            <div class="pstat">queueing latency<b id="pTot">—</b></div>
+          </div>
+          <div class="pverdict sub" id="pVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>What you'll find:</b> raising batch size from 1 (baseline) to MPW's realized ~3.1 concurrent L1 walks drains the waiting queue and collapses queueing latency toward the infinite-walker floor. MPW's measured average of 3.1 batched walks lands its performance within 1.0% of infinite walkers. (Throughput anchors: single scope 3.10×, any-page scope 3.90×, MPW L1 realized 3.1×; latency is illustrative of the −86.7% queueing result in Fig. 15.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>7 · Correctness &amp; corner cases</h3>
+      <p>MPW handles only <b>reads</b> (page-table loads), so it doesn't touch memory consistency. When a page migration updates page tables, the GPU issues a TLB <b>shootdown</b>; MPW simply flushes the affected walk requests from its PW queues and WST entries, and the flush latency hides easily under the GPU's long (~4.2 µs) shootdown. Two second-order risks are measured and found minor: (i) firing many loads at once barely pressures the memory system (page-walk traffic is a small share of DRAM), and (ii) a walk that finishes earlier than its batch-mates can wait for a free walker — this hits 9.7% of walks, raises their queueing 27%, and costs only 1.6% overall, because 87.3% of walks finish at the leaf and return individually.</p>
+      <div class="callout why"><span class="ic">🔌</span><div><b>Tiering link:</b> the "read-only, so no consistency issue" and "shootdown just flushes queued walks" arguments are exactly the concerns you hit when page tables change under a live tiering/migration daemon. MPW shows a batched walker composes cleanly with page migration — a useful precedent for CXL/tiered systems where migrations are frequent.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>8 · What the evaluation shows</h3>
+      <p>On AccelSim (RTX 2060-like, 30 SMs, 32 walkers, 4-level page tables), across 12 benchmarks:</p>
+      <ul>
+        <li><b>+55.6%</b> GPU performance vs baseline; neighborhood-aware gets only +16.6%. MPW lands within <b>1.0%</b> of an infinite-walker ideal.</li>
+        <li><b>−86.7%</b> queueing latency, <b>−62.4%</b> average walk latency; memory latency improves <b>1.7×</b>. Neighborhood-aware still has 5.1× MPW's queueing latency.</li>
+        <li>MPW concurrently services <b>3.1</b> walks on average (vs 1.5 for neighborhood-aware; up to 5.6), and keeps <b>72.1%</b> of queued walks active at once.</li>
+        <li>Robust across page sizes: with <b>2 MB</b> superpages MPW still adds <b>+29.1%</b> on large-footprint workloads.</li>
+        <li>Design-space: 32 walkers suffice (within 2.3% of 192); a 128-entry PW queue is enough; 128-entry bloom filters are the sweet spot; larger TLBs and PWCs help but MPW is complementary (iso-storage, MPW beats a 384-entry L2 PWC).</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Five traces, each carried through with the paper's real numbers — the walker gap, the coalescing cap, the storage bill, the bloom-filter win, and the iso-storage PWC comparison.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Why 32 walkers fall 6× short</h3>
+      <p style="color:var(--ink-soft)">The baseline has 32 walkers; peak needs ~192. Where does "6×" come from, and what does MPW have to deliver?</p>
+      <ol class="seq">
+        <li><b>256 walkers = no queueing.</b> The PW queue holds 256 entries, so 256 walkers can service every queued walk in parallel — that's the zero-queueing reference.</li>
+        <li><b>32 walkers → 3.0× PTW latency.</b> Measured average across benchmarks; since walk time itself is fixed, the extra 2.0× is pure queueing delay.</li>
+        <li><b>Peak throughput needs 192 walkers</b> (e.g. DR, BIC), which is <b>192 / 32 = 6×</b> the baseline's walker count.</li>
+        <li><b>So MPW must raise per-walker throughput ~6×</b> to match 192 walkers with 32. Its measured average is 3.1 concurrent L1 walks, up to 5.6 — enough to land within 1.0% of infinite walkers.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> MPW doesn't literally hit 6× on average, but it doesn't need to — most of the queueing damage clears well before the theoretical ceiling, which is why 3.1 average batching recovers nearly all of the infinite-walker headroom.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② The coalescing cap: why neighborhood-aware tops out at 4</h3>
+      <p style="color:var(--ink-soft)">Neighborhood-aware translation merges walks within one memory access. Compute its hard ceiling and its realized throughput.</p>
+      <ol class="seq">
+        <li><b>A memory access is a 32 B sector.</b> That's the baseline's data-access granularity (sectored cache, 128 B lines).</li>
+        <li><b>A PTE is 8 B.</b> So a 32 B sector holds <b>32 / 8 = 4</b> PTEs — the most walks that can share one memory read.</li>
+        <li><b>Realized throughput ≈ 1.52×</b> (not 4×), because walks rarely line up four-to-a-sector. With wider 64 B / 128 B accesses it rises only to 1.62× / 1.83×.</li>
+        <li><b>MPW isn't sector-bound:</b> it batches any same-level walks, realizing 3.1× on L1 — because it merges across page-table pages, not within a sector.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The cap is structural: coalescing rides <i>spatial</i> adjacency, which GPU threads violate by scattering across tens–hundreds of MB. MPW rides <i>level</i> commonality instead, which scatter doesn't break.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Tallying MPW's storage — down to the bit</h3>
+      <p style="color:var(--ink-soft)">Is MPW actually cheap? Add it up for 256 PW-queue entries and 32 walkers (49-bit physical addresses).</p>
+      <ol class="seq">
+        <li><b>One PW-queue entry extension</b> = 37 PFN + 7 offset + 2 PL + 1 W = <b>47 bits</b>.</li>
+        <li><b>Whole PW queue:</b> 47 bits × 256 entries ÷ 8 = <b>1504 bytes</b>.</li>
+        <li><b>One WST entry</b> = 2 status + 2 PL + 8-bit PTW-request vector = 12 bits; × 32 walkers ÷ 8 = <b>48 bytes</b>.</li>
+        <li><b>Bloom filters:</b> 128 entries × 3-bit counter = 48 B/walker; × 32 = <b>1536 bytes</b>.</li>
+        <li><b>Total:</b> 1504 + 48 + 1536 = <b>3088 bytes = 3.02 KB</b> → 0.473 mm² (0.11% of TU106) and 6.6 mW (0.004% of TDP).</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the punchline is the ratio — a +55.6% performance gain for ~three kilobytes and one-tenth of one percent of the die. The bloom filters are half the storage, and they exist purely to save <i>energy</i>, not to enable batching.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ The bloom filter's payoff — 32 searches down to 1.84</h3>
+      <p style="color:var(--ink-soft)">When a PTE returns, which walker asked for it? Without help you'd search all 32 split queues. Trace what the filter buys.</p>
+      <ol class="seq">
+        <li><b>Naïve cost:</b> a returning PTE must be matched to its owner walker → one CAM search per walker = <b>32 searches</b>.</li>
+        <li><b>Each walker keeps a bloom filter</b> (128 entries, 3-bit counters). On issue, it increments the hashed entry for the load's address.</li>
+        <li><b>On return,</b> hash the PTE address and check each walker's filter. Search only walkers whose counter is non-zero ("maybe mine").</li>
+        <li><b>Result:</b> average searches drop from 32 to <b>1.84</b>, with a <b>2.6%</b> false-positive rate — i.e. the filter skips ~30.2 useless searches per return.</li>
+        <li><b>Cost of a false positive:</b> just one extra wasted search; never a wrong walk result, since bloom filters have no false negatives.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Bigger filters push false positives lower but cost storage; 128 entries is the knee. This is a classic bloom-filter energy/accuracy trade — the same tool you'd reach for to prune directory or coherence lookups in a tiered system.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>⑤ Iso-storage: MPW's 3 KB vs a bigger PWC</h3>
+      <p style="color:var(--ink-soft)">A fair critic asks: spend MPW's 3,088 bytes on a bigger page walk cache instead. How many PWC entries, and does it win?</p>
+      <ol class="seq">
+        <li><b>A PWC entry costs 9.25 bytes</b> (assuming 49-bit virtual/physical addresses).</li>
+        <li><b>Convert the budget:</b> 3088 ÷ 9.25 ≈ <b>334 entries</b> (the paper rounds to ~338; the design-space sweep uses a 384-entry L2 PWC for simplicity).</li>
+        <li><b>Bigger PWCs only cache upper-level (L4/L3/L2) partial translations</b> — but ~89–92% of the walk cost is at the L1 <i>leaf</i>, which PWCs can't hold.</li>
+        <li><b>So under equal storage, MPW beats the enlarged PWC:</b> PWCs shave the cheap part; MPW attacks the leaf-heavy part. (Even a 512-entry PWC only partly relieves walker pressure.)</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the iso-storage test is the honest one — and it lands because MPW and PWCs target <i>different</i> parts of the walk. They're complementary, but for a fixed budget the throughput fix (MPW) beats the caching fix (bigger PWC).</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the common misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">The baseline GPU sees 3.0× higher PTW latency with 32 walkers than with 256. Which part of that latency does MPW actually reduce, and which part does it leave essentially unchanged?</div>
+      <details><summary>Show answer</summary><div class="ans">MPW reduces the <b>queueing latency</b> — the time a walk waits in the PW queue for a free walker — by 86.7%. It does <i>not</i> reduce the underlying memory-access latency of a walk (the cycles to fetch page-table entries from L2/DRAM); MPW doesn't cut the number of memory accesses beyond same-sector coalescing. It wins by servicing many waiting walks concurrently, so they wait far less.<span class="mis">Misconception: that MPW makes each individual walk faster. Each walk's memory latency is unchanged — MPW makes walks <i>wait</i> less by raising throughput.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 2 · easy</span>
+      <div class="qtext">Neighborhood-aware translation coalesces at most 4 walks per memory access. Show where the "4" comes from, using the sector and PTE sizes.</div>
+      <details><summary>Show answer</summary><div class="ans">The baseline's memory-access granularity is a <b>32 B sector</b>, and each PTE is <b>8 B</b>. So one memory read covers 32 / 8 = <b>4</b> adjacent PTEs — the coalescing ceiling. (Realized throughput is only ~1.52× because walks rarely fall four-to-a-sector; wider 64 B/128 B accesses give just 1.62×/1.83×.)<span class="mis">Misconception: that coalescing achieves its 4× cap. The cap is structural; actual gains are far below it because GPU accesses scatter, which is exactly why MPW batches across pages instead.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">The paper evaluates three batching scopes with throughputs 3.10× (single PT page), 3.37× (adjacent 4), and 3.90× (any PT page). Why does widening the scope help, and what workload property makes "any page" the clear winner?</div>
+      <details><summary>Show answer</summary><div class="ans">A wider scope lets a walker pull more batchable walks into one group, raising batch size and thus throughput. "Any page" wins because GPU workloads <b>concurrently access pages across tens to hundreds of MB</b> (e.g. BH spreads over a 128 MB range). With a narrow scope, most of those scattered walks can't be batched together even though they all target the same page-table level; "any page" removes the spatial restriction and captures them.<span class="mis">Misconception: that batching needs spatial locality. MPW's batch is unified by page-table <i>level</i>, not address proximity — so scatter, which kills coalescing, doesn't hurt MPW.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 4 · medium</span>
+      <div class="qtext">Roughly 89–92% of page walks target L1 (leaf) page tables, and upper-level PWCs almost always hit. Explain why MPW's benefit comes overwhelmingly from batching L1 walks, and why bigger PWCs can't substitute.</div>
+      <details><summary>Show answer</summary><div class="ans">Upper levels (L4/L3/L2) are cheap: the PWCs cache their partial translations and hit ~100% except cold misses, so they rarely queue. The expensive, un-cacheable work is the <b>L1 leaf</b> lookup, which is the vast majority of walks and the source of contention. MPW batches those leaf walks concurrently, attacking the bottleneck directly. A bigger PWC only stores <i>upper-level</i> translations, so it shaves the already-cheap part and barely touches the leaf pressure — under iso-storage MPW wins.<span class="mis">Misconception: that caching more of the page table relieves walker pressure. PWCs can't cache leaf entries, so they miss the 89–92% that actually matters.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">MPW partitions the monolithic PW queue into per-walker split queues and adds a per-walker bloom filter. Each addresses a <i>different</i> associative-search cost. Name both and match each mechanism to the cost it cuts.</div>
+      <details><summary>Show answer</summary><div class="ans">Two CAM costs: (1) <b>selecting/batching</b> a new walk requires scanning the queue for same-level entries; (2) <b>on a returning PTE</b>, the subsystem must find which walker requested it by searching walkers' records. <b>Partitioning</b> cuts cost (1): a walker scans only its small split queue, not all 256 entries. <b>Bloom filters</b> cut cost (2): each returning PTE checks cheap filters first and only CAM-searches walkers whose filter says "maybe," dropping average searches from 32 to 1.84.<span class="mis">Misconception: that the two mechanisms are redundant. They target opposite ends of the walk — batching-time selection vs return-time matching — so both are needed.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">A walker frees only after every walk in its batch finishes. A walk that hits L2 cache returns before a batch-mate that goes to DRAM. Why doesn't this "straggler" effect hurt much (the paper measures ~1.6% loss)?</div>
+      <details><summary>Show answer</summary><div class="ans">Two reasons. First, <b>87.3% of walks finish at the L1 leaf</b> and their responses are handled individually, so most walks aren't stuck behind a slower batch-mate. Second, the affected fraction is small: only <b>9.7%</b> of walks experience differing batch latencies, and even those see just a 27% queueing increase. Net effect ≈ 1.6% — negligible against the 86.7% queueing-latency reduction MPW delivers.<span class="mis">Misconception: that batching forces every walk to wait for the slowest in its group. Only the minority with mixed memory latencies are exposed, and leaf walks — the bulk — complete and return on their own.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">You have MPW's 3,088-byte budget. A colleague proposes spending it on a bigger page walk cache instead (~334–338 entries). Argue which is better under equal storage, and why the comparison is fair.</div>
+      <details><summary>Show answer</summary><div class="ans">It's fair because both are on-chip storage attacking translation overhead. But they target different parts of the walk: a PWC caches <b>upper-level</b> partial translations (L4/L3/L2), while ~89–92% of the cost is at the <b>L1 leaf</b>, which PWCs cannot hold. So the bigger PWC relieves the cheap levels and barely dents the leaf-driven queueing, whereas MPW raises throughput on exactly the leaf walks. Result: iso-storage, MPW beats the enlarged PWC (even a 512-entry PWC only partly helps). They're complementary, but for a fixed budget the throughput fix wins.<span class="mis">Misconception: that more caching always beats more concurrency. When the bottleneck is un-cacheable leaf walks, adding cache to upper levels can't touch it.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">Does MPW's batching of page-table loads create a memory-consistency problem? And when page tables change under a migration, how does MPW stay correct?</div>
+      <details><summary>Show answer</summary><div class="ans">No consistency problem: MPW's batched operations are all <b>reads</b> (page-table loads), and consistency issues arise from load/store ordering to the same address — MPW issues no stores. When a page migration updates page tables, the GPU performs a <b>TLB shootdown</b>; MPW cooperates by flushing the affected walk requests from its PW queues and WST entries during the shootdown. The flush latency hides under the GPU's long shootdown (~4.2 µs), so correctness holds without a performance hit.<span class="mis">Misconception: that issuing many concurrent memory requests risks consistency. Reads alone are safe; the only correctness concern is stale mappings during migration, which the existing shootdown mechanism already handles.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Twelve questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>In one sentence, what does MPW do?<span class="chev">▾</span></summary><div class="a">It lets each GPU page-table walker <b>batch</b> multiple pending walks that target the same page-table level and issue all their memory loads <b>concurrently</b>, so the walk queue drains far faster without adding more walkers.</div></details>
+      <details><summary><span class="q">Q2</span>What exactly is the bottleneck — the walk, or the wait?<span class="chev">▾</span></summary><div class="a">The <b>wait</b>. Thousands of threads miss the TLB in bursts, but each walker services one walk at a time, so requests queue. That queueing inflates page-walk latency 3.0× and cuts GPU performance 1.6×. MPW cuts the queueing (−86.7%), not the per-walk memory latency.</div></details>
+      <details><summary><span class="q">Q3</span>Why not just add more walkers?<span class="chev">▾</span></summary><div class="a">Peak throughput needs ~192 walkers (up to 512 on a V100-class chip), but each walker needs associative CAM lookups when starting/finishing a walk. Scaling the CAM to 192 walkers requires an 18-port design whose area explodes 9.1× (≈3.9% of a TU106 die). MPW gets the throughput of many walkers from just 32, at ~0.1% area.</div></details>
+      <details><summary><span class="q">Q4</span>How is this different from neighborhood-aware coalescing?<span class="chev">▾</span></summary><div class="a">Neighborhood-aware merges only walks inside one 32 B memory access — at most 4 adjacent PTEs (≈1.52× throughput). MPW batches walks to <b>any</b> page-table page at the same level, no matter how far apart. That's why MPW gets 3.90× (any-page scope) and 3.1× realized on L1, and +55.6% vs the prior scheme's +16.6%.</div></details>
+      <details><summary><span class="q">Q5</span>Why does the batch group by page-table <i>level</i>?<span class="chev">▾</span></summary><div class="a">Because walks at the same level need the same <i>kind</i> of memory access (an L1 leaf fetch, say), they can be issued and completed together. Grouping by level — not by address proximity — decouples batching from locality, which is what lets MPW help scattered, irregular workloads that coalescing can't.</div></details>
+      <details><summary><span class="q">Q6</span>What are the WST and the W flag for?<span class="chev">▾</span></summary><div class="a">The <b>Walker Status Table</b> tracks each walker's state (idle/batching/issuing/waiting), the level it's batching, and a bit vector of which queue entries it's handling. The <b>W flag</b> in each PW-queue entry marks that a walk is being serviced, so no two walkers grab the same walk. Together they let a walker safely gather and fire a batch.</div></details>
+      <details><summary><span class="q">Q7</span>Why partition the PW queue and add bloom filters?<span class="chev">▾</span></summary><div class="a">Both save associative-search energy. Partitioning means a walker scans only its small split queue when batching, not all 256 entries. Bloom filters mean a returning PTE only searches walkers that "maybe" requested it, cutting average CAM searches from 32 to 1.84 (2.6% false positives). Together they make wide batching affordable in hardware.</div></details>
+      <details><summary><span class="q">Q8</span>How much does MPW cost?<span class="chev">▾</span></summary><div class="a">About <b>3.02 KB</b> of storage (1504 B PW-queue extension + 48 B WST + 1536 B bloom filters), which via CACTI is 0.473 mm² (0.11% of a TU106 die) and 6.6 mW (0.004% of its 160 W TDP). None of it sits on the memory-access critical path.</div></details>
+      <details><summary><span class="q">Q9</span>Does MPW help with big (2 MB) pages too?<span class="chev">▾</span></summary><div class="a">Yes. With 2 MB superpages on large-footprint workloads (3.1–6.7 GB working sets), MPW still adds <b>+29.1%</b>, because even with bigger pages the walker contention persists once footprints exceed TLB coverage. The batching win is largely page-size-independent.</div></details>
+      <details><summary><span class="q">Q10</span>Is there a straggler problem when a batch's walks finish at different times?<span class="chev">▾</span></summary><div class="a">A small one. A walker frees only after its whole batch completes, so a walk that returns early can wait if all walkers are busy. But 87.3% of walks finish at the leaf and return individually; only 9.7% see mixed latencies (27% more queueing), for a net ~1.6% loss — negligible against the 86.7% queueing reduction.</div></details>
+      <details><summary><span class="q">Q11</span>Where's the ceiling — how close is MPW to ideal?<span class="chev">▾</span></summary><div class="a">Very close. MPW lands within <b>1.0%</b> of an idealized GPU with infinite walkers, and 32 MPW walkers come within 2.3% of 192 walkers. Its average of 3.1 concurrent L1 walks (up to 5.6) recovers nearly all the infinite-walker headroom, so more walkers or a bigger PW queue barely help.</div></details>
+      <details><summary><span class="q">Q12</span>Does MPW compose with better TLBs, PWCs, or speculation?<span class="chev">▾</span></summary><div class="a">Yes — those are orthogonal. Larger TLBs and PWCs reduce walk <i>volume</i>; MPW raises walk <i>throughput</i>, and the paper shows they stack (e.g. bigger L2 TLBs plus MPW beat either alone). Speculative translation (AVATAR) is limited by compression-ratio requirements some sectors miss, so MPW is a more general fix. The authors position MPW as a component that cooperates with, not replaces, TLB/PWC improvements.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results &amp; source notes</h2>
+      <p class="sub">Every term in one place, the headline numbers, a path to go deeper — and an honest ledger of what's from the paper vs my framing.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>MPW (Marching Page Walks)</b><span>The paper's mechanism: let each page-table walker batch multiple same-level walks and issue their memory loads concurrently, raising walker throughput without adding walkers.</span></div>
+      <div class="term-def"><b>Page table walk (PTW)</b><span>The hardware traversal of a multi-level page table to resolve a virtual→physical mapping after a TLB miss.</span></div>
+      <div class="term-def"><b>Page walk subsystem</b><span>PW queue + hardware walkers + page walk caches. The only part MPW modifies.</span></div>
+      <div class="term-def"><b>Batching scope</b><span>How far apart batchable walks may be: single PT page (3.10×), adjacent 4 pages (3.37×), or any PT page at the same level (3.90×). Wider is better.</span></div>
+      <div class="term-def"><b>PW queue (partitioned)</b><span>The queue of pending walks; MPW splits it into a small per-walker slice so batching scans few entries. 256 entries baseline, 8 per walker.</span></div>
+      <div class="term-def"><b>WST (Walker Status Table)</b><span>Per-walker table tracking status (idle/batching/issuing/waiting), the level being batched (PL), and a bit vector of the walks in the current batch.</span></div>
+      <div class="term-def"><b>Bloom filter (counter-based)</b><span>Per-walker 128-entry, 3-bit-counter filter that, on a returning PTE, skips CAM searches on walkers that didn't request it — 32 searches → 1.84.</span></div>
+      <div class="term-def"><b>PL / W fields</b><span>PL = target page-table level of a walk/walker; W = "this walk is being serviced," so two walkers never grab the same walk.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>L4→L1 page table</b><span>4-level radix tree: L4 root … L1 leaf. 512 × 8 B entries = 4 KB per page. (Note: inverted vs x86's PML4→PTE labels.)</span></div>
+      <div class="term-def"><b>PWC (page walk cache)</b><span>Caches upper-level (L4/L3/L2) partial translations; almost always hits. Cannot cache L1 leaf entries — the bulk of walk cost.</span></div>
+      <div class="term-def"><b>TLB (L1/L2)</b><span>Private L1 TLB per SM, shared L2 TLB. A last-level TLB miss triggers a walk.</span></div>
+      <div class="term-def"><b>CAM</b><span>Content-addressable memory: searches all entries in parallel. Tracks in-flight walk requests; area/energy grow super-linearly with ports.</span></div>
+      <div class="term-def"><b>Neighborhood-aware translation</b><span>Prior art: coalesces walks within one 32 B memory access (≤4 PTEs, ~1.52×, +16.6%). The baseline MPW improves on.</span></div>
+      <div class="term-def"><b>Queueing latency</b><span>Time a walk waits in the PW queue for a free walker. The dominant cost (2.0× of the 3.0× PTW latency); MPW cuts it 86.7%.</span></div>
+      <div class="term-def"><b>SM (streaming multiprocessor)</b><span>A GPU core cluster; each has a private L1 TLB. The eval GPU has 30 SMs at 1,365 MHz.</span></div>
+      <div class="term-def"><b>PFN / offset</b><span>Partial-translation fields MPW adds to PW-queue entries: 37-bit next physical frame number and 7-bit cache-sector index, concatenated to form the next load address.</span></div>
+      <div class="term-def"><b>Shootdown</b><span>Invalidation when page tables change (e.g. migration); MPW flushes affected queued walks. Hidden under the ~4.2 µs GPU shootdown.</span></div>
+      <div class="term-def"><b>AVATAR</b><span>A prior speculative-translation scheme for GPUs; limited by a compression-ratio (1.45) requirement not all sectors meet.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What MPW buys (vs baseline, avg over 12 workloads)</div>
+      <div class="viz-kicker">bars scale to +100% · queueing reduction shown separately</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">GPU performance<small>MPW</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="55.6"><span>+55.6%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Neighbor-aware<small>prior art</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="16.6"><span>+16.6% only</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Queueing latency<small>reduction</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="86.7"><span>−86.7%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Avg walk latency<small>reduction</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="62.4"><span>−62.4%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">2 MB pages<small>large footprints</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="29.1"><span>+29.1%</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ +100%</p>
+      <figcaption><b>Within 1.0% of an infinite-walker ideal</b> for 3.02 KB / 0.11% of a TU106 die. Batches 3.1 walks on average (vs 1.5 for neighborhood-aware; up to 5.6), keeping 72.1% of queued walks active. Performance/latency bars are magnitudes (sign per label). (Paper Figs. 13, 15, 18)</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>Multi-level page tables &amp; the page table walk <span class="diff easy">easy</span></h4><div class="meta">explainer · 30–45 min</div><p>How a radix page table is traversed and why TLBs exist. Search "page table walk x86-64 four level" (or Hennessy &amp; Patterson, virtual memory). The GPU version is the same walk under far more thread pressure.</p></div>
+    <div class="read-item reveal"><h4>GPU memory hierarchy &amp; the MMU <span class="diff med">medium</span></h4><div class="meta">explainer · 30–45 min</div><p>SMs, TLBs, and the page walk subsystem. Power et al. (HPCA'14) and Pichai et al. (ASPLOS'14) below are the canonical GPU-MMU references and part of MPW's baseline.</p></div>
+
+    <div class="subhead">Related papers (from the paper's bibliography)</div>
+    <div class="read-item reveal"><h4>Supporting x86-64 Address Translation for 100s of GPU Lanes <span class="diff hard">hard</span></h4><div class="meta">Power, Hill, Wood · HPCA · 2014 · [65]</div><p>Foundational GPU MMU design — shared L2 TLB, concurrent page walkers, PWCs — which forms MPW's baseline subsystem.</p></div>
+    <div class="read-item reveal"><h4>Architectural Support for Address Translation on GPUs <span class="diff hard">hard</span></h4><div class="meta">Pichai, Hsu, Bhattacharjee · ASPLOS · 2014 · [64]</div><p>TLB-conscious warp scheduling and the concurrent-walker design MPW extends; source of the MSHR-for-walks idea MPW compares against.</p></div>
+    <div class="read-item reveal"><h4>Neighborhood-Aware Address Translation for Irregular GPU Applications <span class="diff hard">hard</span></h4><div class="meta">Shin, LeBeane, Solihin, Basu · MICRO · 2018 · [74]</div><p>The prior art MPW beats: coalesces walks within one memory access (≤4 PTEs). MPW's whole pitch is batching beyond this scope.</p></div>
+    <div class="read-item reveal"><h4>Scheduling Page Table Walks for Irregular GPU Applications <span class="diff med">medium</span></h4><div class="meta">Shin, Cox, Oskin, Loh, Solihin, Bhattacharjee, Basu · ISCA · 2018 · [73]</div><p>Reorders/prioritizes walk requests — a complementary latency angle; MPW instead attacks the queueing throughput.</p></div>
+    <div class="read-item reveal"><h4>A Case for Speculative Address Translation with Rapid Validation for GPUs (AVATAR) <span class="diff hard">hard</span></h4><div class="meta">Park et al. · MICRO · 2024 · [60]</div><p>Skips walks via speculation, validated through cache-line compression — limited when sectors miss the required compression ratio; MPW is the more general fix.</p></div>
+    <div class="read-item reveal"><h4>Accel-Sim: An Extensible Simulation Framework for Validated GPU Modeling <span class="diff med">medium</span></h4><div class="meta">Khairy, Shen, Aamodt, Rogers · ISCA · 2020 · [33]</div><p>The simulator MPW extends with multi-level TLBs and the page walk subsystem for its RTX 2060-like evaluation.</p></div>
+
+    <div class="subhead">Source notes &amp; provenance</div>
+    <div class="card" style="background:var(--paper-2);border-color:var(--line-strong)">
+      <p style="margin-top:0"><b>What is straight from the paper (verbatim numbers, recomputed where arithmetic was involved):</b></p>
+      <ul style="color:var(--ink-soft);font-size:.95rem">
+        <li><b>Headline:</b> −86.7% queueing latency, +55.6% GPU performance (abstract, §V-B/C). Neighborhood-aware: +16.6%.</li>
+        <li><b>Bottleneck:</b> 32 walkers → 3.0× PTW latency, 1.6× slowdown; peak needs 192 walkers; V100/80 SMs needs up to 512 (§II-B/C).</li>
+        <li><b>CAM scaling:</b> single-ported CAM = 10 cycles @1,365 MHz; 192 walkers need an 18-port CAM; 4→18 ports = 9.1× area ≈ 3.9% of TU106 (445 mm²); 512 walkers → 20-port CAM ≈ 4.4% of 815 mm² V100 (§II-C).</li>
+        <li><b>Batching scopes:</b> single 3.10×, adjacent-4 3.37×, any-page 3.90× walker throughput; 89.0–92.5% of walks hit L1; L2 share 7.5%→11.0% (§III-A).</li>
+        <li><b>Coalescing cap:</b> 32 B sector / 8 B PTE = 4 PTEs; realized 1.52× (64 B→1.62×, 128 B→1.83×) (§II-D). <i>I recomputed 32/8 = 4.</i></li>
+        <li><b>Storage:</b> PW queue 47 bits/entry → 47×256/8 = 1504 B; WST 12 bits/walker → 12×32/8 = 48 B; bloom 128×3×32/8 = 1536 B; total 3088 B = 3.02 KB. Area 0.473 mm² = 0.11% of 445 mm²; power 6.6 mW = 0.004% of 160 W (§IV-E). <i>All three products recomputed and confirmed; 0.473/445 = 0.106% ≈ paper's 0.11%.</i></li>
+        <li><b>Bloom filter:</b> 128 entries, 3-bit counter; searches 32 → 1.84 (2.6% FP); skips ~30.2; 1.5 KB (§IV-D/F).</li>
+        <li><b>Results detail:</b> −62.4% avg walk latency; memory latency 1.7×; neighborhood-aware 5.1× MPW queueing; 3.1 avg batched (1.5 prior; up to 5.6); 72.1% active; straggler 9.7% of walks / +27% queueing / 1.6% loss; 87.3% finish at leaf; within 1.0% of infinite walkers; 32 vs 192 walkers within 2.3%; +29.1% with 2 MB pages; batch compare logic 0.33 ns, +2-cycle penalty = 0.06% (§V).</li>
+        <li><b>Setup:</b> AccelSim, RTX 2060-like, 30 SMs @1,365 MHz, L1 TLB 32 entries, L2 TLB 1024 entries/16-way, L2 cache 3 MB, 6 GB/336 GB/s, 32 walkers, 256-entry PW queue (8/walker), 12 benchmarks (Tables I/II).</li>
+        <li><b>Iso-storage PWC:</b> PWC entry = 9.25 B; 3088/9.25 ≈ 334 (paper says ~338; sweep uses 384) (§V-F). <i>I recomputed 3088/9.25 = 333.8; flagged the small discrepancy below.</i></li>
+      </ul>
+      <p><b>What is my framing (not claims of the paper):</b></p>
+      <ul style="color:var(--ink-soft);font-size:.95rem">
+        <li>The semantic color scheme (teal=win, honey=queueing problem, indigo=machinery, terracotta=baseline) and every analogy (ferry, carpool, mailroom, guest list, toll booths, errands, last mile).</li>
+        <li>The "ferry vs rowboat / queueing service-rate" framing and the note that the L4→L1 naming is inverted vs x86's PML4→PTE labels — true, but the x86 comparison is mine, not the paper's.</li>
+        <li>All the <b>tiering/CXL/Linux-MM connections</b> in the green callouts: MPW targets CPUs' analogue only by analogy. The paper is strictly about GPUs; extending its "widen translation throughput, not just TLB reach" lesson to CXL/tiered memory is my extrapolation for this reader.</li>
+        <li>The interactive "batch size vs queueing latency" widget uses illustrative latency values anchored to the paper's throughput figures (3.10×/3.90×, 3.1 realized) and the −86.7% result — the curve shape is didactic, not a reproduced measurement.</li>
+      </ul>
+      <p><b>Uncertainties / things I could not fully verify from the text:</b></p>
+      <ul style="color:var(--ink-soft);font-size:.95rem">
+        <li><b>PWC iso-storage entry count:</b> my arithmetic gives 3088/9.25 ≈ 334, the paper states ~338. The small gap likely reflects rounding of the byte budget or per-entry size; I report both.</li>
+        <li><b>2 MB-page improvement:</b> the text says +29.1% (§V-D), while Fig. 18's axis annotation shows "133.1%" (i.e. a 1.331× / +33.1% peak on one workload). I used the §V-D prose figure (+29.1%) as the average and treat 133.1% as a per-workload peak; the exact per-benchmark split isn't fully recoverable from extracted text.</li>
+        <li><b>Per-figure bar values</b> (Figs. 1–9, 14–23) are described qualitatively in the text; I did not transcribe exact per-benchmark heights, since the extraction preserved axis labels and captions but not plotted values. Numbers I cite are the ones stated in prose.</li>
+        <li><b>Benchmark abbreviations</b> (LUL, LD, LB, SSP, MS, NW, DR, BH, BF, ST, BIC, GUP) and their walker requirements/footprints are from Table II; I use them illustratively (e.g. DR/BIC/BH) as the paper does.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Lee, Ko, Yoon, Jeong, Oh, Ro, "Marching Page Walks: Batching and Concurrent Page Table Walks for Enhancing GPU Throughput" (HPCA 2025)</span>
+    <span><b>Source:</b> paper PDF (IEEE Xplore, DOI 10.1109/HPCA61900.2025.00123)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the paper</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- BATCHING-SCOPE EXPLORER ---- */
+  // Illustrative model: batch size b (1..8) concurrent same-level walks per walker.
+  // Anchored to the paper: baseline b=1; neighborhood-aware ~1.5; MPW L1 realized ~3.1; max 8.
+  // Effective walker throughput scales with b; queueing latency drops toward the infinite-walker floor.
+  var optB = 8;                    // more batching is always better here (drains fastest)
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(b){
+    if(!strip) return;
+    var html = '';
+    // 8 slots represent the walker's split queue; first b are batched (teal), rest wait (terracotta)
+    for(var i=1;i<=8;i++){ html += '<div class="way '+(i<=b?'vpr':'eq')+'">'+(i<=b?'batch':'wait')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(b){
+    var range = document.getElementById('partRange'); if(!range) return;
+    b = Math.max(1, Math.min(8, b));
+    range.value = b;
+    document.getElementById('partRangeVal').textContent = b;
+    // effective throughput vs baseline (b=1 -> 1.0x). Cap around any-page 3.90x realized shape.
+    var thru = (b <= 1) ? 1.0 : Math.min(3.9, 1.0 + (b-1)*0.46);
+    var waiting = Math.max(0, 8 - b);
+    // queueing latency: normalized to baseline=1.0; drops ~ 1/thru toward infinite-walker floor (~0.13 => -86.7%)
+    var q = Math.max(0.133, 1.0 / thru);
+    document.getElementById('pVpr').textContent = thru.toFixed(2) + '×';
+    document.getElementById('pEq').textContent  = waiting + ' / 8';
+    document.getElementById('pTot').textContent = q.toFixed(2);
+    buildStrip(b);
+    var verd = document.getElementById('pVerdict');
+    if(b === 1){ verd.className = 'pverdict sub'; verd.textContent = 'Baseline: one walk at a time. 7 of 8 sit waiting — this is the 3.0× queueing latency.'; }
+    else if(b === 2){ verd.className = 'pverdict sub'; verd.textContent = 'About neighborhood-aware coalescing (~1.5 realized): a little help, still queue-bound.'; }
+    else if(b >= 3 && b <= 5){ verd.className = 'pverdict opt'; verd.textContent = '✓ MPW territory — ~3.1 concurrent L1 walks lands within 1.0% of infinite walkers (−86.7% queueing).'; }
+    else { verd.className = 'pverdict opt'; verd.textContent = '✓ Max batch (up to 8) — queue drains in one shot. Diminishing returns past ~3.1 on average.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(1);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+</body>
+</html>
