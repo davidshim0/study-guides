@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cache on the GPU — HSMU-SpGEMM, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;
+  --optane:#C0563B; --optane-soft:#F7E1D8;
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HPCA 2025 · A Field Guide</span>
+    <h1>Giving shared memory to the <span class="swash">right</span> accumulator, not just <span class="swash" style="color:var(--optane)">any</span> accumulator</h1>
+    <p class="lede">Hash-based SpGEMM on GPUs wastes shared memory to avoid collisions. This is the plain-English story of <strong>HSMU-SpGEMM</strong>, a binary-search accumulator that uses exact-size arrays for its logical structure — and runs up to 131× faster.</p>
+    <div class="hero-meta">
+      <span>📄 "HSMU-SpGEMM" · Wu et al. (HPCA'25)</span>
+      <span>🎓 GPU basics assumed — shared memory, warps, SMs</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🔍</div>
+      <p>Give each slot in shared memory to a <span class="ro">real NZ element</span>, not to <span class="wo">empty hash space</span>.<br><em style="font-size:.9rem">Keep a sorted column list; binary-search replaces hash-lookup — zero collisions, exact-size accumulator arrays.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary and ten building blocks</h2>
+      <p class="sub">Key acronyms defined up front, then ten concepts HSMU-SpGEMM builds on. Expand any card; read in order the first time.</p>
+    </div>
+    <div class="card" style="background:var(--ltram-soft);border-color:#bcbfe8">
+      <h3 style="color:#3a409a">🔑 Quick glossary</h3>
+      <div style="columns:2;column-gap:20px;font-size:.95rem;color:var(--ink-soft)">
+        <div style="break-inside:avoid;margin:0 0 10px"><b style="color:#3a409a;font-family:var(--display)">SpGEMM</b> Sparse General Matrix-Matrix Multiplication (C = A × B, all sparse)</div>
+        <div style="break-inside:avoid;margin:0 0 10px"><b style="color:#3a409a;font-family:var(--display)">NZ</b> Non-Zero element in a sparse matrix</div>
+        <div style="break-inside:avoid;margin:0 0 10px"><b style="color:#3a409a;font-family:var(--display)">NNZ</b> Number of Non-Zeros in a matrix or row</div>
+        <div style="break-inside:avoid;margin:0 0 10px"><b style="color:#3a409a;font-family:var(--display)">SM</b> Streaming Multiprocessor — GPU's parallel execution unit</div>
+        <div style="break-inside:avoid;margin:0 0 10px"><b style="color:#3a409a;font-family:var(--display)">Warp</b> Group of 32 GPU threads executing together</div>
+        <div style="break-inside:avoid;margin:0 0 10px"><b style="color:#3a409a;font-family:var(--display)">Shared memory</b> Fast on-chip cache/scratchpad per SM (~128 KB)</div>
+        <div style="break-inside:avoid;margin:0 0 10px"><b style="color:#3a409a;font-family:var(--display)">Hash table</b> Key-value structure for fast lookups (prone to collisions)</div>
+        <div style="break-inside:avoid;margin:0 0 10px"><b style="color:#3a409a;font-family:var(--display)">CSR</b> Compressed Sparse Row format (ptr, col, val arrays)</div>
+      </div>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What SpGEMM is and why it matters<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>SpGEMM (Sparse General Matrix-Matrix Multiplication) computes <b>C = A × B</b> where all three matrices are sparse — most entries are zero. Storing only NZ elements saves space but makes multiplication complex.</p>
+          <p>It's a core primitive in scientific simulations (algebraic multigrid solvers, iterative methods), graph processing (breadth-first search, Markov clustering, triangle counting), and machine learning (sparse neural networks). Performance matters because real matrices can be gigantic (millions of rows) yet very sparse (&lt;0.01% nonzero).</p>
+          <div class="ready"><b>Now you're ready:</b> HSMU-SpGEMM is about making this multiplication fast on GPUs by using shared memory efficiently during the accumulation step.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Gustavson's algorithm — the row-row method<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Gustavson's algorithm (1978) computes SpGEMM row-by-row: for each row <code>i</code> of A, and each NZ element <code>aij</code> in that row, multiply it with every element in row <code>j</code> of B to generate <b>intermediate products</b>. These products all belong to row <code>i</code> of the output matrix C.</p>
+          <p>The core challenge: many intermediate products share the same column index (because different paths through the matrices can multiply to the same output cell). An <b>accumulator</b> collects and sums these products efficiently. The better the accumulator, the faster SpGEMM runs.</p>
+          <div class="ready"><b>Now you're ready:</b> The entire paper is about designing a better accumulator — one that stores intermediate products in GPU shared memory without wasting space.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Symbolic vs numeric stages<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Most SpGEMM implementations split work into two phases. <b>Symbolic stage:</b> figure out <i>where</i> the NZ elements of C will be (how many per row, which column indices) without computing actual values. Allocate storage. <b>Numeric stage:</b> compute the actual NZ values and store them.</p>
+          <p>Why separate? Because you need to know the output size before allocating memory. The symbolic stage often runs a cheaper "trial" version of the multiply to count NZs; the numeric stage then does the real work.</p>
+          <div class="ready"><b>Now you're ready:</b> HSMU-SpGEMM's symbolic stage does more than count — it builds a <i>sorted column index array</i> for each row (via mask generation and extraction), which the numeric stage then uses for collision-free accumulation.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>GPU shared memory — fast but tiny<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Each Streaming Multiprocessor (SM) on a GPU has a small on-chip memory (~128 KB on NVIDIA RTX 3090 Ti) accessible to all threads in a block. <b>Shared memory</b> is ~100× faster than global DRAM but limited in size.</p>
+          <p>Accumulators want to live in shared memory for speed. But if the accumulator structure is too big (e.g., a hash table 2× the needed size to reduce collisions), it spills to global memory — killing performance. The paper's metric: <b>shared memory utilization</b> = actual data / allocated space. Higher is better.</p>
+          <div class="ready"><b>Now you're ready:</b> Traditional hash tables in prior work allocate extra space to reduce collisions — OpSparse uses roughly 2× the needed size (averaging 35% utilization), while spECK's fill is capped at 66% though actual utilization can be inefficient for some matrices.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Hash-based accumulators and their trade-off<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A hash accumulator uses a hash function to map each intermediate product's column index to a position in a <b>hash table</b>. If two products hash to the same slot (a <b>collision</b>), you must search for an empty slot via linear probing — slow.</p>
+          <p>The classic fix: make the hash table <i>bigger</i> than the number of NZs (e.g., roughly 2× for OpSparse, capped at 66% fill for spECK). Fewer collisions but <b>wasted shared memory</b> — some slots stay empty. This inherent trade-off (collision rate vs utilization) is what existing libraries accept.</p>
+          <div class="ready"><b>Now you're ready:</b> HSMU-SpGEMM breaks the trade-off: exact-size logical arrays (every slot holds real data) <i>and</i> zero collisions (by using binary search on a sorted array instead of hashing).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>CSR format — how sparse matrices are stored<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Compressed Sparse Row (CSR) stores a sparse matrix in three arrays: <code>ptr</code> (row start indices), <code>col</code> (column indices of NZs), and <code>val</code> (values). For a matrix with <code>m</code> rows and <code>nnz</code> nonzeros, <code>ptr</code> is length <code>m+1</code>, <code>col</code> and <code>val</code> are length <code>nnz</code>.</p>
+          <p>Example: a 4×4 matrix with NZs at (0,1), (0,3), (2,2) becomes <code>ptr=[0,2,2,3,3]</code>, <code>col=[1,3,2]</code>, <code>val=[a,b,c]</code>. Row 0 has elements from index 0 to 2 (exclusive) in <code>col</code>/<code>val</code>.</p>
+          <div class="ready"><b>Now you're ready:</b> HSMU-SpGEMM works with CSR input and output, but internally uses a new "compressed mask" structure during symbolic stage for large matrices.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Intermediate products — the flood to accumulate<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>When computing row <code>i</code> of C, you generate many intermediate products: for each NZ <code>aij</code> in row <code>i</code> of A, multiply it with every NZ in row <code>j</code> of B. If B's row <code>j</code> has 1000 NZs, you get 1000 products from just one <code>aij</code>.</p>
+          <p>The <b>compression ratio</b> (paper Table II) is the ratio of total intermediate products to final NZs in C. Ratios of 10–100 are common — e.g., matrix <code>gupta3</code> has compression 113 (30.7 billion intermediate products collapse to 270.9 million NZs). The accumulator must handle this flood efficiently.</p>
+          <div class="ready"><b>Now you're ready:</b> HSMU-SpGEMM's accumulator maps each intermediate product to its final position using binary search on a pre-sorted column array — no matter how many products arrive.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Warp divergence and why uniformity helps<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A GPU warp executes 32 threads in lockstep. If threads take different branches (e.g., some hit, some search for a slot), the warp serializes both paths — effectively cutting parallelism. This is <b>warp divergence</b>.</p>
+          <p>Hash collisions cause divergence: some threads find their slot immediately, others loop to probe. Binary search also branches, but the paper's Fig. 13 shows similar "average active threads per warp" (~20) for HSMU-SpGEMM, spECK, and OpSparse — divergence is comparable, not worse.</p>
+          <div class="ready"><b>Now you're ready:</b> Binary search doesn't hurt warp efficiency more than hash probing does — and it gains zero collisions and higher shared memory utilization.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>Batch processing and binning for load balance<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Rows of C vary wildly in NNZ (some have 10, others 10,000). Processing them one thread-block per row would leave some blocks idle. Instead, libraries group rows into <b>batches</b> of similar size and assign batches to SMs for better load balance.</p>
+          <p>HSMU-SpGEMM uses Nsparse's <b>binning strategy</b>: sort rows into bins by NNZ, then process each bin with appropriate resources (e.g., many small rows per block, or one huge row per block). This keeps SMs busy and shared memory well-utilized.</p>
+          <div class="ready"><b>Now you're ready:</b> The batch model is why shared memory utilization matters — each batch allocates a chunk of shared memory, and wasting it means fewer concurrent batches (lower throughput).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">10</span>The mask matrix trick — bits, not values<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>HSMU-SpGEMM's symbolic stage uses a clever auxiliary structure: a <b>mask matrix</b> where each bit represents "is there a NZ at this position?" For small matrices, each row is a bitstring (64 bits per unit). For large matrices, it's compressed into a sparse format (only store NZ units).</p>
+          <p>Why? Bitwise OR is fast and the mask reveals NZ <i>positions</i> without computing values. After OR-ing mask rows from B according to A's NZs, you count bits (via <code>__popcll()</code>) to get NNZ and extract column indices (via <code>__ffsll()</code>) — already sorted.</p>
+          <div class="ready"><b>Now you're ready:</b> This mask is the secret to zero-collision accumulation — the sorted column array comes from the mask, not from hashing or merging.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>HSMU-SpGEMM in a nutshell</h2>
+      <p class="sub">The problem, the measurement fix, and how it all connects.</p>
+    </div>
+    <div class="prose">
+      <p>Hash-based SpGEMM libraries (Nsparse, spECK, OpSparse, cuSPARSE) store intermediate products in a hash table during Gustavson's row-row algorithm. But hash collisions force a choice: either accept a high collision rate (Nsparse: 400% on matrix <code>cant</code>) or allocate larger tables to reduce collisions — OpSparse uses roughly 2× the needed size (averaging 35% utilization), while spECK's table fill is capped at 66%.</p>
+      <p>HSMU-SpGEMM's fix: replace the hash table with a <b>sorted column array</b> (length = exact NNZ of the row) and a <b>value array</b> (also exact NNZ). To position an intermediate product, <b>binary-search</b> the sorted columns for its column index — guaranteed to find it (zero collisions) in O(log N) time. This uses exact-size arrays with real data in the binary-search accumulator's logical structure.</p>
+      <p>The sorted column array comes from the <b>symbolic stage</b>: for small matrices, HSMU-SpGEMM builds a bitmask of B, ORs rows per A's NZs to get C's mask, then extracts sorted column indices via <code>__ffsll()</code>. For large matrices, it uses a compressed mask (CSR-like for masks) and calls OpSparse's symbolic kernel modified to do OR instead of multiply-add. This preprocessing has non-trivial cost (Fig. 17 reports "Generate auxiliary mask" averages 26.40% of total time and "Generate sorted Ccol" averages 15.83%).</p>
+      <p>The <b>numeric stage</b> loads the sorted column array into shared memory, initializes a value array, and processes intermediate products: each warp handles one NZ of A, binary-searches the column array to find positions, and atomically adds to the value array. Dense rows (&gt;4096 NZ) use spECK's dense accumulator instead.</p>
+      <p><strong>The payoff:</strong> on 338 matrices from SuiteSparse, HSMU-SpGEMM achieves geometric mean speedup of <b>3.19× over Nsparse</b>, <b>1.28× over spECK</b>, <b>2.34× over OpSparse</b>, and <b>5.06× over cuSPARSE</b> (NVIDIA RTX 3090 Ti). Max speedup: <b>131.64×</b> (vs Nsparse). Measured shared memory utilization: HSMU-SpGEMM 71.69% on matrix <code>cant</code>, about 68% average (Fig. 11); OpSparse 35.35%, Nsparse 70.67%. Peak memory often lower than OpSparse for matrices with many long rows.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Hash tables trade collision rate for utilization; HSMU-SpGEMM gets both: 0% collisions, exact-size logical arrays in the binary-search accumulator.</li>
+        <li>Binary search on a <b>sorted column array</b> replaces hash lookup — stable O(log N) cost, no chain collisions.</li>
+        <li>Sorted columns come from the symbolic stage via bitmask OR and <code>__ffsll()</code> extraction, but this preprocessing has cost (mask generation ~26% of time, sorted col extraction ~16%).</li>
+        <li>Numeric stage: one warp per NZ of A, binary-search for positions, atomic-add to value array in shared memory.</li>
+        <li>Dense rows (&gt;4096 NZ) switch to spECK's dense accumulator — hybrid approach for wide support.</li>
+        <li>Result: up to 131× (avg 3.2×) faster than Nsparse, 68% avg shared memory utilization, lower peak memory for long rows.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">hash table vs sorted array · shared memory utilization comparison</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> HSMU-SpGEMM (sorted, exact-size)</span>
+        <span><i style="background:var(--optane)"></i> OpSparse (hash, ~2× size)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 320" role="img" aria-label="Comparison of hash table vs sorted array accumulator">
+        <text x="30" y="30" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Traditional hash-based (OpSparse)</text>
+        <rect x="30" y="45" width="300" height="70" rx="8" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+        <text x="180" y="65" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">Hash table (~2× needed)</text>
+        <g font-family="JetBrains Mono" font-size="10" fill="#332C24">
+          <text x="50" y="88">key[0]=-1</text>
+          <text x="50" y="103">key[1]=1</text>
+          <text x="160" y="88">key[2]=2</text>
+          <text x="160" y="103">key[3]=-1</text>
+          <text x="270" y="88">val[0]=0</text>
+          <text x="270" y="103">val[1]=1.5</text>
+        </g>
+        <text x="30" y="140" font-family="Mulish" font-size="12" fill="#9a3a22">Utilization: ~35% avg (OpSparse)</text>
+        <text x="30" y="158" font-family="Mulish" font-size="12" fill="#9a3a22">Collisions: possible (linear probing)</text>
+
+        <text x="30" y="200" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">HSMU-SpGEMM (binary search)</text>
+        <rect x="30" y="215" width="180" height="70" rx="8" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+        <text x="120" y="235" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">Sorted col (exact size)</text>
+        <g font-family="JetBrains Mono" font-size="10" fill="#332C24">
+          <text x="50" y="258">col[0]=1</text>
+          <text x="50" y="273">col[1]=2</text>
+          <text x="140" y="258">val[0]=1.5</text>
+          <text x="140" y="273">val[1]=2.3</text>
+        </g>
+        <text x="30" y="310" font-family="Mulish" font-size="12" fill="#1f5b51">Utilization: ~68% avg (exact arrays)</text>
+
+        <path d="M 380 80 L 450 80 L 450 240 L 380 240 Z" fill="none" stroke="#5A61B4" stroke-width="2" stroke-dasharray="5 3"/>
+        <text x="415" y="160" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#5A61B4">Lookup</text>
+        <text x="500" y="90" font-family="Mulish" font-size="11" fill="#9a3a22">Hash: H(col) MOD 4</text>
+        <text x="500" y="108" font-family="Mulish" font-size="11" fill="#9a3a22">→ collision if occupied</text>
+        <text x="500" y="250" font-family="Mulish" font-size="11" fill="#1f5b51">Binary search col[]</text>
+        <text x="500" y="268" font-family="Mulish" font-size="11" fill="#1f5b51">→ guaranteed found</text>
+      </svg>
+      <figcaption><b>Same row of C, two accumulators:</b> hash-based allocates roughly 2× needed slots (OpSparse avg 35% utilization); HSMU-SpGEMM allocates exactly the needed size for its logical arrays (measured avg ~68% including dense rows and overhead). Binary search replaces hash lookup — no wasted space in the binary-search component, no collisions. (Paper Fig. 2, Table I, Fig. 11)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">symbolic → sorted columns → numeric → exact-size utilization</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Hash tables waste shared memory or suffer high collisions</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Symbolic (small)</div><div class="nd">Bitmask OR + __ffsll() → sorted col array</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Symbolic (large)</div><div class="nd">Compressed mask + OpSparse OR → sorted col</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Numeric</div><div class="nd">Binary search col[] for each product; atomic-add to val[]</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Result</div><div class="nd">0 collisions, exact-size arrays, up to 131× faster</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about HSMU-SpGEMM</h2>
+      <p class="sub">Each picture stands alone. Every card ends with where the analogy breaks.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="50" height="50" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <rect x="75" y="30" width="50" height="50" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <circle cx="35" cy="50" r="4" fill="#332C24"/><circle cx="55" cy="50" r="4" fill="#fff"/>
+          <circle cx="35" cy="65" r="4" fill="#fff"/><circle cx="55" cy="65" r="4" fill="#fff"/>
+          <circle cx="90" cy="50" r="4" fill="#332C24"/><circle cx="110" cy="50" r="4" fill="#332C24"/>
+        </svg></div>
+        <span class="term">The core idea · Utilization vs collisions</span>
+        <h3>Parking lot assignment</h3>
+        <p>A hash-based lot assigns cars by license-plate hash — but reserves extra empty spots to reduce collisions (if two hash to slot 3, one probes to slot 4). A sorted-list lot assigns by alphabetical order — every spot holds a real car (100% full), and you find yours by binary search in the directory. Same cars, zero wasted spaces.</p>
+        <div class="breaks"><b>Where it breaks:</b> real parking doesn't pre-sort arrivals; HSMU-SpGEMM's "pre-sort" happens in the symbolic stage (building the mask and extracting sorted columns), which has its own cost (~26% + ~16% of total time per Fig. 17).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <line x1="30" y1="70" x2="110" y2="70" stroke="#9A8E7C" stroke-width="2"/>
+          <circle cx="50" cy="70" r="3" fill="#2C8C7C"/><circle cx="70" cy="70" r="3" fill="#2C8C7C"/><circle cx="90" cy="70" r="3" fill="#2C8C7C"/>
+          <path d="M 70 50 L 65 60 L 70 60 L 70 50 L 75 60 L 70 60" fill="none" stroke="#5A61B4" stroke-width="2"/>
+          <text x="70" y="40" text-anchor="middle" font-family="monospace" font-size="9" fill="#5A61B4">search</text>
+        </svg></div>
+        <span class="term">The lookup method · Binary search</span>
+        <h3>Phone book vs hash table</h3>
+        <p>Finding "Smith" in a phone book: open to the middle, too far? go left half; repeat — log N steps. A hash table would compute H("Smith") and jump straight there if no collision. Binary search is slower per lookup (log N vs O(1)) but needs zero extra space and never collides. For GPU shared memory, space is the bottleneck.</p>
+        <div class="breaks"><b>Where it breaks:</b> if you're adding/removing names constantly, hashing wins; but HSMU-SpGEMM's sorted array is <i>fixed</i> after symbolic stage — no insertions, so the hash advantage disappears.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="80" height="12" rx="2" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+          <rect x="30" y="48" width="80" height="12" rx="2" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+          <rect x="30" y="66" width="80" height="12" rx="2" fill="#FBEACB" stroke="#C27D14" stroke-width="1.5"/>
+          <text x="70" y="39" text-anchor="middle" font-family="monospace" font-size="8" fill="#5A61B4">OR</text>
+          <text x="70" y="57" text-anchor="middle" font-family="monospace" font-size="8" fill="#5A61B4">OR</text>
+          <text x="70" y="75" text-anchor="middle" font-family="monospace" font-size="8" fill="#C27D14">Result</text>
+        </svg></div>
+        <span class="term">The symbolic stage · Bitmask OR</span>
+        <h3>Overlapping transparencies</h3>
+        <p>Place two transparencies (each with some black dots) on top of each other — the combined image shows a dot wherever <i>either</i> original had one. HSMU-SpGEMM's mask B has a 1-bit for each NZ column in B's rows; OR-ing rows from mask B (according to A's NZs) produces mask C's row — already marking exactly which columns have NZs in C.</p>
+        <div class="breaks"><b>Where it breaks:</b> transparencies are physical; HSMU-SpGEMM's mask is a compressed bitstring (64-bit units for small matrices, CSR-like for large). Also, OR is fast, but <code>__ffsll()</code> extraction adds overhead.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="50" r="35" fill="none" stroke="#2C8C7C" stroke-width="2.5"/>
+          <path d="M 50 50 A 20 20 0 0 1 70 30" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="70" y="55" text-anchor="middle" font-family="monospace" font-size="10" fill="#1f5b51">~20</text>
+          <text x="70" y="20" font-family="monospace" font-size="9" fill="#9A8E7C">warp</text>
+        </svg></div>
+        <span class="term">Warp divergence · Branch uniformity</span>
+        <h4>Concert crowd turning heads</h4>
+        <p>A warp is like 32 people in lockstep: if half turn left and half turn right, you wait for both groups to finish before moving on. Binary search branches log N times, but so does hash probing with collisions. The paper's Fig. 13 shows both average ~20 active threads/warp — divergence is comparable, not worse.</p>
+        <div class="breaks"><b>Where it breaks:</b> real people don't execute in SIMD; GPU threads do. And if hash collisions are rare, hash might diverge less — but then you waste shared memory to make collisions rare.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="30" height="50" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <rect x="65" y="30" width="45" height="50" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3"/>
+          <text x="45" y="60" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">2 KB</text>
+          <text x="87" y="60" text-anchor="middle" font-family="monospace" font-size="9" fill="#9A8E7C">used</text>
+        </svg></div>
+        <span class="term">Shared memory · Precious resource</span>
+        <h5>Hotel rooms in Manhattan</h5>
+        <p>Shared memory is like hotel rooms in Manhattan — expensive and scarce (~128 KB per SM). If your accumulator reserves 2× the needed rooms "just in case," you halve the number of batches that can run concurrently. HSMU-SpGEMM's exact-size logical arrays mean more batches fit, higher throughput.</p>
+        <div class="breaks"><b>Where it breaks:</b> hotel rooms are rented continuously; GPU batches launch in waves. But the analogy holds: wasting shared memory reduces occupancy, which reduces parallelism.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="40" width="35" height="40" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <rect x="75" y="40" width="35" height="40" rx="4" fill="#FBEACB" stroke="#C27D14" stroke-width="2"/>
+          <text x="47" y="65" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">search</text>
+          <text x="92" y="65" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">dense</text>
+        </svg></div>
+        <span class="term">Hybrid approach · Dense rows</span>
+        <h6>Toolbox with specialized tools</h6>
+        <p>You wouldn't use a wrench to hammer nails. HSMU-SpGEMM uses binary search for sparse/medium rows (&lt;4096 NZ) but switches to spECK's dense accumulator for very dense rows — a direct array indexed by column. Hybrid design handles the full range of sparsity patterns efficiently.</p>
+        <div class="breaks"><b>Where it breaks:</b> real tools don't auto-switch; HSMU-SpGEMM sets a threshold (4096 NZ) based on empirical tuning (Fig. 6). Different matrices might prefer different thresholds.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key diagrams rebuilt.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem — hash trade-off is inherent</h3>
+      <p>Traditional hash-based accumulators (Nsparse, spECK, OpSparse, cuSPARSE) map intermediate products to a hash table via <code>hash = (col_index * scale) MOD table_length</code>. Collisions (different columns hash to the same slot) are resolved by linear probing — searching forward for an empty slot.</p>
+      <p>The trade-off: small tables → many collisions → slow probing. Large tables (roughly 2× needed for OpSparse, capped at 66% fill for spECK) → fewer collisions but wasted shared memory. On matrix <code>cant</code>, Nsparse (1× table) has 400% collision ratio (must probe 4× on average); OpSparse (2× table) has 2.75% collisions but only 35% shared memory utilization.</p>
+      <div class="callout note"><span class="ic">🌱</span><div><b>Concretely (Table I):</b> Nsparse: 70.67% utilization, 1.08 billion collisions, 11.30 ms. OpSparse: 35.35% utilization, 7.4 million collisions, 9.02 ms. HSMU-SpGEMM: 71.69% utilization, <b>zero</b> collisions, <b>7.80 ms</b>.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · The solution — sorted array + binary search</h3>
+      <p>HSMU-SpGEMM replaces the hash table with two exact-size arrays: <code>col[]</code> (sorted column indices of NZs, length = NNZ of row) and <code>val[]</code> (values, also length NNZ). To position an intermediate product with column <code>c</code>:</p>
+      <pre class="sketch"><span class="kw">function</span> <span class="hl">findInSorted</span>(col[], start, c):
+    <span class="cm"># binary search col[] for c, starting at start</span>
+    lo = start; hi = len(col) - 1
+    <span class="kw">while</span> lo &lt;= hi:
+        mid = (lo + hi) / 2
+        <span class="kw">if</span> col[mid] == c: <span class="kw">return</span> mid
+        <span class="kw">if</span> col[mid] &lt; c: lo = mid + 1
+        <span class="kw">else</span>: hi = mid - 1
+    <span class="kw">return</span> -1  <span class="cm"># not found (shouldn't happen if mask correct)</span></pre>
+      <p>This guarantees O(log N) lookup, zero collisions (every column in <code>col[]</code> is a real NZ), and exact-size arrays in the binary-search accumulator's logical structure. The catch: you need <code>col[]</code> sorted <i>before</i> the numeric stage — which is what the symbolic stage computes.</p>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Symbolic stage (small matrices) — bitmask method</h3>
+      <p>For matrices where each row fits in &lt;2048 columns (so 2048 bits = 32×64-bit units fit in shared memory), HSMU-SpGEMM uses a direct bitmask. Three steps:</p>
+      <ol class="seq">
+        <li><b>Build mask B:</b> For each row of B, create a bitstring where bit <code>j</code> = 1 if column <code>j</code> has a NZ, 0 otherwise. Store as 64-bit integers. Example: row [0,0,a,0,b] → bits 00101 (positions 2,4 set).</li>
+        <li><b>Build mask C:</b> For each row <code>i</code> of A, for each NZ <code>aij</code> in that row, OR mask B's row <code>j</code> into mask C's row <code>i</code>. This marks all columns where C will have NZs. Embarrassingly parallel across rows of A.</li>
+        <li><b>Extract sorted columns:</b> For mask C's row <code>i</code>, count 1-bits with <code>__popcll()</code> (gives NNZ), then extract positions of 1-bits with <code>__ffsll()</code> (find first set bit, clear it, repeat). Positions come out sorted left-to-right → sorted column array.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why sorted?</b> Bits are stored left-to-right in the integer, and <code>__ffsll()</code> scans from low to high bit — so extracted positions are inherently sorted. No explicit sort needed.</div></div>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Bitmask symbolic stage</div>
+      <div class="viz-kicker">OR rows of mask B → mask C → extract sorted columns</div>
+      <svg class="full" viewBox="0 0 700 280" role="img" aria-label="Bitmask symbolic stage diagram">
+        <text x="20" y="25" font-family="Fraunces" font-size="13" font-weight="600" fill="#332C24">Mask B (from matrix B)</text>
+        <g font-family="JetBrains Mono" font-size="10">
+          <text x="30" y="50" fill="#9A8E7C">row 0:</text><text x="90" y="50" fill="#5A61B4">0 1 0 1</text>
+          <text x="30" y="68" fill="#9A8E7C">row 1:</text><text x="90" y="68" fill="#5A61B4">0 1 1 0</text>
+          <text x="30" y="86" fill="#9A8E7C">row 2:</text><text x="90" y="86" fill="#5A61B4">0 1 1 0</text>
+          <text x="30" y="104" fill="#9A8E7C">row 3:</text><text x="90" y="104" fill="#5A61B4">0 1 0 0</text>
+        </g>
+        <path d="M 180 75 L 220 75" stroke="#C27D14" stroke-width="2" marker-end="url(#arrowhead)"/>
+        <text x="200" y="70" text-anchor="middle" font-family="monospace" font-size="9" fill="#C27D14">OR</text>
+        <defs><marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#C27D14"/></marker></defs>
+
+        <text x="250" y="25" font-family="Fraunces" font-size="13" font-weight="600" fill="#332C24">Mask C (for row 0 of A)</text>
+        <text x="260" y="50" font-family="Mulish" font-size="10" fill="#9A8E7C">A's row 0 has NZ at cols 1,3</text>
+        <text x="260" y="68" font-family="JetBrains Mono" font-size="10" fill="#2C8C7C">mask_B[1] OR mask_B[3]</text>
+        <text x="260" y="86" font-family="JetBrains Mono" font-size="10" fill="#2C8C7C">= (0110) OR (0100) = 0110</text>
+
+        <text x="20" y="140" font-family="Fraunces" font-size="13" font-weight="600" fill="#332C24">Extract with __ffsll()</text>
+        <text x="30" y="165" font-family="JetBrains Mono" font-size="10" fill="#5A61B4">mask_C = 0110 (bits 1,2 set)</text>
+        <text x="30" y="183" font-family="JetBrains Mono" font-size="10" fill="#2C8C7C">__popcll(0110) = 2 (NNZ)</text>
+        <text x="30" y="201" font-family="JetBrains Mono" font-size="10" fill="#2C8C7C">__ffsll(0110) = 1 → col[0]=1</text>
+        <text x="30" y="219" font-family="JetBrains Mono" font-size="10" fill="#2C8C7C">clear bit 1 → 0100</text>
+        <text x="30" y="237" font-family="JetBrains Mono" font-size="10" fill="#2C8C7C">__ffsll(0100) = 2 → col[1]=2</text>
+        <text x="30" y="255" font-family="JetBrains Mono" font-size="10" fill="#2C8C7C">Sorted col[] = [1, 2]</text>
+      </svg>
+      <figcaption><b>Small-matrix symbolic:</b> OR bitmask rows from B (per A's NZs) to get C's mask, then extract sorted columns with library intrinsics. Zero explicit sorting. (Paper Fig. 3)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Symbolic stage (large matrices) — compressed mask</h3>
+      <p>For matrices &gt;2048 columns, the bitmask would be too large for shared memory. HSMU-SpGEMM switches to a <b>compressed mask</b> format similar to CSR: store only the 64-bit units that contain 1-bits, indexed by a <code>tilePtr</code> and <code>tileCol</code> array.</p>
+      <p>The process: build compressed mask B (scan B's CSR, mark which 64-bit tiles have NZs), then call <b>OpSparse's symbolic kernel</b> modified to do bitwise OR instead of multiply-add. This produces compressed mask C. Extract NNZ and sorted columns the same way as small matrices (via <code>__popcll()</code> and <code>__ffsll()</code> on the stored tiles).</p>
+      <div class="callout note"><span class="ic">🌱</span><div>The compressed mask adds overhead (Fig. 17 shows "Generate auxiliary mask" averages 26.40% of total time and "Generate sorted Ccol" averages 15.83%). But it scales to huge matrices where the simple bitmask would overflow shared memory.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Numeric stage — binary search + atomic-add</h3>
+      <p>With sorted <code>col[]</code> in hand from symbolic stage, the numeric stage (Algorithm 2 in paper) processes each row of C in a thread block:</p>
+      <ol class="seq">
+        <li>Load sorted <code>col[]</code> into shared memory; initialize shared <code>val[]</code> to zero.</li>
+        <li>Assign warps to NZs of A's row: warp <code>w</code> handles <code>A[row_i][w]</code> (stride by <code>wnum</code> = warps/block).</li>
+        <li>Each thread in the warp processes one NZ of B's corresponding row: binary-search shared <code>col[]</code> for the product's column index, atomic-add the value to shared <code>val[pos]</code>.</li>
+        <li>After all warps finish, shared <code>val[]</code> contains the final NZ values for row <code>i</code> of C — copy to global memory.</li>
+      </ol>
+      <p>Key optimization: the <code>pos</code> variable in binary search is updated after each find, so the next search starts from the last position found (columns tend to cluster) — reduces search space.</p>
+      <div class="callout takeaway"><span class="ic">🍯</span><div>The atomic-add is necessary because multiple threads/warps can accumulate to the same column index. Shared memory atomics are fast; the binary search (O(log N)) is the main cost, but it's stable and collision-free.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>6 · Hybrid: dense accumulator for long rows</h3>
+      <p>Rows with &gt;4096 NZ elements use spECK's dense accumulator instead: a direct-indexed array (length = number of columns in C) where <code>val[c]</code> is the value for column <code>c</code>. No search needed, but requires more memory and a final scan to extract NZs.</p>
+      <p>The threshold (4096) was tuned empirically (Fig. 6): too low and many rows use dense unnecessarily (slow); too high and long rows suffer from excessive binary searches. At 4096, HSMU-SpGEMM achieves max geometric mean GFLOPS (32.94 on 3090 Ti).</p>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Three traces using the paper's data.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Computing shared memory utilization</h3>
+      <p style="color:var(--ink-soft)">Matrix <code>cant</code>: row of C has 269.5M intermediate products collapsing to 17.4M NZs (compression 15×). Hash-based and HSMU-SpGEMM allocate shared memory per batch. Compare utilization.</p>
+      <ol class="seq">
+        <li><b>OpSparse (roughly 2× hash table):</b> Batch processes rows with max NNZ = 1000. Allocates hash table length roughly 2000 (2× max). Measured avg utilization: <b>35.35%</b> (Table I).</li>
+        <li><b>spECK (capped at 66% fill):</b> Table fill is capped at 66%, but actual utilization can be inefficient for some matrices due to lack of global load balancing (Fig. 11).</li>
+        <li><b>HSMU-SpGEMM:</b> Batch max NNZ = 1000. Allocates sorted <code>col[1000]</code> and <code>val[1000]</code> for binary-search rows — both exactly sized for the logical accumulator structure. Measured: <b>71.69%</b> on <code>cant</code> (Table I), about 68% average (Fig. 11).</li>
+        <li><b>Result:</b> HSMU-SpGEMM's exact-size arrays in the binary-search component enable higher utilization than OpSparse's roughly 2× allocation.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div>Table I shows actual measurements: HSMU-SpGEMM 71.69% on <code>cant</code> (includes dense rows overhead), OpSparse 35.35%, Nsparse 70.67% (but with 400% collisions). Higher utilization → faster.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Bitmask symbolic stage on toy example</h3>
+      <p style="color:var(--ink-soft)">Compute row 0 of C for 4×4 matrices A and B (paper Fig. 3). A's row 0 = [0, a, 0, b]. B is 4×4 with NZs shown in the figure. Build mask C.</p>
+      <ol class="seq">
+        <li><b>Mask B:</b> Row 1 of B has NZ at cols 0,2 → bits 1010. Row 3 has NZ at col 1 → bits 0100. (4-bit example; real uses 64-bit units.)</li>
+        <li><b>Compute mask C row 0:</b> A's row 0 has NZ at cols 1,3 (indices of a,b). OR mask_B[1] with mask_B[3]: (1010) OR (0100) = <b>1110</b>.</li>
+        <li><b>Extract NNZ:</b> <code>__popcll(1110) = 3</code> → row 0 of C has <b>3 NZs</b>.</li>
+        <li><b>Extract sorted columns:</b> <code>__ffsll(1110) = 0</code> (bit 0 set) → col[0]=0. Clear bit 0 → 1100. <code>__ffsll(1100) = 1</code> → col[1]=1. Clear → 1000. <code>__ffsll(1000) = 2</code> → col[2]=2. Sorted col[] = <b>[0,1,2]</b>.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The numeric stage would then load col[] = [0,1,2] into shared memory, initialize val[] = [0,0,0], and binary-search to accumulate products. Zero collisions, exact fit.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Performance breakdown on matrix <code>cant</code></h3>
+      <p style="color:var(--ink-soft)">NVIDIA RTX 3090 Ti, double-precision. Paper Table I and Fig. 10. Compare end-to-end runtime and collision count.</p>
+      <ol class="seq">
+        <li><b>Nsparse:</b> 11.30 ms total. Hash table 1× max NNZ → 1.08 billion collisions (400% ratio). Shared mem 70.67% but collision overhead dominates.</li>
+        <li><b>OpSparse:</b> 9.02 ms total. Hash table roughly 2× max NNZ → 7.4 million collisions (2.75% ratio). Shared mem only 35.35% — wasted space.</li>
+        <li><b>HSMU-SpGEMM:</b> 7.80 ms total (<b>15% faster</b> than OpSparse, 31% faster than Nsparse). Zero collisions. Shared mem 71.69%.</li>
+        <li><b>Breakdown (Fig. 17):</b> Generate mask ~26% of time, generate sorted col ~16%, numeric stage ~57%, malloc 0.86%. OpSparse spends ~77% in numeric (Fig. 18) but has simpler symbolic — trade-off.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div>HSMU-SpGEMM's symbolic stage overhead is real but manageable: format conversion is mostly under one-tenth of one SpGEMM (Fig. 19), and in iterative solvers (AMG, Krylov) the cost amortizes over many SpGEMM calls.</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try before opening the answer. Each checks a common misconception.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A hash table with length 2000 holds 1000 NZ elements. What is its shared memory utilization, and why does HSMU-SpGEMM avoid this waste?</div>
+      <details><summary>Show answer</summary><div class="ans">Utilization = 1000 / 2000 = <b>50%</b>. Half the allocated slots are empty (reserved to reduce collisions). HSMU-SpGEMM allocates exactly 1000 slots (sorted col[] and val[]) for its binary-search accumulator's logical structure, using exact-size arrays — no wasted space, no collisions (binary search finds the right slot).<span class="mis">Misconception: that larger tables are always better. They reduce collisions but waste shared memory, reducing GPU occupancy (fewer concurrent batches).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Why does HSMU-SpGEMM's binary search not suffer from worse warp divergence than hash-based methods, despite branching log N times?</div>
+      <details><summary>Show answer</summary><div class="ans">Hash collisions also cause divergence: some threads find their slot immediately, others loop to probe. Binary search branches uniformly (all threads do the same log N comparisons on different data). Fig. 13 shows similar "avg active threads/warp" (~20) for HSMU-SpGEMM, spECK, and OpSparse — divergence is comparable, not worse. The key is that HSMU-SpGEMM's branches are <i>predictable</i> (always log N steps), while hash collisions are data-dependent.<span class="mis">Misconception: that binary search always hurts divergence more than hashing. It depends on collision rate and access patterns.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">A row of C has NNZ=5000. OpSparse allocates a hash table of length 10,000 (2×). HSMU-SpGEMM allocates what, and how does the dense accumulator threshold (4096) affect this row?</div>
+      <details><summary>Show answer</summary><div class="ans">HSMU-SpGEMM checks: NNZ=5000 &gt; 4096 → use <b>dense accumulator</b> instead of binary search. Allocates a direct-indexed array (length = num columns in C, e.g., 10,000 if C is 10k×10k), initializes to zero, then indexes directly by column (no search). After computation, scans the array to extract the 5000 NZs. This is faster than 5000 binary searches (each O(log 5000) ≈ 12 steps) but uses more memory. OpSparse's hash table for this row would be in <i>global memory</i> (too big for shared) → very slow.<span class="mis">Misconception: that HSMU-SpGEMM only uses binary search. It's a hybrid: binary search for sparse/medium rows, dense for very dense rows (threshold tuned to 4096 for best avg performance).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Matrix <code>vsp_model1_crew1_cr42_south31</code> (paper Fig. 8a) has extremely compact NZ distribution and gives HSMU-SpGEMM a 131× speedup over Nsparse. Explain why hash-based methods fail here and HSMU-SpGEMM succeeds.</div>
+      <details><summary>Show answer</summary><div class="ans">Compact distribution → many NZs with similar column indices → they hash to <i>nearby</i> slots. Linear probing chains collisions → if slot k is full, try k+1, k+2, ... This creates <b>clustering</b>: a collision at k affects k+1, k+2, etc., causing chain reactions. Nsparse's 1× table hits extreme clustering (400% collision ratio on <code>cant</code>, worse on this matrix). HSMU-SpGEMM is unaffected: compact NZs just means the sorted col[] has sequential indices (e.g., [100,101,102,...]). Binary search finds them in log N steps regardless of compactness. Plus, the symbolic stage's OR operations on compact masks are faster (fewer distinct 64-bit units).<span class="mis">Misconception: that hash tables handle all patterns equally. Clustering destroys hash performance but doesn't affect binary search.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">The paper's Fig. 19 shows format conversion overhead (CSR → compressed mask) is mostly under one-tenth the cost of a single SpGEMM. Why does this matter for iterative solvers like algebraic multigrid?</div>
+      <details><summary>Show answer</summary><div class="ans">In AMG or Krylov methods, the paper notes you can amortize format conversion in iterative scenarios — you could run SpGEMM many times on the same matrix structure. If conversion is mostly under 1/10 per call and HSMU-SpGEMM is 3× faster per SpGEMM (geometric mean speedup), the conversion overhead becomes small relative to the overall gain in iterative workloads.<span class="mis">Misconception: that symbolic stage overhead kills performance. The paper says it's mostly under one-tenth of one SpGEMM and can be amortized in iterative contexts.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Matrix <code>in-2004</code> (paper Fig. 8b) has highly scattered NZ distribution and gives HSMU-SpGEMM its <i>minimum</i> speedup. Explain why scattered patterns favor hash-based methods.</div>
+      <details><summary>Show answer</summary><div class="ans">Scattered NZs → column indices spread across the matrix (e.g., [5, 203, 1845, 3002, ...]). Hash function distributes them uniformly → <b>low collision rate</b> even with a 1× table. OpSparse/spECK see few collisions, fast probing. For HSMU-SpGEMM: 1) Symbolic stage overhead increases: more distinct 64-bit units in the compressed mask (each unit covers a 64-column span; scattered NZs hit many spans) → more OR operations. 2) Dense accumulator (if row &gt; 4096 NZ) must scan a large direct array to extract scattered NZs (many zero gaps). Binary search itself is fine (O(log N) is stable) but the symbolic overhead and extraction cost add up. Hash methods win on these matrices.<span class="mis">Misconception: that HSMU-SpGEMM is always fastest. It wins on avg (3.2× geom mean) but loses on some scattered matrices where hash tables work well and symbolic overhead is high.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">Why does HSMU-SpGEMM use <code>__ffsll()</code> (find first set bit) instead of a general sort to extract column indices from the bitmask?</div>
+      <details><summary>Show answer</summary><div class="ans"><code>__ffsll()</code> scans the 64-bit integer from low bit to high bit, finding the position of the first 1. Clear that bit, repeat → positions come out in <b>ascending order</b> automatically (bit 0, then bit 5, then bit 12, ...). No explicit sort needed; the intrinsic function does it in hardware. A general sort would be O(N log N); <code>__ffsll()</code> loop is O(NNZ) with low constant factor (hardware instruction).<span class="mis">Misconception: that sorted columns require a sort pass. The bitmask representation and <code>__ffsll()</code> give sorted columns as a byproduct.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">The paper's Table V shows HSMU-SpGEMM uses 3.61 GB peak memory for matrix <code>gupta3</code>, while OpSparse uses 9.81 GB. Both compute the same output. Where does OpSparse's extra memory go?</div>
+      <details><summary>Show answer</summary><div class="ans">Matrix <code>gupta3</code> has 16,762 rows in C with &gt;4096 NZ each (long rows). OpSparse can't fit these in shared memory, so it allocates <b>global memory</b> hash tables (roughly 2× row NNZ each) for all 16,762 rows simultaneously. At roughly 2× overhead and large NNZ, this balloons to 9.81 GB. HSMU-SpGEMM uses the dense accumulator for long rows, which processes them in batches (not all at once) and only stores the final NZ values (not 2× hash table overhead) → 3.61 GB. The paper notes OpSparse <i>fails</i> to complete <code>case39</code> and <code>TSOPF_FS_b300_c2</code> due to out-of-memory, while HSMU-SpGEMM completes them.<span class="mis">Misconception: that OpSparse's roughly 2× table is always small. For matrices with many long rows, the global memory overhead becomes prohibitive.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What does "shared memory utilization" actually mean?<span class="chev">▾</span></summary><div class="a">Ratio of space <i>used</i> by real data to space <i>allocated</i> in shared memory. A hash table of length 2000 holding 1000 NZs has 50% utilization — half the slots are empty (reserved to avoid collisions). HSMU-SpGEMM allocates exactly 1000 slots (sorted col[] + val[]) for its binary-search component → exact-size logical arrays. Measured avg utilization is about 68% (including dense rows overhead). Higher utilization → more batches fit in shared memory → higher GPU occupancy → faster.</div></details>
+      <details><summary><span class="q">Q2</span>Why is binary search stable but hash probing isn't?<span class="chev">▾</span></summary><div class="a">Binary search always takes O(log N) steps — predictable, no data-dependent variance. Hash probing depends on collisions: if few, it's O(1); if many (clustering), it can degenerate to O(N). Compact NZ patterns (paper Fig. 8a) cause hash clustering → chain collisions → OpSparse slows to 107× worse than HSMU-SpGEMM. Binary search is unaffected by NZ pattern.</div></details>
+      <details><summary><span class="q">Q3</span>How does the symbolic stage "know" the sorted columns before computing values?<span class="chev">▾</span></summary><div class="a">It doesn't compute values — only <i>positions</i>. Symbolic stage builds a bitmask (or compressed mask) marking "there's a NZ here" without computing the actual NZ. Bitwise OR is fast; extract positions with <code>__ffsll()</code> → sorted column indices. However, this preprocessing has cost: Fig. 17 reports "Generate auxiliary mask" averages 26.40% of total time and "Generate sorted Ccol" averages 15.83%. The numeric stage then computes the <i>values</i> for those positions via binary search + atomic-add.</div></details>
+      <details><summary><span class="q">Q4</span>Why does HSMU-SpGEMM switch to a dense accumulator at 4096 NZ?<span class="chev">▾</span></summary><div class="a">Tuned empirically (paper Fig. 6). Below 4096, binary search (log N ≈ 12 steps) is faster than scanning a large direct array. Above 4096, the direct array wins: index by column (O(1)), then scan to extract NZs once. The threshold balances search cost vs scan cost. Different GPUs or matrix types might prefer different thresholds, but 4096 maximizes avg GFLOPS on their test set.</div></details>
+      <details><summary><span class="q">Q5</span>Does HSMU-SpGEMM always beat hash-based methods?<span class="chev">▾</span></summary><div class="a">No — it wins on average (3.2× geom mean speedup on 338 matrices, paper Table III) but loses on some scattered matrices (e.g., <code>in-2004</code>, paper Fig. 8b). Scattered NZs → hash tables have low collisions (fast), while HSMU-SpGEMM's symbolic stage has higher overhead (more distinct 64-bit mask units to OR). Trade-off: hash wins on ~10% of matrices, HSMU-SpGEMM wins on ~62% (paper Table IV).</div></details>
+      <details><summary><span class="q">Q6</span>What's the overhead of format conversion (CSR → compressed mask)?<span class="chev">▾</span></summary><div class="a">Paper Fig. 19 shows it's mostly under one-tenth the cost of a single SpGEMM on most matrices. The paper says this can be amortized in iterative solvers (AMG, Krylov) where you run many SpGEMMs on the same matrix structure. Even at about 1/10 per call, HSMU-SpGEMM's 3× numeric speedup makes the conversion overhead manageable in iterative workloads.</div></details>
+      <details><summary><span class="q">Q7</span>Why doesn't cuSPARSE use a similar approach?<span class="chev">▾</span></summary><div class="a">cuSPARSE v11.4 uses a hash-based accumulator (closed source, so details unclear). It's optimized for general-purpose use and backward compatibility. The paper shows cuSPARSE is 5–7× slower than HSMU-SpGEMM on avg (geom mean). Research prototypes like HSMU-SpGEMM push the frontier; commercial libraries follow later (with more testing/validation).</div></details>
+      <details><summary><span class="q">Q8</span>Does HSMU-SpGEMM work for non-square matrices or A × B^T?<span class="chev">▾</span></summary><div class="a">The evaluation uses 338 sparse square matrices from SuiteSparse and additionally A × A^T on eight non-symmetric matrices (Fig. 16). The method applies to sparse × sparse in general; the mask matrix adapts to the dimensions. Performance depends on sparsity pattern.</div></details>
+      <details><summary><span class="q">Q9</span>How does HSMU-SpGEMM handle extremely large matrices that don't fit in GPU memory?<span class="chev">▾</span></summary><div class="a">The paper's evaluation is on matrices that fit on the tested GPUs. The largest tested matrix is <code>delaunay_n24</code> (16.8M rows, 100.7M NNZ, 633.9M intermediate products) — fits in 24 GB VRAM of RTX 3090 Ti. Out-of-core execution (doesn't fit) is not covered in the paper.</div></details>
+      <details><summary><span class="q">Q10</span>What did the authors leave for future work?<span class="chev">▾</span></summary><div class="a">The conclusion says future work is applying HSMU-SpGEMM in real-world scenarios such as accelerating deep neural network execution. Implicit extensions could include: 1) Auto-tuning the dense threshold (4096) per matrix or GPU architecture. 2) Handling FP32/FP16 (paper tests FP64 only). 3) Multi-GPU scaling (current is single-GPU). 4) Integration with higher-level libraries.</div></details>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>HSMU-SpGEMM</b><span>High Shared Memory Utilization SpGEMM — this paper's method. Uses sorted arrays + binary search instead of hash tables.</span></div>
+      <div class="term-def"><b>SpGEMM</b><span>Sparse General Matrix-Matrix Multiplication. C = A × B where all are sparse (most entries zero).</span></div>
+      <div class="term-def"><b>Shared memory utilization</b><span>Ratio of used slots to allocated slots in GPU shared memory. Higher = less waste, more concurrent batches.</span></div>
+      <div class="term-def"><b>Hash collision</b><span>When two column indices map to the same hash table slot. Resolved by linear probing (slow, causes warp divergence).</span></div>
+      <div class="term-def"><b>Binary search</b><span>O(log N) lookup in a sorted array. Stable cost, zero collisions — HSMU-SpGEMM's core trick.</span></div>
+      <div class="term-def"><b>Bitmask / mask matrix</b><span>Auxiliary structure where each bit = "is there a NZ here?" Used in symbolic stage to compute NZ positions via OR.</span></div>
+      <div class="term-def"><b>Symbolic stage</b><span>First phase: determine <i>where</i> NZs are (positions, count) without computing values. Allocates memory.</span></div>
+      <div class="term-def"><b>Numeric stage</b><span>Second phase: compute actual NZ <i>values</i> via multiply-accumulate, using positions from symbolic stage.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>CSR (Compressed Sparse Row)</b><span>Sparse matrix format: ptr, col, val arrays. Row i's NZs are col[ptr[i]:ptr[i+1]], val[...].</span></div>
+      <div class="term-def"><b>NZ / NNZ</b><span>Non-Zero element / Number of Non-Zeros in a matrix or row.</span></div>
+      <div class="term-def"><b>Intermediate product</b><span>Temporary result aij × bjk during row-row multiply. Many products share the same column index (need accumulation).</span></div>
+      <div class="term-def"><b>Compression ratio</b><span>Ratio of intermediate products to final NZs. High ratio (10–100×) means heavy accumulation load.</span></div>
+      <div class="term-def"><b>SM (Streaming Multiprocessor)</b><span>GPU's parallel execution unit. Has ~128 KB shared memory (RTX 3090 Ti), many CUDA cores.</span></div>
+      <div class="term-def"><b>Warp</b><span>Group of 32 GPU threads executing in SIMD lockstep. Divergence (different branches) serializes execution.</span></div>
+      <div class="term-def"><b>Warp divergence</b><span>When threads in a warp take different code paths (e.g., hit vs probe in hash table). Reduces parallelism.</span></div>
+      <div class="term-def"><b>Batch processing</b><span>Group rows of similar size, process in batches on SMs. Improves load balance and shared memory reuse.</span></div>
+      <div class="term-def"><b>Binning</b><span>Grouping rows by NNZ into bins (e.g., 0–100, 100–1000, ...). Each bin uses appropriate resources (warp/block config).</span></div>
+      <div class="term-def"><b>Dense accumulator</b><span>Direct-indexed array (length = num columns). Fast for very dense rows but needs more memory.</span></div>
+      <div class="term-def"><b>Compressed mask</b><span>CSR-like format for the bitmask (large matrices). Store only non-zero 64-bit units, indexed by tilePtr/tileCol.</span></div>
+      <div class="term-def"><b>__popcll() / __ffsll()</b><span>CUDA intrinsics: count bits / find first set bit in 64-bit int. Used to extract NNZ and sorted columns from mask.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What HSMU-SpGEMM buys (vs baselines)</div>
+      <div class="viz-kicker">geometric mean speedup · 338 matrices · RTX 3090 Ti</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">vs Nsparse<small>geom mean</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="63.8"><span>3.19× (up to 131.64×)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">vs spECK<small>geom mean</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="25.6"><span>1.28× (up to 4.68×)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">vs OpSparse<small>geom mean</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="46.8"><span>2.34× (up to 107.70×)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">vs cuSPARSE<small>geom mean</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="101.2"><span>5.06× (up to 14.15×)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Shared mem util<small>avg</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="136"><span>68% (vs OpSparse 35%)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0× ▏▏▏▏▏▏▏▏▏▏ 5×</p>
+      <figcaption><b>Breaking the trade-off:</b> zero collisions + high utilization = 3–5× geom mean speedup, up to 131× on compact matrices. (Paper Tables I, III)</figcaption>
+    </figure>
+
+    <div class="subhead">Related work</div>
+    <div class="read-item reveal"><h4>Gustavson's Algorithm (1978) <span class="diff easy">foundational</span></h4><div class="meta">ACM Trans. Math. Software · row-row SpGEMM</div><p>The classic row-by-row method HSMU-SpGEMM builds on. Introduced the accumulator concept — this paper improves it with sorted arrays.</p></div>
+    <div class="read-item reveal"><h4>Nsparse (ICPP'17) <span class="diff med">baseline</span></h4><div class="meta">Nagasaka et al. · hash 1×, binning strategy</div><p>High collision rate (400% on <code>cant</code>) but good binning. HSMU-SpGEMM reuses the binning, replaces the hash accumulator.</p></div>
+    <div class="read-item reveal"><h4>spECK (PPoPP'20) <span class="diff med">baseline</span></h4><div class="meta">Parger et al. · hash capped at 66% fill, hybrid with dense</div><p>First to combine hash + dense accumulators. HSMU-SpGEMM adopts the dense part, replaces hash with binary search for better utilization.</p></div>
+    <div class="read-item reveal"><h4>OpSparse (IEEE Access'22) <span class="diff med">baseline</span></h4><div class="meta">Du et al. · hash roughly 2×, global mem for long rows</div><p>Hash-based utilization averages about 35%. HSMU-SpGEMM's exact-size arrays win on avg, lower peak memory for long rows.</p></div>
+    <div class="read-item reveal"><h4>cuSPARSE v11.4 (NVIDIA) <span class="diff easy">commercial baseline</span></h4><div class="meta">Closed source · cusparseSpGEMM</div><p>NVIDIA's official library. HSMU-SpGEMM is 5–7× faster (geom mean) — shows research prototypes can exceed commercial state-of-the-art.</p></div>
+    <div class="read-item reveal"><h4>bhSPARSE (IPDPS'14) <span class="diff hard">non-hash baseline</span></h4><div class="meta">Liu & Vinter · merge-based + ESC</div><p>Different approach (merge rows, sort, compress). HSMU-SpGEMM's numeric stage is faster (paper Fig. 14) but symbolic overhead is higher — trade-off.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card" style="background:var(--paper-2);border-color:var(--line-strong)">
+      <h3 style="font-size:1.1rem;color:var(--ink)">Provenance</h3>
+      <p style="font-size:.94rem;color:var(--ink-soft);margin:0">All numbers, speedups, and design choices are from the paper "HSMU-SpGEMM: Achieving High Shared Memory Utilization for Parallel Sparse General Matrix-Matrix Multiplication on Modern GPUs" (Wu et al., HPCA 2025). Tables I–V, Figs. 1–20, Algorithm 2, and evaluation on 338 SuiteSparse matrices are directly cited. Analogies and framing are original to this guide; every claim about the paper's method is grounded in the published text. The hybrid dense accumulator threshold (4096 NZ) is from empirical tuning in Fig. 6. Measured shared memory utilization is 71.69% on matrix <code>cant</code> (Table I) and about 68% average (Fig. 11), including dense rows and overhead; the exact-size idea applies to the binary-search accumulator's logical arrays. Speedups are geometric means unless noted "up to" (max). The paper's evaluation uses 338 sparse square matrices and additionally A × A^T on eight non-symmetric matrices (Fig. 16).</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Wu et al., "HSMU-SpGEMM" (HPCA 2025)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against paper</span>
+    <span><b>Code:</b> github.com/wuminqaq/HSMU-SpGEMM</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXSP = 5;
+  function maybeAnimateBars(){
+    var bars = document.getElementById('resultsBars');
+    if(!bars || barsDone || !bars.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXSP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    bars.classList.add('shown');
+    barsDone = true;
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
