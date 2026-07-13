@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLAP: Choosing the Right Page Size for Multi-Chip GPUs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;      /* teal  = high-locality / fine-grained */
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;    /* indigo = CLAP machinery */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = coarse / large pages */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>MICRO 2025 · A Field Guide</span>
+    <h1>Page size is <span class="swash">not one-size-fits-all</span> in MCM GPUs</h1>
+    <p class="lede">Multi-chip GPUs let each chiplet hold its own memory. Default memory mapping can exile a thread's data to the wrong chiplet—but <strong>CLAP</strong> discovers each workload's natural page grouping and maps it accordingly, delivering both translation speed and data locality.</p>
+    <div class="hero-meta">
+      <span>📄 CLAP (Park et al., MICRO '25)</span>
+      <span>🎓 GPU memory-system basics assumed</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🗂️</div>
+      <p>Map contiguous pages that are <span class="ro">accessed by the same chiplet</span> to <span class="wo">contiguous frames in that chiplet</span>—then treat the group as a large page.<br><em style="font-size:.9rem">Measure how pages cluster ("chiplet-locality"), decide the cluster size, then map it in one go.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary</h2>
+      <p class="sub">Six core acronyms and four key concepts the paper uses. Expand any that look unfamiliar.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> fine-grained / high locality</span>
+      <span><i style="background:var(--honey-deep)"></i> intermediate / adaptive</span>
+      <span><i style="background:var(--ltram)"></i> CLAP mechanisms</span>
+      <span><i style="background:var(--optane)"></i> coarse / large pages</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>MCM GPU — multi-chip module<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>multi-chip module (MCM) GPU</b> integrates multiple GPU chiplets in a single package. Each chiplet has local memory partitions. A thread can access <b>local</b> memory (same chiplet, ∼low latency) or <b>remote</b> memory (another chiplet, ∼higher latency + off-chip BW cost). The paper's baseline uses four chiplets.</p>
+          <div class="ready"><b>Now you're ready:</b> CLAP tackles the NUMA (Non-Uniform Memory Access) challenge: keeping data near the threads that use it.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Page & page size<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Virtual memory divides the address space into fixed-size blocks called <b>pages</b>. Common sizes: 4KB, 64KB, 2MB. A <b>large page</b> (e.g., 2MB) maps a big virtual region to one physical frame—reducing TLB pressure but forcing coarse-grained placement. A <b>small page</b> (e.g., 64KB) allows fine-grained placement but can strain address translation (more TLB misses).</p>
+          <div class="ready"><b>Now you're ready:</b> CLAP picks page size (really, the granularity of contiguous-page groups) per data structure to balance translation efficiency and locality.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Chiplet-locality<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Chiplet-locality:</b> GPU workloads often access data in patterns where specific groups of virtually contiguous pages are primarily used by threads on the same chiplet. The size of these groups (e.g., 64KB, 256KB) tends to remain consistent within a single data structure. This stems from parallel programming models where adjacent threads work on adjacent data.</p>
+          <div class="ready"><b>Now you're ready:</b> CLAP measures chiplet-locality and uses it to decide page-group size—so pages that belong together get mapped together.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>First-touch (FT) policy<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>On a page fault, the <b>first-touch</b> policy places the faulting page in the chiplet where the first accessing thread resides. This simple heuristic often captures locality—the first thread is likely on the chiplet that will use the page most. The paper uses FT as its baseline data-placement strategy, combined with contiguous threadblock scheduling.</p>
+          <div class="ready"><b>Now you're ready:</b> FT naturally exposes chiplet-locality during CLAP's profiling phase, letting CLAP see which pages cluster together per chiplet.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>PMM — partial memory mapping<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>PMM</b> is CLAP's lightweight profiling step. At kernel launch, the driver maps only a fraction (default: 20%) of each data structure using small pages (64KB). This creates a <i>sample mapping</i> that reveals how pages are accessed across chiplets, without paying the full cost of mapping everything up front.</p>
+          <div class="ready"><b>Now you're ready:</b> PMM gathers the usage pattern; MMA (memory mapping analysis) then picks the right page size; the remainder of the structure is mapped accordingly.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>MMA — memory mapping analysis<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>MMA</b> is CLAP's decision engine. After PMM completes, MMA examines the sample mapping using a tree-based algorithm. It computes a <i>locality score</i> at each page-group size (64KB, 128KB, 256KB, …) and picks the largest size where virtually all pages land in the chiplet they're supposed to. Hardware counters (from the <b>Remote Tracker</b>) refine this choice if the structure is inherently shared.</p>
+          <div class="ready"><b>Now you're ready:</b> MMA outputs "use 256KB groups for this structure"—and the driver maps the rest in 256KB contiguous chunks.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>RT — Remote Tracker<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A small hardware table (32 entries, ∼288 bytes) in each chiplet's GMMU. RT logs <i>access count</i> and <i>remote-access count</i> for each data structure during PMM. When MMA runs, it aggregates RT stats across chiplets to compute the remote-access ratio. If a structure is inherently shared (high remote ratio), MMA relaxes locality requirements and favors larger pages.</p>
+          <div class="ready"><b>Now you're ready:</b> RT's counters let CLAP distinguish "shared by design" (pick large pages) from "misplaced by accident" (use fine-grained groups).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>TLB coalescing<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Because CLAP deliberately maps virtually contiguous pages to physically contiguous frames, the hardware can <b>coalesce</b> up to 16 contiguous PTEs (fetched in one cache line) into a single TLB entry. This entry covers the full group (up to 1MB if 16×64KB pages). Result: the group behaves like a large page for translation—low TLB pressure—without losing fine-grained placement control.</p>
+          <div class="ready"><b>Now you're ready:</b> Coalescing is the payoff—CLAP's mapped groups act as large pages for address translation, but they're built from small pages placed exactly where they're needed.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>OLP — opportunistic large paging<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>During PMM, if all 64KB pages in a 2MB VA block happen to land in the same chiplet, the driver <b>promotes</b> that block to a true 2MB page. If pages land in different chiplets, the driver releases the 2MB reservation and falls back to separate 64KB mappings. This recovers large-page benefits when locality is naturally strong, without waiting for MMA.</p>
+          <div class="ready"><b>Now you're ready:</b> OLP is an optimization that speeds up clear-cut cases during profiling; MMA handles the complex ones afterward.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">10</span>Remote access ratio vs. locality score<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The <b>remote access ratio</b> (from RT) tells you what fraction of page-walk accesses to a structure hit remote chiplets during PMM. The <b>locality score</b> (from MMA's tree) tells you what fraction of pages in a candidate group are mapped to the intended chiplet. MMA combines both: <code>score_avg(level) ≥ threshold − remote_ratio</code>. High remote ratio lowers the bar for accepting a larger page size.</p>
+          <div class="ready"><b>Now you're ready:</b> If a structure is shared (high remote ratio), MMA selects a bigger group size; if it's private (low remote ratio), MMA picks the tightest fit that preserves locality.</div>
+        </div>
+      </details>
+    </div>
+
+    <div class="callout note" style="margin-top:28px">
+      <span class="ic">🧩</span>
+      <div><b>Connecting to your work:</b> If you've dealt with Linux's <i>autonuma</i> or <i>THP</i> (transparent huge pages) on CPUs, CLAP is the GPU analog—but GPU parallelism makes memory access patterns more predictable, so CLAP can <i>profile once</i> (during PMM) rather than react continuously. If you've used NVIDIA UVM, CLAP lives in that same demand-paging layer, deciding page size rather than just placement. If you've thought about CXL-attached memory, CLAP's chiplet-locality idea applies wherever you have tiered or NUMA memory with page-level control.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>CLAP in a nutshell</h2>
+      <p class="sub">The problem, the measurement that solves it, and the payoff.</p>
+    </div>
+    <div class="prose">
+      <p>In a 4-chiplet MCM GPU, threads on chiplet-0 can access memory mapped to chiplet-1, chiplet-2, or chiplet-3—but those <b>remote accesses</b> incur higher latency and consume off-chip bandwidth. To minimize remote traffic, data should land near the threads using it. Conventional wisdom: use small pages (e.g., 64KB) so each page can be placed precisely. But small pages strain address translation—more TLB misses, more page walks. Large pages (e.g., 2MB) ease translation but force a contiguous 2MB virtual region to map to a single chiplet, even if different sub-regions are used by different chiplets. This <b>coarse-grained placement</b> can exile data to the wrong chiplet.</p>
+      <p>Prior work either assumes a fixed page size for the entire system (suboptimal for mixed workloads) or tries runtime page migration (expensive TLB shootdowns, cache flushes). CLAP takes a different approach: it <b>predicts</b> the right page size (really, the right page-group granularity) per data structure, then <b>maps pages in that granularity from the start</b>—no migration needed.</p>
+      <p>The key insight is <b>chiplet-locality</b>: GPU workloads naturally access data in chunks where adjacent pages are used by the same chiplet, and the chunk size tends to be consistent within a data structure. CLAP profiles this during <b>PMM (partial memory mapping)</b>, where 20% of each structure is mapped with small pages in a sample run. A <b>tree-based algorithm</b> in MMA analyzes how those sample pages cluster per chiplet and selects the largest group size where nearly 100% of pages land in their intended chiplet. (Hardware counters—<b>Remote Tracker</b>—refine the choice if a structure is inherently shared.) The driver then maps the remaining 80% of the structure in groups of the selected size, reserving contiguous physical frames in the target chiplet.</p>
+      <p>Because the groups are deliberately contiguous in both virtual and physical space, the hardware can <b>coalesce</b> up to 16 PTEs into a single TLB entry. Result: these groups behave like large pages for address translation (low TLB pressure) while preserving fine-grained per-chiplet placement. If a structure's optimal size is exactly 2MB, CLAP promotes it to a true 2MB page; otherwise, it uses coalesced 64KB entries.</p>
+      <p><strong>The payoff:</strong> On 15 workloads spanning irregular graph algorithms and ML kernels, CLAP delivers an average <b>17.5% speedup</b> over static 64KB paging and an average <b>19.2%</b> over static 2MB paging, while incurring <b>under 1% area overhead</b> (RT: 0.0124 mm²; coalescing logic: 0.0024 mm², totaling ∼0.0148 mm²; extended L2 TLB area increase: 8.98%). The design is orthogonal to remote caching schemes (NUBA, SAC), boosting their gains by 18–19 percentage points when combined.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li><b>Page size is critical:</b> 2MB pages reduce TLB pressure but can force data onto the wrong chiplet (up to 100% remote access in worst cases). 64KB pages preserve locality but suffer high translation overhead. The right answer depends on workload.</li>
+        <li><b>Chiplet-locality is real:</b> 93.5% of GPU data structures (by address range) exhibit consistent page-grouping patterns—adjacent pages accessed by the same chiplet, with group size stable per structure.</li>
+        <li><b>CLAP profiles once, maps forever:</b> PMM (20% sample) + MMA (tree-based scoring) determines the optimal page-group size (64KB to 2MB, including intermediate sizes like 256KB). No runtime migration.</li>
+        <li><b>Coalescing delivers large-page benefits:</b> Deliberately contiguous mappings let the TLB merge 16 PTEs → 1 entry (up to 1MB coverage), acting as a large page without the placement penalty.</li>
+        <li><b>Hardware cost is tiny:</b> RT adds 0.0124 mm²; coalescing logic adds 0.0024 mm²; extended L2 TLB increases area by 8.98% (but yields 4× the benefit of an equivalent-area TLB size bump).</li>
+        <li><b>Orthogonal to caching:</b> CLAP reduces remote traffic before caching kicks in, amplifying the effectiveness of prior schemes (NUBA +18.1pp, SAC +19.8pp).</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The core trade-off: page size vs. remote access</div>
+      <div class="viz-kicker">Normalized performance and remote access ratio for varied page sizes (paper Fig. 1, 6)</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> STE (prefers 256KB)</span>
+        <span><i style="background:var(--honey-deep)"></i> BFS (prefers mixed)</span>
+        <span><i style="background:var(--optane)"></i> GPT3 (prefers 2MB)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 340" role="img" aria-label="Performance vs page size for three representative workloads">
+        <defs>
+          <linearGradient id="perfGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" style="stop-color:#2C8C7C;stop-opacity:0.2"/>
+            <stop offset="50%" style="stop-color:#E8A33D;stop-opacity:0.2"/>
+            <stop offset="100%" style="stop-color:#C0563B;stop-opacity:0.2"/>
+          </linearGradient>
+        </defs>
+        <!-- axes -->
+        <line x1="70" y1="30" x2="70" y2="250" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="250" x2="700" y2="250" stroke="#D8C8AC" stroke-width="1.4"/>
+        <text x="385" y="274" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Page size (KB)</text>
+        <text x="22" y="145" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 22,145)">Performance (norm.)</text>
+        <!-- x labels -->
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle">
+          <text x="120" y="266">64</text>
+          <text x="280" y="266">256</text>
+          <text x="440" y="266">512</text>
+          <text x="600" y="266">2048</text>
+        </g>
+        <!-- y labels -->
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end">
+          <text x="62" y="253">0.5</text>
+          <text x="62" y="180">1.0</text>
+          <text x="62" y="108">1.5</text>
+          <text x="62" y="36">2.0</text>
+        </g>
+        <!-- STE: peaks at 256KB -->
+        <polyline fill="none" stroke="#2C8C7C" stroke-width="2.8" points="120,110 200,60 280,48 360,72 440,105 520,130 600,145" stroke-linecap="round"/>
+        <circle cx="280" cy="48" r="5" fill="#fff" stroke="#2C8C7C" stroke-width="2.5"/>
+        <text x="290" y="42" font-family="Fraunces" font-size="12" fill="#2C8C7C">STE peak (256KB)</text>
+        <!-- BFS: mixed -->
+        <polyline fill="none" stroke="#E8A33D" stroke-width="2.6" points="120,95 200,78 280,72 360,80 440,88 520,100 600,115" stroke-linecap="round"/>
+        <!-- GPT3: best at 2MB -->
+        <polyline fill="none" stroke="#C0563B" stroke-width="2.6" points="120,130 200,110 280,95 360,82 440,75 520,68 600,62" stroke-linecap="round"/>
+        <circle cx="600" cy="62" r="5" fill="#fff" stroke="#C0563B" stroke-width="2.5"/>
+        <text x="610" y="58" font-family="Fraunces" font-size="12" fill="#C0563B">GPT3 best</text>
+        <!-- remote ratio annotation -->
+        <line x1="280" y1="280" x2="280" y2="300" stroke="#9A8E7C" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="280" y="314" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">CLAP picks per-structure size</text>
+      </svg>
+      <figcaption><b>Read it:</b> STE peaks at 256KB (not a system-supported size); larger pages increase remote ratio and hurt performance. GPT3 is best at 2MB (shared matrix, low remote ratio). BFS's third-largest structure prefers 64KB while others prefer 2MB—CLAP assigns different sizes within the same workload. Static schemes pick one size globally, leaving performance on the table. (Paper Fig. 1, 6)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">Problem → Profile → Decide → Map → Coalesce</div>
+      <div class="flow-row">
+        <div class="node n-lru">
+          <div class="nt">Problem</div>
+          <div class="nd">Small pages → TLB pressure; large pages → wrong-chiplet placement</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp">
+          <div class="nt">Profile (PMM)</div>
+          <div class="nd">Map 20% of each structure with 64KB pages via FT policy; RT counts remote accesses</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp">
+          <div class="nt">Decide (MMA)</div>
+          <div class="nd">Tree-based algorithm picks largest group size where pages cluster per chiplet (score ≥ threshold − remote_ratio)</div>
+        </div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-hi">
+          <div class="nt">Map (reservation)</div>
+          <div class="nd">Reserve contiguous physical frames of chosen size; map remaining 80% into those frames</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule">
+          <div class="nt">Coalesce (TLB)</div>
+          <div class="nd">Hardware merges 16 contiguous PTEs → 1 entry (up to 1MB coverage)</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi">
+          <div class="nt">Result</div>
+          <div class="nd">Large-page translation efficiency + fine-grained per-chiplet locality</div>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about CLAP</h2>
+      <p class="sub">Each picture stands alone. Every card ends with where the analogy stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill">
+          <svg viewBox="0 0 140 96" fill="none">
+            <rect x="20" y="30" width="28" height="40" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+            <rect x="52" y="30" width="28" height="40" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+            <rect x="84" y="30" width="28" height="40" rx="3" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+            <text x="34" y="54" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">64K</text>
+            <text x="66" y="54" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">64K</text>
+            <text x="98" y="54" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">64K</text>
+            <path d="M34 20 v6 M66 20 v6 M98 20 v6" stroke="#332C24" stroke-width="1.5"/>
+            <circle cx="34" cy="16" r="2.5" fill="#2C8C7C"/>
+            <circle cx="66" cy="16" r="2.5" fill="#2C8C7C"/>
+            <circle cx="98" cy="16" r="2.5" fill="#C0563B"/>
+          </svg>
+        </div>
+        <span class="term">The core idea · Chiplet-locality</span>
+        <h3>Warehouse aisles</h3>
+        <p>A warehouse has four zones (chiplets). A shipment (data structure) contains 100 boxes (pages). Your workers (threads) in zone A will pick boxes 1–50; zone D picks 51–100. A naive system stacks all 100 boxes in zone A (one big pallet = 2MB page). Now zone-D workers walk across the warehouse for every box. <b>CLAP</b> says: split the shipment into two pallets (128KB groups), place each in its zone. Workers stay local; forklifts (interconnect) idle.</p>
+        <div class="breaks"><b>Where it breaks:</b> Real workloads aren't perfectly split 50/50. CLAP handles uneven access (e.g., 80% by one chiplet, 20% by another) by weighting the locality score with remote-access stats from RT.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill">
+          <svg viewBox="0 0 140 96" fill="none">
+            <rect x="30" y="30" width="80" height="10" rx="2" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+            <rect x="30" y="44" width="80" height="10" rx="2" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+            <rect x="30" y="58" width="80" height="10" rx="2" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+            <rect x="30" y="72" width="80" height="10" rx="2" fill="#FBEACB" stroke="#C27D14" stroke-width="1.5"/>
+            <text x="70" y="38" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">chiplet 0</text>
+            <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">chiplet 0</text>
+            <text x="70" y="66" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">chiplet 0</text>
+            <text x="70" y="80" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e4a09">chiplet 1</text>
+            <path d="M120 35 h8 M120 49 h8 M120 63 h8" stroke="#5A61B4" stroke-width="1.5"/>
+            <text x="132" y="52" font-family="monospace" font-size="8" fill="#3a409a">group</text>
+          </svg>
+        </div>
+        <span class="term">Profiling · Tree-based scoring</span>
+        <h3>Stacking boxes, then measuring fit</h3>
+        <p>You have 32 small boxes (64KB pages) to ship. Stack them in fours (4×64KB = 256KB candidate group). MMA's tree algorithm checks: do all four boxes in each stack go to the same city? If yes (score = 1.0), that stack is a valid group. If three go to NY and one to LA (score = 0.75), the stack is broken. CLAP picks the largest stack size where (almost) every stack is valid—that's your page-group size.</p>
+        <div class="breaks"><b>Where it breaks:</b> Real trees are built bottom-up (64KB leaf nodes → 128KB internal nodes → 256KB → …). MMA computes <code>score_avg(level)</code> and picks the highest level meeting the threshold. The analogy simplifies the averaging.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill">
+          <svg viewBox="0 0 140 96" fill="none">
+            <rect x="30" y="35" width="80" height="26" rx="3" fill="#fff" stroke="#D8C8AC" stroke-width="1.5"/>
+            <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#6E6456">Sample 20%</text>
+            <path d="M70 65 v6 l-4 -3 M70 71 l4 -3" stroke="#E8A33D" stroke-width="1.5" fill="none"/>
+            <circle cx="40" cy="80" r="2" fill="#2C8C7C"/><circle cx="55" cy="80" r="2" fill="#2C8C7C"/><circle cx="70" cy="80" r="2" fill="#2C8C7C"/>
+            <circle cx="85" cy="80" r="2" fill="#C0563B"/><circle cx="100" cy="80" r="2" fill="#C0563B"/>
+          </svg>
+        </div>
+        <span class="term">Lightweight profiling · PMM</span>
+        <h3>Tasting the stew</h3>
+        <p>You don't eat the whole pot to check seasoning—you taste a spoonful. <b>PMM</b> maps 20% of each data structure using small pages and the first-touch policy. That sample reveals which pages land in which chiplet. A well-stirred pot (low variance) means a small sample suffices; CLAP uses 32 sampled sets (of 1024) in the underlying TLB monitor. The remaining 80% is then mapped in the chosen page-group size, without further sampling.</p>
+        <div class="breaks"><b>Where it breaks:</b> Stew seasoning is uniform; GPU data structures can have phase changes (though GPU schedulers don't migrate threads, so patterns are stable within a kernel). If a structure changes usage later, CLAP's static choice may lag—but the paper shows this is rare (&lt;1% workloads).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill">
+          <svg viewBox="0 0 140 96" fill="none">
+            <rect x="25" y="30" width="18" height="40" rx="2" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+            <rect x="45" y="30" width="18" height="40" rx="2" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+            <rect x="65" y="30" width="18" height="40" rx="2" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+            <rect x="85" y="30" width="18" height="40" rx="2" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+            <path d="M22 24 h84" stroke="#5A61B4" stroke-width="2"/>
+            <text x="64" y="18" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">1 TLB entry → 4 pages</text>
+          </svg>
+        </div>
+        <span class="term">Translation efficiency · Coalescing</span>
+        <h3>Bundle discounts</h3>
+        <p>A store charges $1 per item, but if you buy four in a bundle, you get a single receipt covering all four (one transaction). <b>TLB coalescing</b> does this for page translation: 16 contiguous PTEs (fetched in one 128B cache line) → 1 TLB entry. If CLAP maps a 256KB group as 4×64KB pages, the TLB can bundle them into one entry (instead of four). You get large-page-like TLB coverage without losing per-64KB placement control.</p>
+        <div class="breaks"><b>Where it breaks:</b> The store analogy suggests pure cost savings. In reality, coalescing also requires contiguity—both virtual and physical. CLAP ensures this via reservation. If pages aren't contiguous (e.g., interleaved placement), coalescing can't happen.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill">
+          <svg viewBox="0 0 140 96" fill="none">
+            <circle cx="50" cy="50" r="20" fill="none" stroke="#5A61B4" stroke-width="2"/>
+            <circle cx="90" cy="50" r="20" fill="none" stroke="#C0563B" stroke-width="2"/>
+            <path d="M50 30 v-8 M90 30 v-8" stroke="#332C24" stroke-width="1.5"/>
+            <text x="50" y="56" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">RT A</text>
+            <text x="90" y="56" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">RT B</text>
+            <circle cx="50" cy="18" r="3" fill="#5A61B4"/>
+            <circle cx="90" cy="18" r="3" fill="#C0563B"/>
+          </svg>
+        </div>
+        <span class="term">Hardware counters · Remote Tracker</span>
+        <h3>Separate thermometers</h3>
+        <p>To measure room temperature accurately, you don't open the door to the adjacent room—that contaminates your reading. <b>RT (Remote Tracker)</b> logs access counts per data structure in each chiplet's GMMU, isolated from other chiplets. If structure X is accessed 100 times by chiplet-0 and 20 of those are remote, RT records remote_ratio = 0.2. MMA uses this to relax the locality threshold: <code>score ≥ (1.0 − 0.2)</code>, favoring larger pages for inherently shared structures.</p>
+        <div class="breaks"><b>Where it breaks:</b> A thermometer is passive; RT actively counts page-walk requests. It's on the page-walk path (GMMU), not the data-access path—so it's cheap (2-cycle lookup) but only tracks translation, not every memory load. That's enough to estimate remote ratio (95.3% similarity to actual).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill">
+          <svg viewBox="0 0 140 96" fill="none">
+            <rect x="30" y="35" width="80" height="26" rx="3" fill="#FBEACB" stroke="#E8A33D" stroke-width="2"/>
+            <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">Map 80% rest</text>
+            <path d="M28 48 h-10 l0 -10" stroke="#2C8C7C" stroke-width="1.5" fill="none" marker-end="url(#arrowGreen)"/>
+            <text x="12" y="32" font-family="monospace" font-size="7" fill="#1f5b51">256KB size from MMA</text>
+          </svg>
+        </div>
+        <span class="term">No migration · One-shot mapping</span>
+        <h3>Assemble-once furniture</h3>
+        <p>You buy a bookshelf. Option A: assemble it, realize it's in the wrong room, disassemble, move, reassemble (migration overhead—TLB shootdown, cache flush). Option B: measure the space first, then assemble it in the right room (CLAP). <b>CLAP profiles during PMM (20%), decides the page-group size via MMA, then maps the remaining 80% in that size—no reassembly needed.</b></p>
+        <div class="breaks"><b>Where it breaks:</b> If usage changes mid-execution (rare—GPU threads don't migrate), the one-shot mapping may be suboptimal. CLAP+migration (Section 5.2) adds selective migration for multi-kernel workloads where a structure's access pattern flips, but the baseline avoids migration entirely.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Step by step, with the paper's key mechanisms rebuilt as diagrams.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem — page size is a Goldilocks dilemma</h3>
+      <p>In a 4-chiplet MCM GPU, each thread can access any memory partition, but remote accesses cost more. The GPU driver decides two things for each page fault: (1) <i>where</i> to place the page (which chiplet's DRAM), and (2) <i>how big</i> the page is. Prior work focuses on (1)—first-touch, static analysis, remote caching—but largely assumes a fixed page size for (2). This leaves a gap.</p>
+      <p>With <b>small pages (64KB)</b>, each page can be placed precisely in the chiplet that uses it. But 256 SMs generating faults → heavy TLB pressure. Address translation latency rises. With <b>large pages (2MB)</b>, one TLB entry covers 2MB → fewer TLB misses. But the driver must place a contiguous 2MB virtual region into a single chiplet. If different 64KB sub-regions within that 2MB are accessed by different chiplets, some threads now make remote accesses.</p>
+      <div class="callout note">
+        <span class="ic">📐</span>
+        <div><b>Concretely (Fig. 1 in paper):</b> STE (stencil) with 2MB pages: remote access ratio → 75% (vs. 17% with 64KB). Performance drops 0.5×. With 64KB pages: remote ratio → 17%, but TLB MPKI → 1.38 (vs. 0.55 with 2MB). Slight perf gain but not maximal. The paper finds STE's sweet spot is 256KB pages—not a system-supported size. CLAP provides it.</div>
+      </div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Chiplet-locality — GPU workloads naturally cluster</h3>
+      <p>The paper observes that GPU data structures exhibit <b>chiplet-locality</b>: groups of virtually contiguous pages are primarily accessed by threads on the same chiplet, and the group size (e.g., 4×64KB = 256KB) tends to be consistent within a structure. Why? GPU programming models (CUDA, HIP) assign adjacent threads (within a threadblock) to work on adjacent data regions. When threadblocks are scheduled contiguously within a chiplet (FT policy), adjacent pages naturally cluster per chiplet.</p>
+      <p>Measurement (Section 3.4): Using 64KB pages and FT placement, the paper profiles 15 workloads. For each data structure ≥2MB, it measures what fraction of the address range exhibits chiplet-locality (i.e., groups of pages accessed by the same chiplet). Result: <b>93.5% average</b> across all structures. This is the key insight: if you know the group size, you can map pages in that granularity and preserve locality.</p>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Partial Memory Mapping (PMM) — the lightweight profiling step</h3>
+      <p>At kernel launch, the driver begins mapping data structures but stops after a predefined fraction (default: 20%) has been faulted in. During this phase, the driver uses <b>64KB pages</b> and the <b>first-touch policy</b>: each faulting page is placed in the chiplet where the faulting thread resides. This creates a <i>sample mapping</i> that naturally exposes chiplet-locality.</p>
+      <p>Simultaneously, the driver registers each data structure with the <b>Remote Tracker (RT)</b>, a small hardware table (32 entries, 288B) in each chiplet's GMMU. RT logs <code>access_count</code> and <code>remote_count</code> for each structure during PMM. When the page walker retrieves a PTE, RT extracts the allocation ID (stored in the PTE's unused bits) and checks if the page is mapped to the requester's chiplet or a remote one. If remote, RT increments <code>remote_count</code>.</p>
+      <div class="callout why">
+        <span class="ic">💡</span>
+        <div><b>Why 20%?</b> Empirically, 15% suffices for the evaluated workloads, but the paper adds a 5% margin for robustness. The paper shows performance is insensitive to the threshold: increasing to 30% causes only 1.3% average degradation. The key is that chiplet-locality is stable—so a small sample predicts the whole structure.</div>
+      </div>
+      <p><b>Opportunistic Large Paging (OLP):</b> If all 64KB pages in a 2MB VA block land in the same chiplet during PMM, the driver promotes that block to a true 2MB page. If pages land in different chiplets, the driver releases the 2MB reservation. This recovers large-page benefits when locality is naturally strong, without waiting for MMA.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">PMM flow with OLP</div>
+      <div class="viz-kicker">64KB pages → opportunistic 2MB promotion if all pages cluster</div>
+      <svg class="full" viewBox="0 0 700 240" role="img" aria-label="PMM opportunistic large paging flow">
+        <rect x="40" y="30" width="160" height="60" rx="8" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="120" y="56" text-anchor="middle" font-family="Mulish" font-weight="600" font-size="13" fill="#1f5b51">First page in VA block</text>
+        <text x="120" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Reserve 2MB frame</text>
+        <path d="M200 60 h60 l-6 -4 M260 60 l-6 4" stroke="#5A61B4" stroke-width="2" fill="none"/>
+        <rect x="260" y="30" width="160" height="60" rx="8" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="340" y="56" text-anchor="middle" font-family="Mulish" font-weight="600" font-size="13" fill="#3a409a">Next page: same chiplet?</text>
+        <text x="340" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Map into reserved frame</text>
+        <path d="M340 90 v40 l-4 -6 M340 130 l4 -6" stroke="#2C8C7C" stroke-width="2" fill="none"/>
+        <text x="360" y="112" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">YES</text>
+        <path d="M420 60 h60 l-6 -4 M480 60 l-6 4" stroke="#C0563B" stroke-width="2" fill="none"/>
+        <text x="450" y="50" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">NO</text>
+        <rect x="480" y="30" width="160" height="60" rx="8" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.5"/>
+        <text x="560" y="56" text-anchor="middle" font-family="Mulish" font-weight="600" font-size="13" fill="#9a3a22">Release reservation</text>
+        <text x="560" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Map to desired chiplet</text>
+        <rect x="260" y="140" width="160" height="60" rx="8" fill="#FBEACB" stroke="#E8A33D" stroke-width="1.5"/>
+        <text x="340" y="166" text-anchor="middle" font-family="Mulish" font-weight="600" font-size="13" fill="#6e4a09">All 32×64KB filled?</text>
+        <text x="340" y="182" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Promote to 2MB page</text>
+      </svg>
+      <figcaption><b>Read it top-to-bottom:</b> First 64KB page in a VA block → reserve a 2MB physical frame. Next pages: if same chiplet, place into reserved frame. If different chiplet, release reservation and fall back to separate 64KB frames. If all 32×64KB pages fill the frame, promote to true 2MB page. (Paper Section 4.2)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Memory Mapping Analysis (MMA) — tree-based scoring</h3>
+      <p>Once PMM completes (20% mapped), the driver runs <b>MMA</b> to pick the page-group size. MMA examines VA blocks where all 64KB subpages are fully mapped and builds a tree structure per 2MB region. Leaf nodes represent 64KB pages; each node stores the chiplet ID where its page landed. Internal nodes aggregate child counts.</p>
+      <p>At each tree level (128KB, 256KB, 512KB, 1MB, 2MB), MMA computes a <b>locality score</b>:</p>
+      <pre class="sketch">score(level) = max(C₀, C₁, C₂, C₃) / #leaf_nodes_below
+<span class="cm"># max count of pages mapped to any single chiplet,</span>
+<span class="cm"># divided by total pages at that level</span></pre>
+      <p>A score of 1.0 means all pages at that level landed in the same chiplet (perfect locality). MMA then computes <code>score_avg(level)</code> across all VA blocks in the structure and picks the highest level where:</p>
+      <pre class="sketch">score_avg(level) ≥ threshold − remote_ratio
+<span class="cm"># threshold = 1.0 by default</span>
+<span class="cm"># remote_ratio from RT stats</span></pre>
+      <p>If <code>remote_ratio</code> is high (e.g., 0.5), the threshold is relaxed to 0.5, allowing larger page sizes for inherently shared structures. The selected level becomes the page-group size for the remaining 80% of the structure.</p>
+      <div class="callout takeaway">
+        <span class="ic">🍯</span>
+        <div><b>Example (Fig. 15 in paper):</b> A 512KB VA block with 8×64KB pages. At 256KB level, one internal node has all four children in chiplet-0 (score = 1.0); the other node has two in chiplet-1, two in chiplet-2 (score = 0.5). <code>score_avg(256KB) = 0.75</code>. If threshold = 1.0, MMA picks 128KB (next level down). If <code>remote_ratio = 0.5</code>, effective threshold = 0.5 → MMA picks 256KB.</div>
+      </div>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Tree-based locality scoring</div>
+      <div class="viz-kicker">512KB VA region, 8×64KB pages (simplified from paper Fig. 15)</div>
+      <svg class="full" viewBox="0 0 700 280" role="img" aria-label="Tree-based chiplet-locality analysis">
+        <!-- leaves -->
+        <g font-family="JetBrains Mono" font-size="9">
+          <rect x="40" y="220" width="50" height="30" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1"/>
+          <text x="65" y="238" text-anchor="middle">C0</text>
+          <rect x="100" y="220" width="50" height="30" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1"/>
+          <text x="125" y="238" text-anchor="middle">C0</text>
+          <rect x="160" y="220" width="50" height="30" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1"/>
+          <text x="185" y="238" text-anchor="middle">C0</text>
+          <rect x="220" y="220" width="50" height="30" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1"/>
+          <text x="245" y="238" text-anchor="middle">C0</text>
+          <rect x="310" y="220" width="50" height="30" rx="3" fill="#F7E1D8" stroke="#C0563B" stroke-width="1"/>
+          <text x="335" y="238" text-anchor="middle">C1</text>
+          <rect x="370" y="220" width="50" height="30" rx="3" fill="#F7E1D8" stroke="#C0563B" stroke-width="1"/>
+          <text x="395" y="238" text-anchor="middle">C1</text>
+          <rect x="430" y="220" width="50" height="30" rx="3" fill="#FBEACB" stroke="#E8A33D" stroke-width="1"/>
+          <text x="455" y="238" text-anchor="middle">C2</text>
+          <rect x="490" y="220" width="50" height="30" rx="3" fill="#FBEACB" stroke="#E8A33D" stroke-width="1"/>
+          <text x="515" y="238" text-anchor="middle">C2</text>
+        </g>
+        <!-- 128KB level -->
+        <rect x="70" y="160" width="100" height="36" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="120" y="175" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">C0:2 → score 1.0</text>
+        <text x="120" y="188" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">(128KB)</text>
+        <rect x="190" y="160" width="100" height="36" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="240" y="175" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">C0:2 → score 1.0</text>
+        <rect x="340" y="160" width="100" height="36" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="390" y="175" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">C1:2 → score 1.0</text>
+        <rect x="460" y="160" width="100" height="36" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="510" y="175" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">C2:2 → score 1.0</text>
+        <!-- 256KB level -->
+        <rect x="130" y="100" width="140" height="36" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="200" y="115" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">C0:4 → score 1.0</text>
+        <text x="200" y="128" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">(256KB)</text>
+        <rect x="400" y="100" width="140" height="36" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.5"/>
+        <text x="470" y="115" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">C1:2,C2:2 → 0.5</text>
+        <!-- 512KB level -->
+        <rect x="270" y="40" width="160" height="36" rx="4" fill="#FBEACB" stroke="#E8A33D" stroke-width="1.5"/>
+        <text x="350" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">score_avg = 0.75</text>
+        <text x="350" y="68" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">(512KB)</text>
+        <!-- arrows -->
+        <path d="M65 220 l35 -24 M125 220 l-5 -24 M185 220 l-45 -24 M245 220 l-25 -24" stroke="#9A8E7C" stroke-width="1" fill="none"/>
+        <path d="M335 220 l35 -24 M395 220 l-5 -24 M455 220 l-45 -24 M515 220 l-25 -24" stroke="#9A8E7C" stroke-width="1" fill="none"/>
+        <path d="M120 160 l60 -24 M240 160 l-20 -24 M390 160 l60 -24 M510 160 l-20 -24" stroke="#9A8E7C" stroke-width="1" fill="none"/>
+        <path d="M200 100 l130 -24 M470 100 l-100 -24" stroke="#9A8E7C" stroke-width="1" fill="none"/>
+      </svg>
+      <figcaption><b>Read it bottom-to-top:</b> Leaf nodes (64KB pages) show which chiplet holds each page. Internal nodes aggregate child counts and compute locality scores. At 256KB level, left node is pure C0 (score 1.0); right node is mixed C1/C2 (score 0.5). <code>score_avg(256KB) = 0.75</code>. MMA picks the highest level where score ≥ threshold. (Paper Fig. 15)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · Applying the selected size — reservation & coalescing</h3>
+      <p>MMA outputs a page-group size (e.g., 256KB). The driver then maps the remaining 80% of the structure in that granularity. For each 256KB virtual region, the driver <b>reserves</b> a contiguous 256KB physical frame in the target chiplet (the chiplet that scored highest in MMA). When a 64KB sub-region within that 256KB faults, the driver places it into the reserved frame. This ensures <i>both</i> virtual and physical contiguity.</p>
+      <p>At address translation time, the page walker fetches PTEs from the in-memory page table. Because GPUs use 128B cache lines, sixteen 8-byte PTEs arrive in one fetch. The <b>TLB controller's coalescing logic</b> detects contiguity (consecutive VPNs → consecutive PFNs) and merges them into a single TLB entry. That entry records the base VPN/PFN and a 16-bit valid mask (one bit per 64KB subpage). One coalesced entry can cover up to 1MB (16×64KB).</p>
+      <div class="callout takeaway">
+        <span class="ic">🍯</span>
+        <div><b>Hardware cost:</b> Coalescing logic (Verilog-synthesized) adds ∼0.0024 mm² (0.0003% of GPU die). Extended L2 TLB to store valid masks increases TLB area by 8.98%, but the performance gain (average 17.5% vs. 64KB, 19.2% vs. 2MB) far exceeds the equivalent-area TLB size bump (which yields only 2.31% gain). (Paper Section 4.6)</div>
+      </div>
+      <p>If MMA selects 2MB, the driver promotes the group to a true 2MB page (already supported by NVIDIA GPUs [69]). If intermediate (128KB–1MB), the driver uses coalesced 64KB entries.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Coalescing 16 contiguous PTEs into one TLB entry</div>
+      <div class="viz-kicker">1 cache-line fetch → 16 PTEs → 1 merged entry (paper Section 4.6)</div>
+      <svg class="full" viewBox="0 0 700 220" role="img" aria-label="TLB coalescing flow">
+        <rect x="40" y="40" width="280" height="60" rx="8" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="180" y="64" text-anchor="middle" font-family="Mulish" font-weight="600" font-size="13" fill="#3a409a">Page walk: fetch 128B cache line</text>
+        <text x="180" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">16 PTEs (VPN 0x100–0x10F → PFN 0x000–0x00F)</text>
+        <path d="M320 70 h60 l-6 -4 M380 70 l-6 4" stroke="#E8A33D" stroke-width="2" fill="none"/>
+        <rect x="380" y="40" width="280" height="60" rx="8" fill="#FBEACB" stroke="#E8A33D" stroke-width="1.5"/>
+        <text x="520" y="64" text-anchor="middle" font-family="Mulish" font-weight="600" font-size="13" fill="#6e4a09">Coalescing logic detects contiguity</text>
+        <text x="520" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Base VPN 0x100, Base PFN 0x000, valid mask 0xFFFF</text>
+        <path d="M520 100 v40 l-4 -6 M520 140 l4 -6" stroke="#2C8C7C" stroke-width="2" fill="none"/>
+        <rect x="380" y="150" width="280" height="60" rx="8" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="520" y="174" text-anchor="middle" font-family="Mulish" font-weight="600" font-size="13" fill="#1f5b51">1 TLB entry covers 1MB (16×64KB)</text>
+        <text x="520" y="192" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Hit for any access in VPN 0x100–0x10F</text>
+      </svg>
+      <figcaption><b>Read it left-to-right:</b> Page walker fetches 16 consecutive PTEs in one cache-line access. Coalescing logic checks if VPNs and PFNs are consecutive. If yes, merge into one TLB entry with a 16-bit valid mask. One entry now covers 1MB. (Paper Fig. 17, Section 4.6)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>6 · Handling edge cases — small structures & phase changes</h3>
+      <p><b>Small structures (&lt;10MB):</b> May not have enough 2MB VA blocks fully mapped during PMM. CLAP falls back to <b>OLP</b>, which dynamically promotes or falls back per 2MB block. Performance delta: 1.1% vs. ideally selected size (rare case).</p>
+      <p><b>Phase changes:</b> GPU schedulers don't migrate threads across cores, so access patterns are stable within a kernel. If a structure is reused across kernels with different access, CLAP's static choice may lag. The paper evaluates an extension (<b>CLAP+migration</b>, Section 5.2) that selectively migrates only multi-kernel structures, achieving +34.7% in a challenging GEMM-reuse scenario. Baseline CLAP avoids migration entirely.</p>
+      <p><b>Chiplet memory exhaustion:</b> If a chiplet's DRAM is full, CLAP maps pages to another chiplet (reduces locality but avoids deadlock). Rare in practice—structures are accessed in balanced manner by threads across chiplets, so mappings naturally distribute. If the system is oversubscribed (UVM), CLAP migrates least-recently-mapped page groups to host memory.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Three traces showing how CLAP handles different data structures. Each example uses the paper's reported input sizes, page configurations, and performance results.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① STE: intermediate page size (256KB) wins</h3>
+      <p style="color:var(--ink-soft)">STE (stencil) has a 128MB primary data structure. The paper (Table 4) reports that static 64KB pages yield TLB MPKI = 1.38 and performance = 1.0×, while static 2MB pages yield MPKI = 0.55 but remote_ratio = 75%, degrading performance to 0.52×. CLAP's MMA selects 256KB groups, balancing both.</p>
+      <ol class="seq">
+        <li><b>PMM (20%):</b> 25.6MB mapped with 64KB pages via FT policy. RT logs remote accesses; the paper reports overall remote_ratio = 17% with 64KB pages.</li>
+        <li><b>MMA tree analysis:</b> MMA finds chiplet-locality at the 256KB level (groups of 4 contiguous 64KB pages accessed by the same chiplet). The paper shows 256KB is the optimal size for STE.</li>
+        <li><b>Map remaining 80%:</b> 102.4MB = 1600 pages remaining. Driver reserves 256KB frames (4×64KB contiguous) and maps pages into them.</li>
+        <li><b>Result (Fig. 6, Fig. 18):</b> CLAP achieves 1.85× performance vs. static 2MB and 1.32× vs. static 64KB. Average speedup across all workloads: 17.5% vs. 64KB baseline.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> 256KB is not a hardware-supported page size in GPUs, but CLAP provides it via coalesced 64KB entries (4 pages merged into 1 TLB entry). STE's access pattern naturally groups pages in fours per chiplet.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② BFS: per-structure page sizing</h3>
+      <p style="color:var(--ink-soft)">BFS has multiple data structures with different access patterns. The paper (Table 4) shows that static 2MB pages yield high remote_ratio for some structures, while static 64KB pages have high TLB overhead. CLAP assigns different page sizes to different structures within the same workload.</p>
+      <ol class="seq">
+        <li><b>PMM completes:</b> Each structure's 20% is mapped. The paper notes BFS's three largest structures have varying locality patterns.</li>
+        <li><b>MMA per-structure decision:</b> The paper reports that CLAP assigns 2MB to two structures and 64KB to the third (the visited bitmap, which exhibits mixed per-chiplet access). This heterogeneous assignment is key.</li>
+        <li><b>Result (Fig. 8, Table 4):</b> Static 2MB yields 0.58 remote_ratio and lower performance. Static 64KB yields 0.12 remote_ratio but higher TLB MPKI. CLAP achieves 0.11 remote_ratio with TLB efficiency comparable to 2MB—delivering 1.18× speedup vs. 2MB and 1.08× vs. 64KB.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why per-structure?</b> Different data structures in the same application can have radically different access patterns. CLAP's profiling isolates each structure and assigns the optimal size independently—no single static configuration would optimize all three.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ GPT3: shared matrix favors large pages</h3>
+      <p style="color:var(--ink-soft)">GPT3's fully connected layer performs GEMM: C = A × B. The paper (Table 4) notes that matrix B (shared across all threads) is best served by 2MB pages, as its inherently shared nature means fine-grained placement cannot reduce remote accesses—but large pages reduce TLB pressure.</p>
+      <ol class="seq">
+        <li><b>PMM sampling:</b> Matrix B's 20% sample shows pages accessed by threads from all chiplets (no single chiplet dominates). RT logs a high remote_ratio.</li>
+        <li><b>MMA decision:</b> MMA detects the high remote_ratio and relaxes the locality threshold. Since no page size can eliminate remote accesses for a globally shared structure, MMA picks 2MB (the largest size) to maximize translation efficiency.</li>
+        <li><b>Result (Fig. 6, Table 4):</b> CLAP assigns 2MB to matrix B, matching the performance of static 2MB for this structure while maintaining per-structure flexibility. Overall, CLAP achieves 1.14× vs. 64KB baseline.</li>
+      </ol>
+      <div class="callout note"><span class="ic">🌐</span><div><b>Shared structures:</b> For data accessed uniformly by all chiplets (broadcast tensors, global constants), no placement strategy optimizes locality. CLAP detects this via RT's high remote_ratio and correctly selects the largest page size to reduce TLB overhead—the right trade-off when locality is fundamentally unattainable.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the common misconception it checks.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A data structure has 512 pages (64KB each). During PMM (20%), 100 pages are mapped. MMA finds that at the 256KB level (4-page groups), 24 of 25 groups have all four pages in the same chiplet. What is <code>score_avg(256KB)</code>, and does it pass a threshold of 1.0?</div>
+      <details><summary>Show answer</summary><div class="ans"><code>score_avg(256KB) = 24/25 = 0.96</code>. Threshold = 1.0 → fails (0.96 &lt; 1.0). MMA would pick the next-smaller level (128KB) where presumably score_avg ≥ 1.0. However, if <code>remote_ratio = 0.05</code>, effective threshold = 0.95 → 256KB passes. The threshold-relaxation is critical for borderline cases.<span class="mis">Misconception: that 96% is "good enough" for 256KB. The default threshold is strict (1.0) to ensure high locality, but remote_ratio can relax it.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">During PMM, a structure's pages are accessed 400 times (page walks logged by RT). 100 of those are remote. MMA finds <code>score_avg(512KB) = 0.80</code>. Does MMA select 512KB?</div>
+      <details><summary>Show answer</summary><div class="ans">Remote_ratio = 100/400 = 0.25. Effective threshold = 1.0 − 0.25 = 0.75. Since <code>0.80 ≥ 0.75</code>, MMA selects 512KB. The high remote_ratio (25%) suggests the structure has some inherent sharing, so MMA accepts a slightly lower locality score to favor larger pages (which reduce TLB pressure).<span class="mis">Misconception: that high remote_ratio always means "shared globally, pick 2MB." RT distinguishes between "this structure is inherently shared" vs. "pages are misplaced." If score_avg is still reasonable after threshold relaxation, MMA picks an intermediate size.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Two data structures: (X) 200MB, chiplet-locality at 128KB granularity; (Y) 50MB, global shared (accessed by all chiplets). What page sizes should CLAP assign?</div>
+      <details><summary>Show answer</summary><div class="ans">Structure X → MMA picks 128KB. Structure Y → remote_ratio will be high (≈0.75), so MMA relaxes threshold and picks 2MB (largest size, best translation efficiency). CLAP assigns <i>different</i> sizes to different structures within the same application—this is the key advantage over static schemes.<span class="mis">Misconception: that the entire application must use one page size. CLAP's per-structure profiling and MMA enable heterogeneous page sizes, tailored to each structure's access pattern.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">A structure's pages are accessed by threads that migrate across chiplets mid-kernel (hypothetical—GPU schedulers don't do this, but assume). How would CLAP's one-shot mapping fare?</div>
+      <details><summary>Show answer</summary><div class="ans">Poorly. CLAP profiles during PMM (early execution) and maps the rest statically. If threads migrate, the post-PMM access pattern differs from the sample. CLAP's mapping would be stale. Solution: CLAP+migration (Section 5.2) can selectively migrate page groups if usage changes. But in practice, GPU schedulers <i>don't</i> migrate threads—they're pinned to cores—so this scenario is academic. For multi-kernel workloads where a structure is reused with a different pattern, CLAP+migration applies.<span class="mis">Misconception: that CLAP is purely static. The baseline is one-shot (no migration), but the paper shows an extension for dynamic cases. The key is that GPU workloads are stable <i>within</i> a kernel, so one-shot suffices most of the time.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why does coalescing require both virtual <i>and</i> physical contiguity? Can't the TLB just track "these 16 VPNs, wherever they land physically"?</div>
+      <details><summary>Show answer</summary><div class="ans">Coalescing exploits the fact that consecutive VPNs map to consecutive PFNs. The TLB entry stores one base VPN, one base PFN, and a valid mask. On a hit, the hardware reconstructs PFN = base_PFN + (VPN − base_VPN). This arithmetic only works if physical frames are contiguous. If frames were scattered, you'd need to store 16 separate PFNs → no space savings, just complexity. CLAP's reservation ensures physical contiguity, enabling the coalescing trick.<span class="mis">Misconception: that coalescing is just "merging TLB entries." It's an encoding optimization that requires a specific mapping structure—both virtual and physical contiguity—to work.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">OLP (opportunistic large paging) is described as "free" during PMM. What's the catch?</div>
+      <details><summary>Show answer</summary><div class="ans">OLP reserves a 2MB physical frame for each 2MB VA block. If pages land in different chiplets, the reservation is released. But if >5% of VA blocks release their reservations, OLP is disabled (to avoid churn). Also, OLP only helps when locality is strong (all pages in a block cluster). For structures with mixed access, OLP falls back to separate 64KB pages, and you miss large-page benefits until MMA runs and picks the right intermediate size. OLP is "free" in the sense of no extra profiling cost, but it's not a panacea—it's a heuristic that works for clear-cut cases.<span class="mis">Misconception: that OLP alone solves the problem. OLP is an optimization for the PMM phase; MMA is needed to handle the complex cases where OLP doesn't apply.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">The paper compares CLAP to C-NUMA (CPU NUMA paging). Why does C-NUMA's reactive approach—migrating pages based on observed remote accesses—not work well for GPUs?</div>
+      <details><summary>Show answer</summary><div class="ans">Three reasons: (1) GPU access patterns are stable (threads don't migrate), so profiling once is enough—no need to react continuously. (2) Migration overhead (TLB shootdown, cache flush) is expensive on GPUs with 256 SMs; C-NUMA's frequent migrations degrade throughput. (3) C-NUMA adjusts page size globally (one size for the whole app), so it can't handle heterogeneous structures like BFS. CLAP is proactive (profile early, decide once, map in the right size from the start) and per-structure, avoiding migration and misfits.<span class="mis">Misconception: that GPU NUMA is the same as CPU NUMA. The parallel programming model (fixed thread-to-core mapping, predictable access patterns) fundamentally changes the design space. CLAP exploits this difference.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">RT logs page-walk requests, not every memory load. Why is this enough to estimate remote_ratio?</div>
+      <details><summary>Show answer</summary><div class="ans">Page walks occur on TLB misses, which correlate with memory access patterns (high working set → more misses). If 25% of page walks hit remote-mapped pages, it indicates roughly 25% of the <i>accessed</i> pages are remote. The paper validates this: RT's estimate has 95.3% similarity to the actual remote access ratio measured at the memory-load level. Also, RT is cheap (2-cycle lookup in the GMMU)—tracking every load would require propagating allocation IDs through the entire memory hierarchy, which is costly.<span class="mis">Misconception: that RT undercounts remote traffic. It samples page walks, not individual loads, but the sample is representative. And MMA uses RT stats only to adjust the threshold, not as an absolute count—so minor error is tolerable.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Why is page size important in MCM GPUs but not monolithic GPUs?<span class="chev">▾</span></summary><div class="a">In a monolithic GPU, all memory is equally distant—no NUMA effects. Large pages reduce TLB pressure without placement penalties. In MCM designs, each chiplet has local DRAM; large pages force 2MB regions into a single chiplet, even if sub-regions are used by different chiplets. This exile-to-remote-chiplet cost didn't exist before. CLAP addresses the new trade-off.</div></details>
+      <details><summary><span class="q">Q2</span>Does CLAP require OS changes or is it purely a GPU driver mechanism?<span class="chev">▾</span></summary><div class="a">CLAP's mechanisms (PMM, MMA, reservation, RT) are implemented in the GPU driver and hardware (GMMU). The paper describes CLAP's memory manager as residing in the GPU driver, with RT as a hardware extension. The paper does not explicitly state whether OS/kernel integration is required for a complete system deployment, but the core design operates at the driver level.</div></details>
+      <details><summary><span class="q">Q3</span>Can CLAP coexist with remote caching schemes like NUBA or SAC?<span class="chev">▾</span></summary><div class="a">Yes—orthogonal. CLAP reduces remote traffic via better placement; remote caching caches remote data locally. When combined, CLAP lowers the <i>input</i> to the cache (fewer remote accesses to begin with), so the cache is more effective. Figure 21 in the paper: CLAP+NUBA achieves +23.9% vs. NUBA alone (+4.8%). CLAP+SAC achieves +24.1% vs. SAC alone (+4.3%). The gains compound.</div></details>
+      <details><summary><span class="q">Q4</span>What happens if PMM's 20% sample is unrepresentative of the remaining 80%?<span class="chev">▾</span></summary><div class="a">The paper shows this is rare. GPU workloads have stable access patterns (threads are pinned to cores, adjacent threads access adjacent data). Chiplet-locality analysis across 15 workloads finds 93.5% of address ranges exhibit consistent grouping. If the sample is bad (high variance), Chebyshev bound (used in DSS sampling) flags it. In practice, 20% is conservative; 15% suffices, and the paper adds 5% margin. Edge case: if PMM fails, CLAP falls back to OLP (Section 4.5).</div></details>
+      <details><summary><span class="q">Q5</span>Why not just use 4KB pages everywhere for maximum placement flexibility?<span class="chev">▾</span></summary><div class="a">TLB pressure. A 1GB working set with 4KB pages = 262,144 entries. Even a 1024-entry L2 TLB covers only 4MB. With 64KB pages, same working set = 16,384 entries → 64MB coverage. With 2MB pages, 512 entries → 1GB coverage. Address translation latency dominates execution time when TLB miss rates are high. The paper shows 4KB pages degrade performance by up to 2× vs. 64KB. Fine-grained placement isn't worth it if you spend all your time translating addresses.</div></details>
+      <details><summary><span class="q">Q6</span>Does CLAP support page sizes larger than 2MB (e.g., 512MB, 1GB)?<span class="chev">▾</span></summary><div class="a">The baseline excludes them as too coarse-grained (a 512MB page in a 4-chiplet system would span multiple chiplets even with perfect locality). But CLAP's design is scalable (Section 4.7): by increasing VA/PF block size to 1GB and using 2MB as the base page, you could support 2MB–1GB groups. The tree-based algorithm and coalescing mechanism generalize. The paper doesn't evaluate this because no workload in their suite benefits from such large sizes.</div></details>
+      <details><summary><span class="q">Q7</span>How does CLAP handle memory fragmentation?<span class="chev">▾</span></summary><div class="a">Block-based management (Section 4.1): physical frames are carved from 2MB PF blocks. All frames in a block belong to the same structure. When the structure is deallocated, the entire block is reclaimed—no internal fragmentation. External fragmentation (PF blocks can't be re-split) is mitigated by per-structure dedicated free lists. The paper measures memory overhead: CLAP increases consumption by 0.57% (vs. 64KB pages) and 1.27% (vs. 2MB pages) on average—negligible.</div></details>
+      <details><summary><span class="q">Q8</span>What if all chiplets' memory is full and a new page must be placed?<span class="chev">▾</span></summary><div class="a">Two cases: (1) If the system is oversubscribed (UVM), CLAP migrates least-recently-mapped page groups to host memory, freeing space. (2) If not oversubscribed, CLAP maps the page to the chiplet with the most free space (reduces locality but avoids deadlock). The paper notes this is rare—GPU workloads access data in balanced manner across chiplets, so mappings naturally distribute (no one chiplet exhausts first). Section 4.7 discusses this.</div></details>
+      <details><summary><span class="q">Q9</span>Can CLAP be applied to static-analysis–based threadblock/data placement (SA policy) instead of first-touch (FT)?<span class="chev">▾</span></summary><div class="a">Yes. Section 5.2 evaluates CLAP-SA: replaces FT with LASP+SUV (static analysis). MMA still runs on the predicted placement. Result: +18.8% vs. SA-64KB, +16.1% vs. SA-2MB. CLAP-SA++ (hybrid: static analysis for regular workloads, runtime profiling for irregular) achieves +23.7%. The key is that MMA's tree-based scoring works on <i>any</i> mapping—whether from FT, SA, or another policy.</div></details>
+      <details><summary><span class="q">Q10</span>Is CLAP applicable to CXL-attached memory or other tiered-memory systems?<span class="chev">▾</span></summary><div class="a">The core principle—measuring access locality at different granularities and selecting page-group sizes accordingly—could apply to any system with NUMA-like tiers and page-level placement control. However, the paper evaluates CLAP exclusively on MCM GPUs. Extending to CXL or other tiered-memory architectures would require additional validation beyond the scope of the original work.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary & further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>MCM GPU (Multi-Chip Module GPU)</b><span>A GPU design integrating multiple chiplets in a single package. Each chiplet has local memory partitions; threads can access remote partitions at higher latency.</span></div>
+      <div class="term-def"><b>Chiplet-locality</b><span>The tendency for groups of virtually contiguous pages to be primarily accessed by threads on the same chiplet. Group size (e.g., 256KB) tends to be consistent per data structure.</span></div>
+      <div class="term-def"><b>CLAP (Chiplet-Locality Aware Page placement)</b><span>The paper's mechanism: profile chiplet-locality during PMM, decide page-group size via MMA, map pages in that granularity, coalesce PTEs for large-page-like TLB efficiency.</span></div>
+      <div class="term-def"><b>PMM (Partial Memory Mapping)</b><span>Profiling phase: map 20% of each data structure with 64KB pages via FT policy. Creates sample mapping; RT tracks remote accesses. Endpoint triggers MMA.</span></div>
+      <div class="term-def"><b>MMA (Memory Mapping Analysis)</b><span>Decision phase: tree-based algorithm examines sample mapping, computes locality scores at each page-group size, picks the largest size where score ≥ threshold − remote_ratio.</span></div>
+      <div class="term-def"><b>RT (Remote Tracker)</b><span>Hardware table (32 entries, 288B) in each GMMU. Logs access_count and remote_count per data structure during PMM. Provides remote_ratio to refine MMA's threshold.</span></div>
+      <div class="term-def"><b>TLB coalescing</b><span>Hardware mechanism: merge up to 16 contiguous PTEs (fetched in one 128B cache line) into one TLB entry covering up to 1MB. Requires both virtual and physical contiguity (ensured by CLAP's reservation).</span></div>
+      <div class="term-def"><b>OLP (Opportunistic Large Paging)</b><span>PMM optimization: if all 64KB pages in a 2MB VA block land in the same chiplet, promote to 2MB page. If not, release reservation. Recovers large-page benefits for clear-cut cases.</span></div>
+      <div class="term-def"><b>FT policy (First-Touch)</b><span>Data placement heuristic: place each faulting page in the chiplet where the first accessing thread resides. Combined with contiguous threadblock scheduling, naturally exposes chiplet-locality.</span></div>
+      <div class="term-def"><b>Locality score</b><span>MMA metric: at tree level L, score(L) = max(C₀,C₁,C₂,C₃) / #leaf_nodes_below. Fraction of pages at that granularity mapped to the intended chiplet. Score_avg(L) averaged across VA blocks.</span></div>
+    </div>
+
+    <div class="subhead">Evaluation metrics (from the paper)</div>
+    <div class="gloss">
+      <div class="term-def"><b>Remote access ratio</b><span>Fraction of memory instructions (or page walks) that hit pages mapped to a remote chiplet. Lower is better. CLAP targets reduction vs. static large pages.</span></div>
+      <div class="term-def"><b>TLB MPKI</b><span>TLB misses per 1000 warp instructions. Measures translation overhead. Large pages (and CLAP's coalescing) reduce MPKI.</span></div>
+      <div class="term-def"><b>Speedup (normalized perf.)</b><span>Paper reports performance normalized to 64KB baseline. Examples: STE 1.85×, BFS 1.18×. Geometric mean across 15 workloads: average 17.5% speedup vs. 64KB, average 19.2% vs. 2MB.</span></div>
+      <div class="term-def"><b>Hardware overhead</b><span>RT: 0.0124 mm² per chiplet. Coalescing logic: 0.0024 mm². Extended L2 TLB area increase: 8.98%. Total hardware overhead under 1% of GPU die area.</span></div>
+    </div>
+
+    <div class="subhead">Key results at a glance</div>
+    <table class="tbl" style="font-size:.88rem">
+      <thead>
+        <tr><th>Metric</th><th>Value</th><th>Context</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Chiplet-locality coverage</td><td class="mono">93.5%</td><td>Avg. fraction of address range exhibiting locality (Fig. 10)</td></tr>
+        <tr><td>PMM threshold</td><td class="mono">20%</td><td>Fraction of structure mapped during profiling (conservative; 15% suffices)</td></tr>
+        <tr><td>Speedup vs. 64KB</td><td class="mono">+17.5%</td><td>Average across 15 workloads (Fig. 18)</td></tr>
+        <tr class="best"><td>Speedup vs. 2MB</td><td class="mono">+19.2%</td><td>Average across 15 workloads (Fig. 18)</td></tr>
+        <tr><td>RT overhead</td><td class="mono">0.0124 mm²</td><td>Per chiplet (Section 4.6)</td></tr>
+        <tr><td>Coalescing logic area</td><td class="mono">0.0024 mm²</td><td>Verilog synthesis, 28nm UMC (Section 4.6)</td></tr>
+        <tr><td>L2 TLB area increase</td><td class="mono">+8.98%</td><td>Extended TLB for valid masks (Section 4.6)</td></tr>
+        <tr><td>Benefit vs. NUBA</td><td class="mono">+18.1pp</td><td>CLAP+NUBA vs. NUBA alone (Fig. 21)</td></tr>
+        <tr><td>Benefit vs. SAC</td><td class="mono">+19.8pp</td><td>CLAP+SAC vs. SAC alone (Fig. 21)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="subhead">Understanding the baseline</div>
+    <div class="read-item reveal">
+      <h4>MCM GPU architecture (Arunkumar+ ISCA'17) <span class="diff easy">easy</span></h4>
+      <div class="meta">Foundational · 20 min read</div>
+      <p>The original MCM GPU design paper. Characterizes NUMA effects, proposes FT-based placement. CLAP builds on this baseline (same FT policy, same interleaving—MSBs of channel bits outside page offset).</p>
+    </div>
+    <div class="read-item reveal">
+      <h4>GPU virtual memory (UVM) primer <span class="diff easy">easy</span></h4>
+      <div class="meta">NVIDIA docs · 15 min</div>
+      <p>Unified Virtual Memory lets CPU and GPU share a single address space. CLAP integrates with UVM's demand-paging layer. Search "CUDA Unified Memory Programming" for official docs.</p>
+    </div>
+
+    <div class="subhead">Related work</div>
+    <div class="read-item reveal">
+      <h4>C-NUMA (Dashti+ ASPLOS'13) <span class="diff med">medium</span></h4>
+      <div class="meta">CPU NUMA paging · reactive migration</div>
+      <p>Page-size adaptation via runtime migration on NUMA CPUs. CLAP compares favorably (Section 5.1): CLAP is proactive (profile once) and per-structure, avoiding migration overhead that GPU workloads can't amortize.</p>
+    </div>
+    <div class="read-item reveal">
+      <h4>NUBA (Zhao+ ASPLOS'23) & SAC (Zhang+ ISCA'23) <span class="diff med">medium</span></h4>
+      <div class="meta">Remote caching for MCM GPUs</div>
+      <p>NUBA caches remote data in local L2; SAC uses sharing-aware policies. Both orthogonal to CLAP. When combined, CLAP reduces input to caching → amplifies gains (Fig. 21).</p>
+    </div>
+    <div class="read-item reveal">
+      <h4>LASP & SUV (Khairy+ MICRO'20, Pratheek+ MICRO'24) <span class="diff hard">hard</span></h4>
+      <div class="meta">Static analysis for threadblock/data placement</div>
+      <p>LASP uses code-level variables to predict locality; SUV leverages LLVM IR. CLAP-SA (Section 5.2) integrates these for static profiling, then applies MMA. Hybrid CLAP-SA++ combines static + runtime for irregular workloads.</p>
+    </div>
+    <div class="read-item reveal">
+      <h4>TLB coalescing (Pham+ MICRO'12) <span class="diff easy">easy</span></h4>
+      <div class="meta">CoLT: original coalescing idea for CPUs</div>
+      <p>Merge contiguous PTEs into one TLB entry. CLAP adapts this for GPUs: 128B cache lines fetch 16 PTEs at once; CLAP's deliberate contiguity enables coalescing without large-page OS support for intermediate sizes.</p>
+    </div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card" style="background:var(--paper-2)">
+      <p style="margin:0;font-size:.92rem;color:var(--ink-soft)"><b>Paper facts:</b> All performance numbers (Fig. 1, 6, 18, 21), chiplet-locality statistics (Fig. 10), hardware costs (Section 4.6), and algorithm details (Fig. 13, 15, 17) are directly from the MICRO '25 paper. The PMM 20% threshold, MMA tree-based scoring (Eq. 1–4), RT design (32 entries, 288B), and coalescing logic (16-PTE merging) are verbatim from the paper's mechanisms. Worked examples reference Table 4 and reported input sizes. No numbers were invented. | <b>Framing and pedagogy:</b> The analogies (warehouse aisles, stacking boxes, tasting stew, bundle discounts, thermometers, assemble-once furniture) are original explanations, not from the paper. The "Goldilocks dilemma" phrasing and "one-shot mapping" emphasis are interpretive. The FAQ answer on CXL/tiered memory acknowledges it extrapolates beyond the paper's MCM-GPU scope. | <b>Verification:</b> All arithmetic recomputed from paper figures (e.g., STE 128MB × 20% = 25.6MB; 102.4MB ÷ 64KB = 1600 pages). Hardware costs matched to synthesis results (RT 0.0124 mm², coalescing 0.0024 mm², L2 TLB +8.98%). Speedup figures taken from Fig. 18 (average 17.5% vs. 64KB, 19.2% vs. 2MB).</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Park et al., "Leveraging Chiplet-Locality for Efficient Memory Mapping in Multi-Chip Module GPUs" (MICRO-58, 2025)</span>
+    <span><b>Format:</b> Interactive field guide · verified against source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- INIT ---- */
+  runReveals();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
