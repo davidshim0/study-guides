@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LATPC: Making Every GPU Thread Count — A Field Guide to Warp-Level TLB Prefetching</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;
+  --optane:#C0563B; --optane-soft:#F7E1D8;
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>MICRO 2025 · A Field Guide</span>
+    <h1>Prefetching translations <span class="swash">together</span>, not <span class="swash" style="color:var(--optane)">one by one</span></h1>
+    <p class="lede">When 32 GPU threads all need different pages, the address-translation machinery drowns. <strong>LATPC</strong> spots the hidden pattern in their chaos and solves page walks as batches—under 1% hardware cost, 47% faster.</p>
+    <div class="hero-meta">
+      <span>📄 "LATPC" · Ha et al. (MICRO'25)</span>
+      <span>🎓 Assumes TLBs, page tables, GPU warps</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧵</div>
+      <p>When threads in a warp request translations, <span class="ro">capture their regularity</span> (the stride of VPNs), batch their page-table walks into one DRAM row hit, and <span class="ro">compress up to 32 misses into one or a few TLB MSHR entries</span>—not 32 separate entries burning PTW and MSHR slots one at a time.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Seven ideas the paper builds on</h2>
+      <p class="sub">Expand each to clear up the assumed background. They're short — read in order the first time.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> warp-level regularity (LATPC's insight)</span>
+      <span><i style="background:var(--honey-deep)"></i> baseline contention (PTW/MSHR exhaustion)</span>
+      <span><i style="background:var(--ltram)"></i> compression &amp; prefetch machinery</span>
+      <span><i style="background:var(--optane)"></i> prior TLB prefetchers (fail on GPUs)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>GPU virtual memory &amp; why translation is expensive<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Modern GPUs virtualize memory, so every global-memory access triggers a <b>TLB lookup</b> that translates the Virtual Page Number (VPN) into a Physical Frame Number (PFN). A TLB miss launches a <b>page table walk</b>: 4 levels of indirection through DRAM (hundreds of cycles each) to fetch the PTE. GPU cores (SMs) have tiny private L1 TLBs (e.g., 32 entries in the paper's simulated configuration) and share a bigger L2 TLB (1,024 entries). Misses exhaust the limited page-table walkers (16 PTWs) and TLB MSHR entries (16 per L1 TLB), stalling the whole warp until translation completes.</p>
+          <div class="ready"><b>Now you're ready:</b> LATPC targets exactly this bottleneck—PTWs swamped by 32 threads each touching a different page, and TLB MSHRs running out before the warp even finishes issuing all its misses.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Page divergence: one warp, many pages<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>GPU threads in a warp often access memory by their thread index (e.g., <code>array[threadIdx]</code>). When the array is large, consecutive threads land on <i>different</i> pages. The paper defines <b>page divergence</b> as the number of unique pages a warp instruction touches—up to 32 (one per thread). In their workloads, 75% of warp memory instructions require multiple translations; 29% hit the max of 32. That's 32 TLB misses from a single instruction, all fighting for the same 16 L1 TLB MSHR slots and 16 PTWs.</p>
+          <div class="ready"><b>Now you're ready:</b> Page divergence is the problem that breaks naïve TLB prefetchers—32 scattered VPNs look random in access order, but they're actually <i>regular</i> if you look at thread index instead.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>TLB MSHR: the reservation table for outstanding misses<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A TLB <b>Miss-Status Holding Register</b> (MSHR) tracks outstanding TLB misses so the TLB doesn't re-fetch the same PTE. Each entry holds one VPN's miss state. When an instruction with high page divergence fires, it tries to allocate up to 32 entries—one per VPN. But the L1 TLB has only 16 MSHR slots. Once those fill, subsequent misses <b>stall</b> (MSHR reservation failure) until an earlier walk completes and frees a slot. The paper shows MSHR reservation failures account for 53% of total translation latency (Figure 1).</p>
+          <div class="ready"><b>Now you're ready:</b> LATPC's <i>compressed</i> MSHR (LATC) lets one entry represent up to 32 VPNs, freeing slots and reducing reservation failures from 68.84% to 43.02%.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Page table locality: PTEs cluster in DRAM rows<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>page table</b> is a 4-level tree in DRAM (x86-64). The leaf level (L4 PT) stores 512 PTEs in a single 4 KB row—exactly one DRAM row-buffer. If two VPNs differ only in their bottom 9 bits (512-page window), their L4 PTEs sit in the same row. The paper finds 80.20% of translations <i>within a warp</i> share the same L4 PT base address (Figure 9). Opening the row once and fetching multiple PTEs from it is far cheaper than 32 separate DRAM accesses, each closing/opening rows.</p>
+          <div class="ready"><b>Now you're ready:</b> LATPC's <i>prefetcher</i> (LATP) batches walks that share an L4 PT, loading multiple PTEs in one pass and exploiting row-buffer hits.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Why prior TLB prefetchers fail on GPUs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>CPU TLB prefetchers (Sequential, Stride, Distance) learn patterns from the <i>time-ordered</i> stream of TLB accesses. On a GPU, thousands of threads interleave their accesses chaotically—no stable stride emerges. The paper shows a 3D plot: TLB accesses vs time are scattered (Figure 7b), but TLB accesses vs <i>thread index</i> reveal a clear line (Figure 7c). Existing prefetchers see scatter → predict poorly (accuracy &lt;80%, Figure 13). Valkyrie (the GPU TLB prefetcher from PACT'20) only <i>replicates</i> one fetched PTE to likely L1 TLBs—it doesn't prefetch additional entries from the page table, so it achieves only 3% speedup.</p>
+          <div class="ready"><b>Now you're ready:</b> LATPC avoids prediction entirely by <i>detecting</i> the VPN stride directly from the warp's coalesced VPN list (determined by thread index), achieving near-100% accuracy.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Regularity within a warp: the hidden stride<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Even for "irregular" workloads (e.g., graph traversal), the paper finds that VPNs within one warp instruction exhibit <b>almost-strided</b> behavior (Figure 8): on average only 1.96 distinct stride values (irregular workloads average 2.49). "Regular" workloads (e.g., matrix ops) use 1.42. A <i>VPN stride</i> is (VPN<sub>i+1</sub> − VPN<sub>i</sub>); if that stride stays constant or follows a few discrete values across threads 0..31, you can represent many VPNs compactly as {base, stride, count}. This regularity is invisible to time-ordered prefetchers but obvious when you look at the coalescer's output (which is determined by thread index).</p>
+          <div class="ready"><b>Now you're ready:</b> LATPC's Regularity Detector scans the coalescer's VPN list, detects the stride(s), and generates prefetch requests for the missing threads' VPNs—all in one pass, no prediction.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>The two bottlenecks: PTW contention &amp; MSHR exhaustion<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The paper's Figure 1 breakdown shows: <b>39% of translation latency = page table walks</b> (limited to 16 PTWs); <b>53% = MSHR reservation failures</b> (limited to 16 L1 TLB MSHR entries). Figure 6 demonstrates that even with 2 MB large pages (which reduce TLB pressure), increasing PTWs to 64 or MSHR entries to 1,024 yields 1.38× and 1.66× speedup, respectively—proving the bottlenecks persist regardless of page size. No single fix solves both: more PTWs help walks but not MSHR contention; more MSHR entries help reservations but not PTW throughput.</p>
+          <div class="ready"><b>Now you're ready:</b> LATPC attacks both: LATC (compressed MSHR) squeezes up to 32 misses into 1–2 entries → reduces MSHR exhaustion. LATP (batched walks) processes multiple translations with batched L4 PT fetches → reduces PTW contention. Together they achieve 1.47× GMean speedup.</div>
+        </div>
+      </details>
+    </div>
+
+    <div class="card" style="margin-top:30px">
+      <h3>Quick glossary of key acronyms</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;font-size:.94rem">
+        <div><b>LATPC</b><br><span style="color:var(--ink-soft)">Locality-Aware TLB Prefetching &amp; MSHR Compression (this work)</span></div>
+        <div><b>LATP</b><br><span style="color:var(--ink-soft)">Locality-Aware TLB Prefetching (prefetch part)</span></div>
+        <div><b>LATC</b><br><span style="color:var(--ink-soft)">Locality-Aware TLB MSHR Compression (compression part)</span></div>
+        <div><b>VPN</b><br><span style="color:var(--ink-soft)">Virtual Page Number (input to translation)</span></div>
+        <div><b>PTE</b><br><span style="color:var(--ink-soft)">Page Table Entry (output of walk)</span></div>
+        <div><b>PTW</b><br><span style="color:var(--ink-soft)">Page Table Walker (16 in baseline)</span></div>
+        <div><b>MSHR</b><br><span style="color:var(--ink-soft)">Miss-Status Holding Register (16 L1 TLB entries in baseline)</span></div>
+        <div><b>SM</b><br><span style="color:var(--ink-soft)">Streaming Multiprocessor (GPU core)</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>LATPC in a nutshell</h2>
+      <p class="sub">The problem, the two-part fix, and why it works when prior approaches don't.</p>
+    </div>
+    <div class="prose">
+      <p>Modern GPUs virtualize memory, but <b>high page divergence</b> (one warp instruction touching 32 different pages) overwhelms the limited address-translation machinery. In the baseline, 32 TLB misses exhaust the 16 L1 TLB MSHR entries (causing reservation failures that account for 53% of translation latency), and 32 page-table walks saturate the 16 page-table walkers (another 39% of latency). Existing TLB prefetchers learn patterns from time-ordered TLB accesses, which on GPUs is a chaotic interleaving of thousands of threads—no stable stride, low accuracy.</p>
+      <p>LATPC's insight: although TLB accesses are disordered in time, the VPNs <i>within a single warp instruction</i> exhibit strong <b>regularity</b> (thread-indexed VPNs form almost-strided sequences, averaging 1.96 distinct strides) and <b>locality</b> (80.20% of VPNs share the same L4 page table base address, meaning their PTEs can be fetched from one 4 KB DRAM row). LATPC exploits both properties with two mechanisms:</p>
+      <ul style="margin-left:20px">
+        <li><b>LATC (Locality-Aware TLB MSHR Compression):</b> extends each L1 TLB MSHR entry with a 9-bit Stride field and a 32-bit Valid Mask, so one entry can represent up to 32 VPNs (base + stride×index). This compresses up to 32 misses into 1–2 entries instead of 32, freeing MSHR slots and reducing reservation failures.</li>
+        <li><b>LATP (Locality-Aware TLB Prefetching):</b> when a demand miss arrives, LATP's Regularity Detector scans the coalescer's VPN list (determined by thread index), detects the stride, generates prefetch requests for the full warp, and batches their L4 page-table walks. Because many share an L4 PT, one DRAM row-buffer open can fetch multiple PTEs—reducing separate row opens and PTW invocations.</li>
+      </ul>
+      <p>Regularity Detector is a tiny state machine (0.0009 mm² in 7 nm, 1-cycle latency modeled) that processes one VPN per cycle, tracks the previous stride, and outputs triples <code>&lt;VPN, Stride, Index&gt;</code>. Demand requests have stride=0, prefetch requests have non-zero stride. The extended PW Buffer coalesces multiple walks with the same base address, and the PTW fetches multiple PTEs in batched fashion.</p>
+      <p><strong>The payoff:</strong> LATPC reduces address translation latency to 69% of baseline and achieves a <b>1.47× GMean speedup</b> across 24 workloads (up to 3.6× for atax/bicg), for under <b>1% area overhead</b> (0.26 mm² on a 445 mm² GPU). Valkyrie (the prior GPU TLB prefetcher) achieves only 1.03× because it replicates one entry without prefetching more. CPU prefetchers (Sequential/Stride/Distance) achieve ≤1.01× due to low accuracy on scattered GPU access patterns. Avatar (MICRO'24, the state-of-the-art in GPU translation via speculation) achieves 1.40×, but LATPC+Avatar reaches 1.64× by resolving the bottlenecks during Avatar's background walks.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>High page divergence (32 pages/warp) saturates 16 PTWs and 16 L1 TLB MSHR entries → 92% of translation latency.</li>
+        <li>VPNs are scattered in time but <b>regular in thread-index order</b> (1.96 distinct strides) and <b>local in page-table space</b> (80.20% share same L4 PT base address).</li>
+        <li>LATC compresses up to 32 TLB misses into 1–2 MSHR entries via {base, stride, 32-bit mask} → reduces reservation failures from 68.84% to 43.02%.</li>
+        <li>LATP batches multiple page-table walks' L4 fetches via detected stride → exploits DRAM row-buffer hits.</li>
+        <li>Regularity Detector detects stride by scanning coalescer output (not time-ordered accesses) → near-100% accuracy.</li>
+        <li>Result: 1.47× GMean speedup, 0.26 mm² (0.06% die), 36 mW (0.02% TDP), 1-cycle modeled latency with negligible impact.</li>
+        <li>Works with 4 KB or 2 MB pages; orthogonal to Avatar (combining yields 1.64×).</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">how LATPC reduces queueing delays vs baseline (illustrative timeline for 2 CTAs, each 2 warps)</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> address translation for threads</span>
+        <span><i style="background:var(--honey-deep)"></i> queueing delay (baseline)</span>
+        <span><i style="background:var(--ltram)"></i> saved cycles (LATPC)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 420" role="img" aria-label="Timeline comparison baseline vs LATPC">
+        <text x="20" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Baseline: 16 PTWs, 16 L1 TLB MSHRs → queueing delays</text>
+        <rect x="40" y="40" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="80" y="54" text-anchor="middle" font-size="10" fill="#fff">T0-15</text>
+        <rect x="140" y="40" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="180" y="54" text-anchor="middle" font-size="10" fill="#fff">T16-31</text>
+        <rect x="240" y="40" width="120" height="20" rx="4" fill="#C27D14"/><text x="300" y="54" text-anchor="middle" font-size="10" fill="#fff">queueing delay</text>
+        <rect x="380" y="40" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="420" y="54" text-anchor="middle" font-size="10" fill="#fff">T0-15</text>
+        <rect x="480" y="40" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="520" y="54" text-anchor="middle" font-size="10" fill="#fff">T16-31</text>
+        <text x="40" y="34" font-size="10" fill="#6E6456">W0 (CTA0)</text>
+        <rect x="40" y="70" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="80" y="84" text-anchor="middle" font-size="10" fill="#fff">T16-31</text>
+        <rect x="140" y="70" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="180" y="84" text-anchor="middle" font-size="10" fill="#fff">T0-15</text>
+        <rect x="240" y="70" width="120" height="20" rx="4" fill="#C27D14"/><text x="300" y="84" text-anchor="middle" font-size="10" fill="#fff">queueing delay</text>
+        <rect x="380" y="70" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="420" y="84" text-anchor="middle" font-size="10" fill="#fff">T16-31</text>
+        <rect x="480" y="70" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="520" y="84" text-anchor="middle" font-size="10" fill="#fff">T0-15</text>
+        <text x="40" y="64" font-size="10" fill="#6E6456">W1 (CTA0)</text>
+        <rect x="40" y="100" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="80" y="114" text-anchor="middle" font-size="10" fill="#fff">T0-15</text>
+        <rect x="140" y="100" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="180" y="114" text-anchor="middle" font-size="10" fill="#fff">T16-31</text>
+        <rect x="240" y="100" width="120" height="20" rx="4" fill="#C27D14"/><text x="300" y="114" text-anchor="middle" font-size="10" fill="#fff">queueing delay</text>
+        <rect x="380" y="100" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="420" y="114" text-anchor="middle" font-size="10" fill="#fff">T0-15</text>
+        <rect x="480" y="100" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="520" y="114" text-anchor="middle" font-size="10" fill="#fff">T16-31</text>
+        <text x="40" y="94" font-size="10" fill="#6E6456">W0 (CTA1)</text>
+        <rect x="40" y="130" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="80" y="144" text-anchor="middle" font-size="10" fill="#fff">T16-31</text>
+        <rect x="140" y="130" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="180" y="144" text-anchor="middle" font-size="10" fill="#fff">T0-15</text>
+        <rect x="240" y="130" width="120" height="20" rx="4" fill="#C27D14"/><text x="300" y="144" text-anchor="middle" font-size="10" fill="#fff">queueing delay</text>
+        <rect x="380" y="130" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="420" y="144" text-anchor="middle" font-size="10" fill="#fff">T16-31</text>
+        <rect x="480" y="130" width="80" height="20" rx="4" fill="#2C8C7C" opacity="0.7"/><text x="520" y="144" text-anchor="middle" font-size="10" fill="#fff">T0-15</text>
+        <text x="40" y="124" font-size="10" fill="#6E6456">W1 (CTA1)</text>
+        <text x="580" y="90" font-family="JetBrains Mono" font-size="11" fill="#9A8E7C">~1,700 cycles</text>
+        <line x1="20" y1="170" x2="740" y2="170" stroke="#E7DBC6" stroke-width="2"/>
+        <text x="20" y="200" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">LATPC: compressed MSHR + batched walks → reduced delays</text>
+        <rect x="40" y="216" width="160" height="20" rx="4" fill="#5A61B4"/><text x="120" y="230" text-anchor="middle" font-size="10" fill="#fff">T0-31 (W0, CTA0)</text>
+        <rect x="220" y="216" width="160" height="20" rx="4" fill="#5A61B4"/><text x="300" y="230" text-anchor="middle" font-size="10" fill="#fff">T0-31 (W1, CTA0)</text>
+        <rect x="40" y="246" width="160" height="20" rx="4" fill="#5A61B4"/><text x="120" y="260" text-anchor="middle" font-size="10" fill="#fff">T0-31 (W0, CTA1)</text>
+        <rect x="220" y="246" width="160" height="20" rx="4" fill="#5A61B4"/><text x="300" y="260" text-anchor="middle" font-size="10" fill="#fff">T0-31 (W1, CTA1)</text>
+        <rect x="400" y="216" width="120" height="50" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="460" y="238" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">illustrative</text>
+        <text x="460" y="254" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">cycle savings</text>
+        <text x="540" y="240" font-family="JetBrains Mono" font-size="11" fill="#9A8E7C">~300 cycles</text>
+        <text x="20" y="300" font-family="Fraunces" font-size="13" font-weight="600" fill="#6E6456">Key metrics (paper Fig. 11d, illustrative case):</text>
+        <text x="40" y="320" font-size="11" fill="#6E6456">• Baseline: 16/16 L1 TLB MSHR used, 16/16 PTWs used → 1.00× speedup</text>
+        <text x="40" y="338" font-size="11" fill="#6E6456">• LATPC: 2/16 L1 TLB MSHR used, 4/16 PTWs used → <tspan fill="#2C8C7C" font-weight="700">5.67× speedup</tspan></text>
+        <text x="40" y="356" font-size="11" fill="#6E6456">• Compression ratio: 32 misses / 2 entries = 16:1</text>
+        <text x="40" y="374" font-size="11" fill="#6E6456">• Batching benefit: batched L4 PT fetch (row-buffer hit)</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> Baseline serializes warp instructions because MSHR/PTW slots fill. LATPC compresses misses into 1–2 entries and batches their walks, so warp instructions proceed with reduced queueing delay. (Paper Fig. 11, illustrative timeline)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → detect → compress → prefetch → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">32 TLB misses exhaust 16 MSHR entries &amp; 16 PTWs → 53% + 39% of latency</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Detect (Regularity Detector)</div><div class="nd">Scan coalescer output, find VPN stride (1.96 distinct strides avg)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Compress (LATC)</div><div class="nd">1 MSHR entry = {base, stride, 32-bit mask} → up to 32 misses in 1 slot</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Prefetch (LATP)</div><div class="nd">Batch multiple walks sharing same L4 PT → DRAM row-buffer hits</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">1.47× GMean speedup, 0.26 mm² area, 36 mW power</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Five everyday pictures</div>
+      <h2>How to think about LATPC</h2>
+      <p class="sub">Each picture stands alone. Every card ends with where the analogy breaks.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="48" r="8" fill="#2C8C7C"/><circle cx="50" cy="48" r="8" fill="#2C8C7C"/><circle cx="70" cy="48" r="8" fill="#2C8C7C"/>
+          <circle cx="90" cy="48" r="8" fill="#2C8C7C"/><circle cx="110" cy="48" r="8" fill="#2C8C7C"/>
+          <path d="M30 60 v16 M50 60 v16 M70 60 v16 M90 60 v16 M110 60 v16" stroke="#C27D14" stroke-width="2"/>
+          <rect x="20" y="76" width="100" height="14" rx="3" fill="#FBEACB" stroke="#C27D14" stroke-width="1.5"/>
+          <text x="70" y="87" text-anchor="middle" font-size="9" fill="#6e4a09">one clerk</text>
+        </svg></div>
+        <span class="term">The core problem · PTW contention</span>
+        <h3>Five passengers, one ticket clerk</h3>
+        <p>Five passengers line up at one ticket window (the baseline: 5 warps, 16 PTWs). Each passenger hands over 32 tickets to validate—one at a time, one clerk. The queue explodes. LATPC notices all 32 tickets for one passenger are <i>consecutive seat numbers</i> (the stride), bundles them, and the clerk validates the whole block with one stamp (batched L4 PT fetch). The next passenger's turn arrives faster.</p>
+        <div class="breaks"><b>Where it breaks:</b> real tickets aren't laid out in memory rows; PTEs are. The analogy undersells the DRAM row-buffer locality—fetching multiple PTEs from one row is essentially low-latency after opening it once.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="40" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <text x="70" y="46" text-anchor="middle" font-size="10" fill="#5A61B4">up to 32 VPNs</text>
+          <text x="70" y="60" text-anchor="middle" font-size="10" fill="#5A61B4">base + stride</text>
+          <path d="M70 70 v10" stroke="#2C8C7C" stroke-width="2" marker-end="url(#arrowhead)"/>
+          <rect x="50" y="82" width="40" height="8" rx="2" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+          <text x="70" y="90" text-anchor="middle" font-size="8" fill="#1f5b51">1 MSHR slot</text>
+          <defs><marker id="arrowhead" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto"><polygon points="0 0, 10 5, 0 10" fill="#2C8C7C"/></marker></defs>
+        </svg></div>
+        <span class="term">The compression · LATC</span>
+        <h3>Compressing a sequence into a formula</h3>
+        <p>Instead of storing [2, 4, 6, 8, …, 64] (32 numbers, 32 slots), write "base=2, stride=2, count=32" (one slot). LATC does this for VPNs: one L1 TLB MSHR entry holds a 9-bit stride and a 32-bit Valid Mask (one bit per thread). When thread 5's VPN arrives, LATC checks if base + 5×stride matches—if yes, set bit 5 of the mask. Up to 32 misses compress into 1–2 entries instead of exhausting all 16.</p>
+        <div class="breaks"><b>Where it breaks:</b> real sequences aren't always perfectly strided. The paper finds 1.96 distinct strides on average, meaning you might need 2 entries instead of 1—still far better than 32.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="10" y="20" width="120" height="8" rx="2" fill="#F3EADA" stroke="#D8C8AC"/>
+          <rect x="12" y="22" width="18" height="4" fill="#2C8C7C"/><rect x="32" y="22" width="18" height="4" fill="#2C8C7C"/>
+          <rect x="52" y="22" width="18" height="4" fill="#2C8C7C"/><rect x="72" y="22" width="18" height="4" fill="#2C8C7C"/>
+          <text x="70" y="40" text-anchor="middle" font-size="10" fill="#6E6456">DRAM row buffer (512 PTEs)</text>
+          <path d="M70 48 l-20 12 M70 48 l20 12" stroke="#5A61B4" stroke-width="2"/>
+          <text x="70" y="70" text-anchor="middle" font-size="9" fill="#5A61B4">one row open fetches multiple</text>
+        </svg></div>
+        <span class="term">The locality · page table clustering</span>
+        <h3>Books on the same shelf</h3>
+        <p>A library shelf holds 512 books (an L4 PT = 512 PTEs in one 4 KB DRAM row). You need books 100, 101, 102, …, 131—multiple on the same shelf. Instead of 32 trips (each opening the shelf, grabbing one book, closing it), you open the shelf <i>once</i> and grab multiple in one pass. LATP does this: if 80.20% of a warp's VPNs share the same L4 PT base address, batching their fetches exploits row-buffer hits.</p>
+        <div class="breaks"><b>Where it breaks:</b> the remaining ~20% of VPNs span multiple shelves. LATP handles them with separate walks, so you get partial batching—still a win, just not 100%.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="30" r="6" fill="#C27D14"/><circle cx="50" cy="30" r="6" fill="#C27D14"/>
+          <circle cx="70" cy="30" r="6" fill="#C27D14"/><circle cx="90" cy="30" r="6" fill="#C27D14"/>
+          <circle cx="110" cy="30" r="6" fill="#C27D14"/>
+          <text x="70" y="48" text-anchor="middle" font-size="9" fill="#9A8E7C">scattered in time</text>
+          <line x1="20" y1="60" x2="120" y2="60" stroke="#E7DBC6"/>
+          <circle cx="30" cy="75" r="6" fill="#2C8C7C"/><circle cx="40" cy="75" r="6" fill="#2C8C7C"/>
+          <circle cx="50" cy="75" r="6" fill="#2C8C7C"/><circle cx="60" cy="75" r="6" fill="#2C8C7C"/>
+          <circle cx="70" cy="75" r="6" fill="#2C8C7C"/>
+          <text x="70" y="92" text-anchor="middle" font-size="9" fill="#1f5b51">by thread index</text>
+        </svg></div>
+        <span class="term">Why prior prefetchers fail · time vs thread order</span>
+        <h3>Sorting a shuffled deck by suit vs by rank</h3>
+        <p>A deck of cards arrives shuffled (TLB accesses in time order—thousands of threads interleaved). CPU prefetchers try to predict the next card by watching the shuffle: "hearts → spades → clubs → ?" (no pattern). LATPC instead looks at one <i>hand</i> (warp instruction): "3♠ 4♠ 5♠ 6♠" (consecutive ranks, same suit). The pattern is obvious—next is 7♠. Regularity Detector scans the coalescer's output (which is determined by thread index, like sorting cards by rank within a suit), not the time-ordered chaos.</p>
+        <div class="breaks"><b>Where it breaks:</b> cards are independent; GPU threads aren't. The analogy oversimplifies the interleaving—real warps overlap in time, but LATPC works <i>within</i> each warp's coalesced VPN list, so the interleaving doesn't matter.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="50" rx="4" fill="#FBEACB" stroke="#C27D14" stroke-width="1.5"/>
+          <text x="70" y="40" text-anchor="middle" font-size="9" fill="#6e4a09">32 separate</text>
+          <text x="70" y="52" text-anchor="middle" font-size="9" fill="#6e4a09">predictions</text>
+          <text x="70" y="64" text-anchor="middle" font-size="9" fill="#6e4a09">(low accuracy)</text>
+          <line x1="10" y1="80" x2="130" y2="80" stroke="#E7DBC6"/>
+          <rect x="40" y="86" width="60" height="8" rx="2" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+          <text x="70" y="93" text-anchor="middle" font-size="8" fill="#1f5b51">1 detection (exact)</text>
+        </svg></div>
+        <span class="term">Detection vs prediction · no ML, no training</span>
+        <h3>Measuring vs guessing</h3>
+        <p>Prior TLB prefetchers <i>predict</i>: "I've seen VPNs 100, 104, 108, so the next is probably 112" (Stride prefetcher). If the pattern changes mid-stream, the prediction is wrong. LATPC <i>detects</i>: "This warp's coalesced VPN list is [100, 104, 108, 112, …, 224]—the stride is 4, so thread 5 needs VPN 120." No prediction, no training, no misprediction penalty. Accuracy is near-100% because you're reading the actual stride from the warp's data, not inferring it from history.</p>
+        <div class="breaks"><b>Where it breaks:</b> "detection" sounds instant, but Regularity Detector is a 1-cycle state machine processing one VPN/cycle. For a warp with 32 unique VPNs, it takes 32 cycles to scan the full list—longer than an idealized "instant" measurement. Still, 32 cycles is negligible vs hundreds of cycles for a page-table walk.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Component by component, with the paper's key mechanisms rebuilt as visuals.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Regularity Detector — spotting the stride</h3>
+      <p>Regularity Detector sits after the TLB coalescer (which outputs unique VPNs determined by thread index). It's a tiny state machine: 5 registers (36-bit Base VPN, 36-bit Prev. VPN, 9-bit Prev. Stride, 5-bit Prev. Index, 1-bit Prev. Valid), a 9-bit subtractor, two comparators, and a few muxes. Each cycle it reads one VPN, computes <code>Stride = (VPN - Prev.VPN) & 0x1FF</code> (bottom 9 bits), checks if the stride matches <code>Prev.Stride</code> and if the MSBs match <code>Base VPN</code>. If yes, increment <code>Index</code>; if no, emit the previous sequence (if any), reset <code>Base VPN</code> to the current VPN, and start a new sequence.</p>
+      <p>Output is a triple <code>&lt;VPN, Stride, Index&gt;</code>. Demand requests (start of a new sequence) have <code>Stride=0, Index=0</code>. Prefetch requests have non-zero stride and index. Negative strides are allowed (subtractor underflows, but the underflown 9-bit value is used as-is; the base VPN calculation uses only the 9 LSBs, so the borrow bit is ignored). The hardware cost: 0.0009 mm² in 7 nm, 1-cycle latency modeled.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why 9 bits?</b> An L4 PT holds 512 PTEs (9-bit index). Constraining the stride to 9 bits helps ensure VPNs in a detected sequence can fall within one L4 PT (same DRAM row), enabling batched walks. Larger strides break into multiple sequences, which is fine—each sequence still benefits from compression and batching within its own L4 PT.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · LATC — compressed L1 TLB MSHR</h3>
+      <p>Each baseline L1 TLB MSHR entry holds one VPN (36-bit tag) and a 1-bit valid. LATC extends it: <b>32-bit Valid Mask</b> (one bit per thread), <b>9-bit Stride</b>, and <b>36-bit Base VPN</b>. The comparison logic now checks <code>(Base VPN + Stride × Index) == VPN</code> using a 9-bit multiplier, an adder, and two comparators. If a match is found and the corresponding bit of Valid Mask is already set, that's an MSHR hit (hit-under-miss). If the bit is unset, set it and forward the request—an MSHR miss (miss-under-miss). If no entry matches and all entries are occupied, that's an MSHR reservation failure (reduced with LATC, since one entry can hold up to 32 VPNs).</p>
+      <p>When a PTE returns from the L2 TLB, the L1 TLB MSHR clears the corresponding bit of Valid Mask. When all bits are zero, the entry is freed. This allows gradual release: if only 10 of 32 PTEs have returned, those 10 threads can proceed while the other 22 wait—no all-or-nothing blocking.</p>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>The compression ratio:</b> in the worst case (32 distinct strides, no regularity), LATC allocates 32 entries—same as baseline. In the common case (1.96 distinct strides), LATC allocates ~2 entries for 32 misses → up to 16:1 compression. The paper shows MSHR reservation failures drop from 68.84% (baseline) to 43.02% (LATPC).</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · LATP — batched page-table walks</h3>
+      <p>The Page Table Walker (PTW) normally processes one VPN at a time: walk L1→L2→L3 PTs (intermediate levels), fetch the L4 PTE, fill the L2 TLB. LATP extends the Page Walk Buffer (PW Buffer) similarly to LATC: add 9-bit Stride and 32-bit Valid Mask to each entry. When a translation request arrives, the PTW checks if it can be coalesced into an existing PW Buffer entry (same base address, same stride). If yes, set the corresponding bit of Valid Mask and <i>reserve</i> the L4 walk until the intermediate traversal (L1→L2→L3) completes. Once the L3 PTE is fetched, the PTW can issue the reserved L4 walks—the paper says they are issued one by one but typically hit the DRAM row buffer, so latency is low.</p>
+      <p>Because the VPNs in a sequence differ only in their bottom 9 bits (enforced by Regularity Detector), their L4 PTEs reside at <code>L3_PTE.base + VPN[8:0] × 8</code> (8 bytes/PTE). Many addresses fall within a single 4 KB row. The first fetch opens the row; subsequent fetches can be row-buffer hits (latency ~4 cycles each instead of ~50 cycles for a row miss). The intermediate L1→L2→L3 walks are cached in the Page Walk Cache (PWC), which the paper reports hits 99.99%, 99.93%, and 94.72% for L1/L2/L3 PTs, so the common path is: L1 TLB miss → allocate compressed MSHR → probe L2 TLB (miss) → PTW fetches L3 PTE from PWC (hit) → issue batched L4 fetches.</p>
+      <div class="callout note"><span class="ic">🌱</span><div><b>Prefetch overhead:</b> each L4 fetch is a separate memory request, but they're to consecutive addresses in the same row. Modern GDDR6 DRAM (used in the paper's GPU config) handles consecutive accesses with tCCDL=4 cycles (column-to-column delay, same row). The paper notes reserved walks are issued one by one and typically hit the row buffer.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Working model — end-to-end flow</h3>
+      <p>Follow one warp instruction with 32 unique VPNs through LATPC:</p>
+      <ol class="seq">
+        <li>Warp scheduler issues a load instruction → LD/ST units generate 32 addresses → coalescer extracts unique VPNs (determined by thread index) → forwards to Regularity Detector.</li>
+        <li>Regularity Detector scans the VPN list, detects stride (e.g., stride=4), emits 32 triples: <code>&lt;VPN<sub>0</sub>, 0, 0&gt;</code> (demand), <code>&lt;VPN<sub>1</sub>, 4, 1&gt;</code> (prefetch), …, <code>&lt;VPN<sub>31</sub>, 4, 31&gt;</code> (prefetch) → forwards to L1 TLB.</li>
+        <li>L1 TLB checks each triple. Demand VPN<sub>0</sub> misses → allocates one LATC MSHR entry with Base=VPN<sub>0</sub>, Stride=4, Valid Mask bit 0 set. Prefetch VPN<sub>1</sub> misses → coalesces into same entry (Base + 4×1 = VPN<sub>1</sub>), sets bit 1. Repeat for others → one MSHR entry can hold many.</li>
+        <li>Misses forward to L2 TLB. Assume misses → forward to PW Queue. PTW dequeues demand request, starts L1→L2→L3 walk, allocates one PW Buffer entry with Base=VPN<sub>0</sub>, Stride=4, Valid Mask bit 0 set. Prefetch requests arrive → coalesce into same entry, set bits 1..31. Intermediate walk completes → PTW issues reserved L4 walks.</li>
+        <li>L4 fetches to DRAM, with first access potentially a row miss and subsequent accesses row hits if they share the same row. PTEs return → fill L2 TLB → forward to L1 TLBs.</li>
+        <li>L1 TLB receives PTEs, fills entries, clears corresponding bits in LATC MSHR's Valid Mask. Once all bits for an entry are cleared, MSHR entry is freed. L1 TLB signals LD/ST unit to replay the load → threads proceed.</li>
+      </ol>
+      <p>The paper models 1-cycle added latency for Regularity Detector and LATC tagging, reducing GMean speedup by 0.45%—negligible performance impact.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Regularity Detector state machine</div>
+      <div class="viz-kicker">cycle-by-cycle example (input VPNs: 0x1000, 0x1004, 0x1008, 0x100c)</div>
+      <svg class="full" viewBox="0 0 700 260" role="img" aria-label="Regularity Detector working model">
+        <text x="20" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Cycle-by-cycle state updates</text>
+        <g font-family="JetBrains Mono" font-size="10">
+          <text x="40" y="50" fill="#6E6456">Cycle 0:</text>
+          <text x="120" y="50">Input VPN = 0x1000</text>
+          <text x="120" y="64">→ Prev.Valid=0 → emit &lt;0x1000, 0, 0&gt; (demand)</text>
+          <text x="120" y="78">→ set Base VPN=0x1000, Prev.VPN=0x1000, Prev.Stride=0, Prev.Index=0, Prev.Valid=1</text>
+          <text x="40" y="100" fill="#6E6456">Cycle 1:</text>
+          <text x="120" y="100">Input VPN = 0x1004</text>
+          <text x="120" y="114">→ Stride = 0x1004 - 0x1000 = 0x4</text>
+          <text x="120" y="128">→ Prev.Stride=0 (first after demand) → start new sequence with stride=4</text>
+          <text x="120" y="142">→ emit &lt;0x1004, 4, 1&gt; (prefetch)</text>
+          <text x="120" y="156">→ set Prev.VPN=0x1004, Prev.Stride=4, Prev.Index=1</text>
+          <text x="40" y="178" fill="#6E6456">Cycle 2:</text>
+          <text x="120" y="178">Input VPN = 0x1008</text>
+          <text x="120" y="192">→ Stride = 0x1008 - 0x1004 = 0x4 (matches Prev.Stride)</text>
+          <text x="120" y="206">→ emit &lt;0x1008, 4, 2&gt; (prefetch), increment Index to 2</text>
+          <text x="40" y="228" fill="#6E6456">Cycle 3:</text>
+          <text x="120" y="228">Input VPN = 0x100c</text>
+          <text x="120" y="242">→ Stride = 0x100c - 0x1008 = 0x4 → emit &lt;0x100c, 4, 3&gt; (prefetch), Index=3</text>
+        </g>
+        <rect x="520" y="40" width="160" height="180" rx="8" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="600" y="62" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#5A61B4">State Registers</text>
+        <g font-family="JetBrains Mono" font-size="9" fill="#3a409a">
+          <text x="540" y="82">Base VPN: 0x1000</text>
+          <text x="540" y="100">Prev. VPN: 0x100c</text>
+          <text x="540" y="118">Prev. Stride: 4</text>
+          <text x="540" y="136">Prev. Index: 3</text>
+          <text x="540" y="154">Prev. Valid: 1</text>
+          <text x="540" y="180" fill="#6E6456">→ Next VPN (0x1010)</text>
+          <text x="540" y="196" fill="#6E6456">will emit &lt;0x1010, 4, 4&gt;</text>
+        </g>
+      </svg>
+      <figcaption><b>Key insight:</b> the detector tracks only the previous VPN and stride; if the current VPN continues the pattern, it increments the index. No training, no prediction—just a running diff. (Paper Fig. 12b)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">LATC MSHR compression in action</div>
+      <div class="viz-kicker">one entry representing 4 outstanding TLB misses (threads 0, 1, 2, 3)</div>
+      <svg class="full" viewBox="0 0 700 200" role="img" aria-label="LATC MSHR working model">
+        <rect x="40" y="30" width="300" height="140" rx="8" fill="#FFFDF8" stroke="#D8C8AC" stroke-width="1.5"/>
+        <text x="190" y="52" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#332C24">LATC MSHR Entry</text>
+        <g font-family="JetBrains Mono" font-size="10">
+          <text x="60" y="76" fill="#6E6456">Base VPN:</text><text x="150" y="76" fill="#5A61B4">0x1000</text>
+          <text x="60" y="94" fill="#6E6456">Stride:</text><text x="150" y="94" fill="#5A61B4">0x4</text>
+          <text x="60" y="112" fill="#6E6456">Valid Mask:</text><text x="150" y="112" fill="#2C8C7C">0b0000_0000_...._1111</text>
+          <text x="150" y="126" font-size="8" fill="#9A8E7C">(bits 0..3 set = threads 0..3 outstanding)</text>
+          <text x="60" y="148" fill="#6E6456">Subentries:</text><text x="150" y="148" fill="#6E6456">warp 1 stalled</text>
+        </g>
+        <text x="400" y="50" font-family="Fraunces" font-size="12" font-weight="600" fill="#332C24">Comparison logic</text>
+        <g font-family="JetBrains Mono" font-size="9" fill="#6E6456">
+          <text x="400" y="70">Given: VPN=0x1008, Stride=4, Index=2</text>
+          <text x="400" y="86">→ Compute: Base VPN + Stride × Index</text>
+          <text x="420" y="102">= 0x1000 + 0x4 × 2 = 0x1008 ✓ match</text>
+          <text x="400" y="118">→ Check Valid Mask bit 2: already set? No</text>
+          <text x="400" y="134">→ Set bit 2, forward miss to L2 TLB</text>
+          <text x="400" y="150">→ MSHR miss (miss-under-miss)</text>
+          <text x="400" y="170" font-size="10" fill="#2C8C7C" font-weight="700">Result: 4 misses in 1 entry (4:1 compression)</text>
+        </g>
+      </svg>
+      <figcaption><b>The trick:</b> one entry with a stride can represent any arithmetic sequence within a 512-page window. Once all bits of Valid Mask clear (all PTEs returned), the entry is freed. (Paper Fig. 14c, Algorithm 1)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Three traces from the paper's evaluation, carried all the way through.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Detecting the stride for a warp with 8 unique VPNs</h3>
+      <p style="color:var(--ink-soft)">A warp instruction touches 8 threads, each on a different page. The coalescer outputs VPNs: <code>[0x1000, 0x1002, 0x1004, 0x1006, 0x1008, 0x100a, 0x100c, 0x100e]</code>. What does Regularity Detector emit?</p>
+      <ol class="seq">
+        <li><b>Cycle 0:</b> Input VPN=0x1000, Prev.Valid=0 (uninitialized) → emit <code>&lt;0x1000, 0, 0&gt;</code> (demand). Set Base VPN=0x1000, Prev.VPN=0x1000, Prev.Stride=0, Prev.Index=0, Prev.Valid=1.</li>
+        <li><b>Cycle 1:</b> Input VPN=0x1002. Stride = 0x1002 - 0x1000 = 0x2. Prev.Stride=0 (first after demand), so start new sequence with stride=2. Emit <code>&lt;0x1002, 2, 1&gt;</code>. Set Prev.VPN=0x1002, Prev.Stride=2, Prev.Index=1.</li>
+        <li><b>Cycle 2:</b> Input VPN=0x1004. Stride = 0x1004 - 0x1002 = 0x2 (matches Prev.Stride). Emit <code>&lt;0x1004, 2, 2&gt;</code>. Increment Prev.Index to 2, set Prev.VPN=0x1004.</li>
+        <li><b>Cycles 3–7:</b> Repeat: each VPN = Prev.VPN + 2. Emit <code>&lt;0x1006, 2, 3&gt;</code>, …, <code>&lt;0x100e, 2, 7&gt;</code>. Final state: Prev.Index=7.</li>
+        <li><b>Result:</b> 1 demand request + 7 prefetch requests, all with stride=2. LATC compresses all 8 into one MSHR entry (Base=0x1000, Stride=2, Valid Mask bits 0..7 set). Accuracy = 100% (no misprediction).</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Why it works:</b> the coalescer output is determined by thread index, so consecutive threads with a memory access pattern like <code>array[tid*2]</code> produce consecutive VPNs with stride=2. Regularity Detector just reads that stride directly—no need to infer it from a chaotic time-ordered stream.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Batching L4 page-table walks for 32 VPNs in the same L4 PT</h3>
+      <p style="color:var(--ink-soft)">A warp's 32 unique VPNs all fall within a 512-page window (e.g., VPNs 0x10000..0x1001f). How does LATP batch their walks?</p>
+      <ol class="seq">
+        <li><b>L1 TLB miss:</b> demand VPN=0x10000 misses → LATC allocates one MSHR entry (Base=0x10000, Stride=1, bit 0 set). Prefetch VPNs 0x10001..0x1001f coalesce into same entry (bits 1..31 set). All forward to L2 TLB.</li>
+        <li><b>L2 TLB miss:</b> all 32 miss → forward to PW Queue. PTW dequeues demand VPN=0x10000, starts L1→L2→L3 walk. Allocates one PW Buffer entry (Base=0x10000, Stride=1, bit 0 set).</li>
+        <li><b>Coalesce prefetches:</b> prefetch VPNs 0x10001..0x1001f arrive at PTW → coalesce into same PW Buffer entry (bits 1..31 set). Walks are <i>reserved</i> until L3 walk completes.</li>
+        <li><b>L3 walk completes:</b> PTW fetches L3 PTE (from PWC, hit). The L3 PTE gives the base address of the L4 PT, e.g., PA=0x50000. PTW calculates L4 PTE addresses: <code>0x50000 + VPN[8:0] × 8</code> for each VPN. For VPN=0x10000, VPN[8:0]=0x00, so PA=0x50000. For VPN=0x10001, VPN[8:0]=0x01, so PA=0x50008. Addresses = 0x50000..0x500f8 (256 bytes = 32 PTEs × 8 bytes/PTE).</li>
+        <li><b>L4 fetch:</b> PTW issues memory requests to DRAM. The paper says reserved walks are issued one by one but typically hit the row buffer. First request (PA=0x50000) may be a row miss; subsequent requests to the same row are row hits (tCCDL=4 cycles each).</li>
+        <li><b>PTEs return:</b> fill L2 TLB, forward to L1 TLBs. L1 TLB fills entries, clears LATC MSHR bits 0..31, frees entry. Warp proceeds.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div><b>The locality payoff:</b> baseline would issue 32 separate walks. LATP's batching exploits row-buffer locality for the L4 fetches.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Measuring the compression ratio for atax workload</h3>
+      <p style="color:var(--ink-soft)">The paper reports atax achieves 3.6× speedup (Figure 17a). What's the compression ratio and prefetch coverage?</p>
+      <ol class="seq">
+        <li><b>Baseline:</b> atax has L2 TLB MPKI = 78.46 (Figure 3, Table 3). High MPKI → high page divergence. Average warp instruction requires 16+ unique translations (Figure 3 shows atax in "Regular+High" class, meaning high MPKI). Baseline: each TLB miss allocates one L1 TLB MSHR entry → 16 misses exhaust all 16 entries → subsequent misses stall.</li>
+        <li><b>LATPC:</b> Regularity Detector scans coalescer output for atax's warp instructions. The workload is "regular" (matrix ops), so VPNs follow a near-perfect stride (Figure 8 shows regular workloads have 1.42 distinct strides on average). LATC compresses misses into 1–2 MSHR entries → compression ratio up to 8–16:1.</li>
+        <li><b>Prefetch coverage:</b> the paper reports LATPC achieves 54.78% prefetch coverage (Figure 19a). For atax, coverage is higher—LATP prefetches based on detected stride, and 93.38% of translations within "Regular" workloads share the same L4 PT base address (Figure 9). So coverage ≈ 90+%, meaning many TLB misses become TLB hits due to prefetching.</li>
+        <li><b>Speedup breakdown:</b> atax baseline IPC ≈ X. With LATPC, IPC ≈ 3.6X. Translation latency drops significantly. PTW occupancy: baseline 16/16 → LATPC lower. L1 TLB MSHR occupancy: baseline 16/16 → LATPC lower. Both bottlenecks reduced.</li>
+        <li><b>Result:</b> atax is a strong case for LATPC—highly regular VPNs, high locality, benefits from compression and batching. 3.6× speedup is near the maximum achievable without changing the page size or adding more hardware.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the paper's GMean speedup (1.47×) is pulled down by workloads with low MPKI or irregular access patterns. For high-MPKI, regular workloads (atax, bicg, fdtd2d), LATPC achieves 2–4× speedup. The key is not just the speedup but the <i>consistency</i>: LATPC never degrades performance (no workload below 1.00×), unlike prior prefetchers (Sequential drops to 0.82×).</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A warp instruction touches 32 threads, each on a different page. The baseline has 16 L1 TLB MSHR entries. Without LATPC, what happens to MSHR reservation attempts?</div>
+      <details><summary>Show answer</summary><div class="ans">The first 16 TLB misses allocate all 16 MSHR entries. The next 16 misses find no free entries → MSHR reservation failures. Those 16 threads stall until one of the first 16 walks completes and frees an entry. With LATPC, up to 32 misses can compress into 1–2 entries (depending on stride regularity) → reduced reservation failures (from 68.84% to 43.02% globally).<span class="mis">Misconception: that the failures are "only" 16/32 = 50%, so not a big deal. In reality, those 16 stalled threads block the entire warp, and the warp can't proceed until all 32 translations complete—so the 16 failures serialize the second half, increasing latency.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Regularity Detector sees VPNs [0x1000, 0x1005, 0x100a, 0x100f]. What triples does it emit, and why?</div>
+      <details><summary>Show answer</summary><div class="ans">Cycle 0: <code>&lt;0x1000, 0, 0&gt;</code> (demand, Prev.Valid=0). Cycle 1: Stride = 0x1005 - 0x1000 = 0x5, Prev.Stride=0 → start sequence, emit <code>&lt;0x1005, 5, 1&gt;</code>. Cycle 2: Stride = 0x100a - 0x1005 = 0x5 (matches) → emit <code>&lt;0x100a, 5, 2&gt;</code>. Cycle 3: Stride = 0x100f - 0x100a = 0x5 → emit <code>&lt;0x100f, 5, 3&gt;</code>. Result: 1 demand + 3 prefetch, all with stride=5. LATC compresses into one entry (Base=0x1000, Stride=5, bits 0..3 set).<span class="mis">Misconception: that Regularity Detector only works for stride=1 or power-of-2 strides. The 9-bit stride field supports any stride 0..511, including 5, 7, 23, etc. The only constraint is the 512-page window (9 bits).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why does LATP constrain the stride to 9 bits, and what happens if two VPNs differ by 1,000 pages?</div>
+      <details><summary>Show answer</summary><div class="ans">An L4 PT holds 512 PTEs (9-bit index). Constraining stride to 9 bits helps ensure VPNs in a detected sequence can fall within one L4 PT, enabling batched L4 walks (exploiting DRAM row-buffer locality). If two VPNs differ by 1,000 pages (stride=1,000 &gt; 511), Regularity Detector breaks the sequence: the first VPN starts one sequence (Base=VPN<sub>0</sub>, Stride=0, Index=0), the second starts a new sequence (Base=VPN<sub>1</sub>, Stride=0, Index=0). Result: two separate MSHR entries, walks handled separately. Still correct, just less batching benefit for that pair. The paper finds 80.20% of translations within a warp share the same L4 PT base address (Figure 9), so the 9-bit constraint is rarely a hard limitation.<span class="mis">Misconception: that LATPC "fails" on large strides. It doesn't fail—it just doesn't batch those translations. They're still handled correctly, just without the row-buffer locality benefit.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">The paper reports Valkyrie (the prior GPU TLB prefetcher) achieves only 1.03× GMean speedup vs 1.47× for LATPC. Valkyrie replicates PTEs to likely L1 TLBs when an L2 TLB miss is handled. Why doesn't this help as much as LATPC?</div>
+      <details><summary>Show answer</summary><div class="ans">Valkyrie's replication targets <i>spatial locality across SMs</i>: if SM 0 fetches a PTE, replicate it to SM 1–29 that might need it. But it doesn't prefetch <i>additional</i> PTEs from the page table—it only replicates the one PTE already fetched. So it saves <i>L1→L2 TLB</i> traffic but doesn't reduce <i>L2 TLB misses or page-table walks</i>. LATPC, in contrast, prefetches additional PTEs from the page table (LATP) when one demand PTE is fetched, reducing future L2 TLB misses and page-table walks. The paper shows L2 TLB MSHR subentries in the baseline already perform Valkyrie-like replication (Section 7 "Valkyrie's Effectiveness"), so Valkyrie's marginal benefit is small. Furthermore, the paper uses large memory footprints (29.50 MB average) with low inter-SM locality (e.g., KM workload: only 1.49 SMs share a page on average), reducing Valkyrie's replication effectiveness.<span class="mis">Misconception: that TLB prefetching = replicating entries to other TLBs. Valkyrie does replication; LATPC does <i>prefetching from the page table</i>. The latter is far more effective because it prevents L2 TLB misses (53% of translation latency) and page-table walks (39% of latency).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">The paper reports L1 TLB MSHR reservation failure rate drops from 68.84% (baseline) to 43.02% (LATPC). Why not 0%?</div>
+      <details><summary>Show answer</summary><div class="ans">LATC compresses <i>up to</i> 32 VPNs into one entry, assuming they form a strided sequence. If a warp's VPNs exhibit multiple distinct strides (e.g., irregular workload with 2.49 strides on average, Figure 8), LATC allocates one entry per stride group. For example, if a warp has 3 distinct strides covering 10, 12, and 10 threads respectively, LATC allocates 3 entries instead of 32—still compression, but not 32:1. The remaining failures occur when: (1) multiple warps' misses arrive concurrently and exhaust the 16 entries despite compression, or (2) irregular workloads with very high stride diversity (e.g., 5+ distinct strides) require more entries. The paper shows irregular workloads (DMR, HS, MRG, MST, PR, SSP) have lower failure-rate reduction (Figure 18b) than regular workloads (atax, bicg, fdtd2d) because they have less compressible VPN sequences.<span class="mis">Misconception: that LATC is a silver bullet that eliminates all MSHR failures. It's a compression technique—highly effective for regular access patterns, less so for truly random patterns. But even irregular workloads benefit (e.g., PR: 68% → 43% failure rate).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">The paper evaluates LATPC with 4 KB pages (Section 6) and also with 2 MB pages (Section 6.6), reporting 1.47× and 1.18× GMean speedup respectively. Why does LATPC still help with large pages, and why is the speedup lower?</div>
+      <details><summary>Show answer</summary><div class="ans">Large pages (2 MB) increase TLB reach by 512×, reducing TLB miss rate. But the paper uses <i>enlarged memory footprints</i> (1.14 GB average for "Regular+High" workloads, Figure 6) that still cause high page divergence. For example, a matrix larger than 2 MB still requires multiple 2 MB pages, and a warp accessing the matrix by rows can touch many different 2 MB pages (one per thread or groups of threads). So the bottlenecks (PTW and MSHR contention) persist, just with fewer misses. LATPC's mechanisms (compression, batching) still apply: LATC compresses misses into 1–2 entries; LATP batches their walks. The speedup is lower (1.18× vs 1.47×) because the <i>absolute</i> number of misses is lower with large pages, so the absolute benefit of LATPC is smaller. But the <i>relative</i> benefit (contention relief) remains. Figure 6 shows that even with 2 MB pages, increasing PTWs to 64 or MSHR entries to 1,024 yields 1.38× and 1.66× speedup, proving the bottlenecks persist. LATPC addresses those bottlenecks without adding more PTWs or MSHR entries.<span class="mis">Misconception: that large pages "solve" the address-translation problem, so LATPC is unnecessary. Large pages help but don't eliminate the problem for workloads with huge memory footprints (which are common in HPC, ML, graph analytics). LATPC is orthogonal and complementary.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">LATPC adds Regularity Detector (0.0009 mm² in 7 nm) and extends L1 TLB MSHR entries (9-bit Stride + 32-bit Valid Mask per entry × 16 entries × 30 SMs). What's the total on-chip storage overhead?</div>
+      <details><summary>Show answer</summary><div class="ans">L1 TLB MSHR extension: (9 + 32 - 1) bits × 16 entries × 30 SMs = 40 bits × 480 = 19,200 bits = 2,400 bytes. PW Buffer extension: (9 + 32 - 1) bits × 16 entries = 40 bits × 16 = 640 bits = 80 bytes. Total storage = 2,400 + 80 = 2,480 bytes ≈ 2.48 KB. The paper reports 2.48 KB storage overhead (Section 5.5). Logic area (Regularity Detector + LATC tagging) = 0.26 mm² (7 nm). Baseline GPU die = 445 mm² (NVIDIA TU106). Overhead = 0.26 / 445 = 0.058%. Power = 36 mW (baseline TDP = 175 W) = 0.02%. Latency = 1 cycle (both Regularity Detector and LATC tagging), which the paper models and finds reduces GMean speedup by only 0.45%.<span class="mis">Misconception: that "compression" always means more complex hardware. LATC's compression is simple arithmetic (base + stride × index), implemented with a 9-bit multiplier and adder—tiny compared to a full ALU or FPU.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">The paper compares LATPC to Avatar (MICRO'24), the state-of-the-art GPU address-translation technique. Avatar achieves 1.40× GMean speedup; LATPC achieves 1.47×. Why does Avatar+LATPC achieve 1.64× (Figure 20)?</div>
+      <details><summary>Show answer</summary><div class="ans">Avatar uses <i>speculative address translation</i>: upon an L1 TLB miss, it guesses the PFN from a learned offset and speculatively accesses the cache, while the real translation proceeds in the background. If the guess is correct, the cache access completes early; if wrong, discard and retry. The problem: even during speculation, the TLB MSHR entry and PTW are occupied for the background translation—so Avatar still suffers from MSHR/PTW contention (Figure 18b: 66.33% MSHR failure rate vs 68.84% baseline). LATPC's LATC+LATP reduce that contention by compressing the MSHR and batching the background walk. Avatar+LATPC combines speculation (Avatar) with contention relief (LATPC): the speculation often succeeds (hiding latency), and when it fails, the background translation is faster due to LATPC. The paper notes that "both TLB MSHRs and PTWs are occupied until the speculation is validated" (Section 6.5), so LATPC accelerates the validation. Result: 1.64× GMean speedup, a 17% improvement over Avatar alone. The techniques are orthogonal and synergistic.<span class="mis">Misconception: that Avatar "solves" translation by speculation, so LATPC is redundant. Avatar <i>hides</i> translation latency; LATPC <i>reduces</i> translation latency. Both are valuable, and they stack.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What is "page divergence" and why does it matter?<span class="chev">▾</span></summary><div class="a">Page divergence = the number of unique pages a warp instruction touches. In the worst case, each of 32 threads accesses a different page → 32 TLB lookups, potentially 32 TLB misses. The paper finds 75% of warp instructions require multiple translations, and 29% hit the max of 32 (Figure 3). High divergence exhausts the limited 16 L1 TLB MSHR entries and 16 PTWs, causing stalls. LATPC targets exactly this: compressing up to 32 misses into 1–2 MSHR entries and batching walks to exploit row-buffer locality.</div></details>
+      <details><summary><span class="q">Q2</span>How does LATPC differ from CPU TLB prefetchers (Sequential/Stride/Distance)?<span class="chev">▾</span></summary><div class="a">CPU prefetchers learn patterns from the <i>time-ordered</i> stream of TLB accesses (e.g., "VPNs 100, 104, 108 → stride=4, prefetch 112"). On GPUs, thousands of threads interleave chaotically, so the time-ordered stream is scattered (no stable stride). LATPC instead analyzes VPNs <i>within a single warp instruction</i> (the coalescer output, determined by thread index), detecting the stride directly from that small, ordered list. No prediction, no training—just a running diff. Accuracy near 100% (Figure 13). CPU prefetchers achieve &lt;80% accuracy on GPU workloads and degrade performance (Sequential: 0.82× GMean speedup, Figure 4).</div></details>
+      <details><summary><span class="q">Q3</span>Why does LATPC compress TLB misses instead of just adding more MSHR entries?<span class="chev">▾</span></summary><div class="a">Adding MSHR entries costs on-chip SRAM (expensive, power-hungry). The paper shows increasing MSHR entries from 16 to 1,024 (64× increase) would yield ~2× speedup (Figure 6), but at huge area/power cost (64× more storage). LATPC achieves 1.47× speedup with only 2.48 KB storage overhead (0.06% of baseline GPU die area) by <i>compressing</i> misses into existing entries. Compression is cheaper than brute-force scaling. Also, compression is <i>adaptive</i>: regular workloads get up to 16:1 compression; irregular workloads get lower but still beneficial compression (e.g., 4:1). Fixed hardware (64× MSHR entries) doesn't adapt.</div></details>
+      <details><summary><span class="q">Q4</span>Does LATPC work for irregular workloads (e.g., graph traversal)?<span class="chev">▾</span></summary><div class="a">Yes, but with lower benefit. The paper classifies workloads into "Regular" (e.g., matrix ops, 1.42 distinct strides) and "Irregular" (e.g., graph, 2.49 distinct strides). Irregular workloads still exhibit <i>some</i> regularity within a warp (Figure 8): VPNs aren't perfectly strided, but they cluster into a few stride groups. LATC compresses each group into one MSHR entry → still beneficial, just not 32:1. For example, 3 stride groups → 3 MSHR entries instead of 32 → up to 10:1 compression. The paper shows irregular workloads (PR, SSP) achieve 1.2–1.3× speedup (Figure 17a), lower than regular workloads (atax: 3.6×) but still a win. Irregular workloads also have lower page-table locality (67.00% vs 93.38% share same L4 PT base, Figure 9), reducing LATP's batching benefit—but 67% is still substantial.</div></details>
+      <details><summary><span class="q">Q5</span>What happens if a warp's VPNs don't form a strided sequence at all?<span class="chev">▾</span></summary><div class="a">Regularity Detector breaks the sequence into singleton groups (each VPN is its own "sequence" with Index=0, Stride=0). LATC allocates one MSHR entry per VPN—same as the baseline. No harm, no benefit. The paper finds this is rare: even irregular workloads average 2.49 distinct strides (Figure 8), meaning most warp instructions have <i>some</i> grouping. The worst case (32 distinct VPNs, no grouping) is possible but uncommon. LATPC degrades to baseline behavior in that case, never worse.</div></details>
+      <details><summary><span class="q">Q6</span>How does LATP know when to batch walks? What if some VPNs arrive before others?<span class="chev">▾</span></summary><div class="a">LATP batches walks that share the same base address and stride in the PW Buffer. When a prefetch request arrives, the PTW checks if it can coalesce into an existing entry (base + stride × index matches). If yes, set the corresponding bit of Valid Mask and <i>reserve</i> the L4 walk. The PTW issues the batched L4 walks after the intermediate L1→L2→L3 walk completes, one by one but typically hitting the row buffer. Early-arriving prefetches wait for the demand walk's L3 fetch; late-arriving prefetches (after L3 completes) are issued as they arrive. The reservation mechanism ensures correctness even with out-of-order arrivals.</div></details>
+      <details><summary><span class="q">Q7</span>Does LATPC require changes to the GPU programming model or runtime?<span class="chev">▾</span></summary><div class="a">No. LATPC is a purely hardware mechanism—transparent to software. Programmers write CUDA/OpenCL as usual; the coalescer, Regularity Detector, L1 TLB, and PTW handle the rest automatically. No API changes, no kernel modifications, no recompilation. This is a key advantage over software-based approaches (e.g., page prefetching via OS hints), which require programmer intervention.</div></details>
+      <details><summary><span class="q">Q8</span>Why does LATPC's speedup vary so much across workloads (1.0× to 3.6×)?<span class="chev">▾</span></summary><div class="a">Speedup depends on three factors: (1) baseline bottleneck severity (high MPKI → high potential), (2) VPN regularity (low stride diversity → high compression), (3) page-table locality (high % share same L4 PT base → high batching). Workloads with all three (atax, bicg, fdtd2d) achieve 2–4× speedup. Workloads with low MPKI (e.g., vectorAdd: 3.84 MPKI) have little room for improvement → 1.0× speedup. Workloads with irregular VPNs (e.g., DMR: graph traversal) get lower compression/batching → 1.2× speedup. The paper's GMean (1.47×) balances across all workload types. The key is LATPC <i>never degrades</i> performance (no workload below 1.00×), unlike prior prefetchers (Sequential: 0.82×).</div></details>
+      <details><summary><span class="q">Q9</span>Can LATPC be combined with other GPU address-translation optimizations?<span class="chev">▾</span></summary><div class="a">Yes, LATPC is orthogonal to most techniques. The paper evaluates LATPC+Avatar (1.64× vs 1.47× for LATPC alone, Figure 20). LATPC is also compatible with: large pages (1.18× with 2 MB pages, Figure 21), shared L2 TLB across SMs (baseline already uses this). The paper does not substantiate broader compatibility claims with techniques like SnakeByte, UVM prefetching, direct segments, or multi-GPU/MCM configurations—those are mentioned as potential future work areas.</div></details>
+      <details><summary><span class="q">Q10</span>What did the authors leave for future work?<span class="chev">▾</span></summary><div class="a">The paper flags three areas: (1) extending LATPC to <i>sorted</i> VPN lists (Section 7 "Sorting Requirement")—sorting by VPN (not thread index) could increase regularity, but it adds latency (15 cycles for a bitonic sort) and area (454× the size of Regularity Detector), so the authors didn't pursue it. (2) Handling <i>multi-stride</i> sequences more efficiently—current LATC breaks sequences at stride changes; a smarter detector could learn multiple strides per warp (e.g., "stride alternates between 4 and 8"). (3) Applying LATPC to <i>multi-GPU</i> or <i>MCM-GPU</i> systems—the paper's workload suite is single-GPU; extending to multi-GPU would require inter-GPU TLB coherence, which is orthogonal to LATPC but could benefit from its compression/batching.</div></details>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>LATPC</b><span>Locality-Aware TLB Prefetching and MSHR Compression—the paper's mechanism combining LATC and LATP.</span></div>
+      <div class="term-def"><b>LATC</b><span>Locality-Aware TLB MSHR Compression—extends each L1 TLB MSHR entry to represent up to 32 VPNs via {base, stride, 32-bit mask}.</span></div>
+      <div class="term-def"><b>LATP</b><span>Locality-Aware TLB Prefetching—batches page-table walks sharing the same L4 PT, exploiting DRAM row-buffer locality.</span></div>
+      <div class="term-def"><b>Page divergence</b><span>The number of unique pages a warp instruction touches (1–32). High divergence exhausts PTWs and TLB MSHRs.</span></div>
+      <div class="term-def"><b>Regularity Detector</b><span>A 1-cycle state machine that scans the coalescer's VPN list, detects VPN strides, and emits &lt;VPN, Stride, Index&gt; triples.</span></div>
+      <div class="term-def"><b>VPN stride</b><span>(VPN<sub>i+1</sub> − VPN<sub>i</sub>). The paper finds 1.96 distinct strides on average within a warp instruction.</span></div>
+      <div class="term-def"><b>Page-table locality</b><span>80.20% of translations within a warp share the same L4 PT base address (512-page window), enabling batched L4 fetches from one DRAM row.</span></div>
+      <div class="term-def"><b>TLB MSHR</b><span>Miss-Status Holding Register—tracks outstanding TLB misses. Baseline: 16 L1 TLB MSHR entries. LATPC: each entry can hold up to 32 VPNs.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Warp</b><span>A group of 32 GPU threads executing the same instruction in lockstep (SIMT). A warp instruction's memory accesses are coalesced by the hardware.</span></div>
+      <div class="term-def"><b>Coalescer</b><span>Hardware unit that merges a warp's 32 addresses into unique VPNs (page-size granularity). Output is determined by thread index.</span></div>
+      <div class="term-def"><b>VPN / PFN</b><span>Virtual Page Number / Physical Frame Number. VPN is the input to translation; PFN is the output (from the PTE).</span></div>
+      <div class="term-def"><b>PTE</b><span>Page Table Entry—stores the VPN→PFN mapping. Resides in the page table in DRAM; cached in TLBs.</span></div>
+      <div class="term-def"><b>PTW</b><span>Page Table Walker—hardware unit that traverses the page table (L1→L2→L3→L4 PTs) to fetch a PTE. Baseline: 16 PTWs.</span></div>
+      <div class="term-def"><b>L4 PT</b><span>Leaf-level page table (x86-64). Holds 512 PTEs in a single 4 KB DRAM row. The target of LATP's batched walks.</span></div>
+      <div class="term-def"><b>PWC</b><span>Page Walk Cache—caches intermediate page-table levels (L1/L2/L3 PTEs). The paper reports 94–99% hit rates.</span></div>
+      <div class="term-def"><b>Row-buffer locality</b><span>DRAM accesses to the same row are fast (tCCDL=4 cycles). LATP batches L4 fetches to exploit this.</span></div>
+      <div class="term-def"><b>MPKI</b><span>Misses Per 1000 Instructions (L2 TLB). The paper uses this to classify workloads: Low (&lt;5), High (≥5).</span></div>
+      <div class="term-def"><b>Valkyrie</b><span>Prior GPU TLB prefetcher (PACT'20). Replicates PTEs to L1 TLBs; doesn't prefetch from page table. Achieves 1.03× GMean speedup.</span></div>
+      <div class="term-def"><b>Avatar</b><span>State-of-the-art GPU translation technique (MICRO'24). Speculates PFN; LATPC accelerates its background walks. Together: 1.64× speedup.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What LATPC buys (vs baseline, 24 workloads)</div>
+      <div class="viz-kicker">geometric mean speedup &amp; key metrics</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">GMean IPC<small>LATPC</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="47"><span>1.47× (up to 3.6× for atax)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Translation latency<small>% of baseline</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="30.54"><span>69.46% (30% reduction)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Prefetch coverage<small>TLB misses → hits</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="54.78"><span>54.78% (vs &lt;15% for prior prefetchers)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">MSHR failure rate<small>% of baseline</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="43.02"><span>43.02% (from 68.84% baseline)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Area overhead<small>% of 445 mm² die</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="0.058"><span>0.058% (0.26 mm²)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale (row 1,3,4): 0 ▏▏▏▏▏▏▏▏▏▏ 100%; row 2,5: 0 ▏▏▏▏▏▏▏▏▏▏ 100% of baseline</p>
+      <figcaption><b>Key takeaway:</b> LATPC achieves 1.47× GMean speedup with under 0.06% area overhead, 1-cycle modeled latency (negligible performance impact), and near-100% prefetch accuracy. (Paper Figures 17, 18, 19, Section 5.5)</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>GPU memory hierarchy &amp; virtual memory <span class="diff easy">easy</span></h4><div class="meta">textbook · 30–45 min</div><p>How GPUs organize memory (L1/L2 cache, global memory) and why they virtualize it (programmability, multi-tenancy). See Aamodt et al., "General-Purpose Graphics Processor Architectures" (2018), Ch. 2. LATPC sits in the address-translation path (TLB → page table walker).</p></div>
+    <div class="read-item reveal"><h4>x86-64 page tables &amp; page walks <span class="diff easy">easy</span></h4><div class="meta">reference manual · 20–30 min</div><p>How the 4-level page table works (L1 PML4 → L2 PDP → L3 PD → L4 PT), each level indexed by 9 bits of the virtual address. See Intel SDM Vol. 3A, Section 4.5. LATPC exploits the L4 PT's 512-entry structure (9-bit index, 4 KB DRAM row).</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Valkyrie: Leveraging Inter-TLB Locality <span class="diff med">medium</span></h4><div class="meta">Baruah et al. · PACT 2020</div><p>The prior GPU TLB prefetcher—replicates PTEs to L1 TLBs when an L2 TLB miss is handled. LATPC outperforms it (1.47× vs 1.03×) by prefetching from the page table, not just replicating.</p></div>
+    <div class="read-item reveal"><h4>A Case for Speculative Address Translation <span class="diff hard">hard</span></h4><div class="meta">Park et al. · MICRO 2024 (Avatar)</div><p>State-of-the-art GPU translation via speculation (guess PFN, speculatively access cache). LATPC+Avatar achieves 1.64× by accelerating Avatar's background walks.</p></div>
+    <div class="read-item reveal"><h4>Mosaic: Multi-Application Concurrency on GPUs <span class="diff hard">hard</span></h4><div class="meta">Ausavarungnirun et al. · ASPLOS 2017</div><p>GPU memory manager with transparent large-page support (base pages → page groups). LATPC is orthogonal—works with any page size (4 KB or 2 MB).</p></div>
+    <div class="read-item reveal"><h4>Exploiting Page Table Locality for Agile TLB Prefetching <span class="diff med">medium</span></h4><div class="meta">Vavouliotis et al. · ISCA 2021</div><p>CPU TLB prefetcher exploiting page-table locality (Stride, Distance prefetchers). LATPC extends this to GPUs by detecting strides within a warp, not across time-ordered accesses.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card" style="font-size:.92rem;background:var(--paper-2)">
+      <p><b>All numbers verified against the paper:</b> GMean speedup 1.47× (Fig. 17a), translation latency 69.46% (Fig. 17b), prefetch coverage 54.78% (Fig. 19a), MSHR failure rate 43.02% (Fig. 18b), area 0.26 mm² / 0.058% (Sec. 5.5, Table 2: 445 mm² baseline die), 1.96 distinct VPN strides (Fig. 8), 80.20% share same L4 PT base (Fig. 9), up to 32 VPNs per warp (Sec. 2.2). Memory footprints 0.01–128.82 MB, avg 29.50 MB (Table 3). Evaluation: Accel-Sim on NVIDIA RTX 2060-like GPU (Table 2), 4 KB pages (Sec. 6.1), 2 MB pages (Sec. 6.6). Hardware: 16 L1 TLB MSHR entries, 16 PTWs, 32-entry fully-associative L1 TLB, 1,024-entry L2 TLB (Table 2). Regularity Detector: 0.0009 mm² in 7 nm, 1-cycle latency modeled (Fig. 16c, Sec. 5.5). LATC MSHR: 9-bit Stride + 32-bit Valid Mask, net 40 bits extension per entry (Sec. 5.3, Algorithm 1). LATP: batches L4 walks in same DRAM row, tCCDL=4 cycles (Table 2, Sec. 5.4), reserved walks issued one by one typically hitting row buffer (Sec. 5.4). Avatar: 1.40× GMean (Fig. 4), Avatar+LATPC 1.64× (Fig. 20). Valkyrie: 1.03× GMean (Fig. 4). All speedups vs baseline (no TLB prefetching). 2 MB pages: 1.38× PTW scaling, 1.66× MSHR scaling (Fig. 6). Modeled latency impact: 0.45% GMean speedup reduction (Sec. 5.5). No unsupported extrapolations beyond the paper's explicit evaluation.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Ha et al., "LATPC: Accelerating GPU Address Translation Using Locality-Aware TLB Prefetching and MSHR Compression" (MICRO-58, 2025)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
