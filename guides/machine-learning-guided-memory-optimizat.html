@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Learning What to Cache — RecMG for DLRM Inference, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;      /* teal  = high-utility vectors */
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;    /* indigo = RecMG ML models */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = LRU baseline */
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB; /* accent */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE BIG IDEA";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HPCA 2025 · A Field Guide</span>
+    <h1>Teaching memory where the <span class="swash">next terabyte</span> will be needed</h1>
+    <p class="lede">DLRM inferences touch billions of embedding vectors across GPU and CPU memory. LRU caching misses half the accesses. This is the story of <strong>RecMG</strong>, a pair of ML models that learn what to cache and what to prefetch — cutting latency up to 43%.</p>
+    <div class="hero-meta">
+      <span>📄 "Machine Learning-Guided Memory Optimization for DLRM Inference" · Ren et al.</span>
+      <span>🎓 Some DLRM &amp; tiered-memory basics assumed</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧠</div>
+      <p>Use ML to predict which embedding vectors <span class="ro">will be reused</span> (cache them) and which <span class="ro">rarely reuse but are coming soon</span> (prefetch them) — not which vectors <span class="wo">were accessed most recently</span>.<br><em style="font-size:.9rem">Two models, one for temporal locality, one for irregular accesses.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Seven ideas the paper assumes you know</h2>
+      <p class="sub">Each card clears up one concept RecMG builds on. Read in order first time, or jump to what's unfamiliar.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> high-utility vectors (should cache)</span>
+      <span><i style="background:var(--ltram)"></i> RecMG's ML models</span>
+      <span><i style="background:var(--optane)"></i> LRU baseline</span>
+      <span><i style="background:var(--honey-deep)"></i> prefetch-worthy vectors</span>
+    </div>
+
+    <div class="subhead" style="margin-top:18px">Quick glossary of key acronyms</div>
+    <div class="gloss">
+      <div class="term-def"><b>DLRM</b><span>Deep Learning Recommendation Model — the workload this paper optimizes. Combines continuous features (dense, user info) and categorical features (sparse, category lookups via embedding tables).</span></div>
+      <div class="term-def"><b>EMB / embedding table</b><span>A large lookup table mapping categorical feature indices to dense embedding vectors. Can be 100s of GB per table; multi-TB total.</span></div>
+      <div class="term-def"><b>RecMG</b><span>The paper's system — two LSTM-based models (caching + prefetch) that learn vector-access patterns to manage a GPU buffer on tiered memory.</span></div>
+      <div class="term-def"><b>UMON (Utility Monitor)</b><span>RecMG's caching model — predicts which vectors have high "utility" (benefit from staying cached) based on access sequences.</span></div>
+      <div class="term-def"><b>Tiered memory</b><span>GPU (fast, small) + CPU/SSD (slow, big). DLRM's EMBs exceed GPU capacity, so misses fetch from CPU at O(10 µs) cost.</span></div>
+      <div class="term-def"><b>Reuse distance</b><span>Number of distinct vectors accessed between two references to the same vector. Paper shows 20% of accesses have reuse distance &gt; 2²⁰ — far larger than typical GPU buffers.</span></div>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>DLRM architecture: embeddings + interaction<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A DLRM takes categorical features (e.g., "user interested in sports") and continuous features (e.g., "age 25") as input, predicts click-through rate. Categorical features are sparse (one-hot/multi-hot vectors); each activates indices in huge <b>embedding tables</b> (EMBs) to gather dense embedding vectors. These vectors are pooled, combined with continuous features via MLPs, then fed to an interaction layer.</p>
+          <p>EMBs dominate memory: a single table can be 100s of GB; total can be multi-TB. GPU memory is the bottleneck — hence tiered memory (GPU + CPU). Inference differs from training: batches access diverse items simultaneously (higher pooling factor), and no predetermined access pattern for easy prefetch planning.</p>
+          <div class="ready"><b>Now you're ready:</b> RecMG targets the GPU buffer for EMBs during inference, where LRU caching alone leaves up to 58.7% of time waiting on CPU fetches (Table I in the paper).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Tiered memory: GPU fast/small, CPU slow/big<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>DLRM's EMBs exceed GPU capacity (40 GB on an A100). Solution: keep a small portion of frequently accessed vectors in GPU memory (the <b>GPU buffer</b>), the rest in CPU DRAM or SSD. On-demand fetches from CPU cost O(10 µs) per vector; at inference scale (millions of vectors per batch), this becomes a big fraction of total time.</p>
+          <p>PyTorch's TorchRec library maintains a software-managed cache on GPU using LRU. But LRU only considers recency, not <i>benefit</i> from caching — and Table I shows even with caching, embedding-vector accesses can take 58.7% of total inference time when buffer size is tight.</p>
+          <div class="ready"><b>Now you're ready:</b> RecMG replaces LRU with learned policies to minimize CPU fetches, achieving up to 43% end-to-end speedup (Figure 16).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Power-law distribution + long reuse distances<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Embedding-vector accesses follow a power law: about 20% of vectors take ~80% of accesses. This suggests LRU caching should work. But Figure 3 reveals the problem: 20% of accesses have <b>reuse distance &gt; 2²⁰</b>. Reuse distance = number of distinct vectors accessed between two references to the same vector. If reuse distance exceeds cache size, the second access misses.</p>
+          <p>GPU buffers in production hold O(100,000) vectors. Reuse distance 2²⁰ ≈ 1 million — far too large. LRU evicts these vectors before they're reused, causing on-demand fetches. Also, some vectors are accessed rarely but predictably (e.g., following trending news); LRU can't prefetch them.</p>
+          <div class="ready"><b>Now you're ready:</b> RecMG's prefetch model learns correlations between accesses to predict irregular or long-reuse-distance vectors, reducing on-demand fetches by 2.2× vs LRU (Figure 14).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Why existing prefetchers fail for DLRM<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Rule-based prefetchers (Bingo spatial, Domino temporal) assume spatial or temporal locality. Embedding-vector accesses have <i>low spatial locality</i> (indices within a table are not contiguous) and <i>limited temporal locality</i> (long reuse distances). Figure 9 shows their correctness &lt; 0.3%.</p>
+          <p>ML-based prefetchers (Voyager, TransFetch) face two problems: (1) <b>huge search space</b> — billions of unique indices, not sparse addresses; one-hot labeling is infeasible (out of memory); (2) <b>high overhead</b> — Table II shows Voyager takes 1521 µs per prediction vs RecMG's 92 µs, and TransFetch 1052 µs. They can't run fast enough for production.</p>
+          <div class="ready"><b>Now you're ready:</b> RecMG narrows the search space via a caching model (binary labels, not billions) and uses LSTM (CPU-friendly) not transformers, keeping overhead low (Section VI-C).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Why two separate ML models?<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Traditional ML prefetchers use one model to predict "next address." RecMG uses <i>two</i> models: a <b>caching model</b> (decides which vectors to keep) and a <b>prefetch model</b> (decides which vectors to insert). Why?</p>
+          <p>Caching exploits temporal locality and can be framed as <b>binary classification</b> (keep or evict each vector in the input sequence) — just 2 labels, low complexity. Prefetching targets irregular accesses and must predict a <i>sequence</i> of vectors with no reuse yet — a regression problem in a large search space. By separating them, the caching model reduces the search space for the prefetch model (fewer vectors need prefetching), and each model can be optimized for its specific task.</p>
+          <div class="ready"><b>Now you're ready:</b> Figure 5 shows their architectures. Caching model: 1 LSTM stack, 37K params; prefetch model: 2 LSTM stacks, 74K params. Together they reduce on-demand fetches by 4.5× vs rule-based methods (Figure 14).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>What "utility" means (and why not "demand")<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Demand</b> = how much cache a vector tries to use (roughly, how many unique accesses). <b>Utility</b> = the <i>benefit</i> a vector gets from being cached, measured by misses saved. A streaming workload touching gigabytes of data once has huge demand but zero utility (no reuse). LRU rewards demand; RecMG rewards utility.</p>
+          <p>RecMG's caching model learns to approximate Belady's optimal algorithm (which knows the future and keeps vectors with farthest next access). Figure 8 shows the caching model achieves 83% of optgen's hit rate, 38% better than LRU — by predicting utility, not just recency.</p>
+          <div class="ready"><b>Now you're ready:</b> This is the core insight from the UCP paper (see house style reference) adapted to DLRM: give cache to vectors that <i>benefit</i> most, not to vectors that <i>ask</i> most.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Ground truth from optgen (Belady's algorithm)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To train the models, RecMG needs labels. For the caching model, it runs <b>optgen</b> [35] on offline traces: optgen computes what Belady's MIN algorithm (which knows all future accesses) would cache. Each vector in the trace gets a binary label: "1" if optgen would keep it, "0" if evict. This is the <i>caching trace</i> (ground truth).</p>
+          <p>For the prefetch model, the ground truth is the sequence of vectors that <i>miss</i> in optgen's cache (the <i>prefetch trace</i>). RecMG trains the prefetch model to predict these misses in advance, so they can be prefetched. By learning from the optimal policy's mistakes, the prefetch model complements the caching model.</p>
+          <div class="ready"><b>Now you're ready:</b> Section VI-A details training. RecMG retrains periodically when EMBs update (content popularity shifts). Cross-entropy loss for caching (binary classification); Chamfer measure for prefetch (regression with variable-length output).</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>RecMG in a nutshell</h2>
+      <p class="sub">The problem, the ML solution, and how it all connects.</p>
+    </div>
+    <div class="prose">
+      <p>DLRM inference accesses billions of embedding vectors across GPU and CPU memory. LRU caching on GPU rewards <b>demand</b> (recency of access) but misses two critical patterns: (1) vectors with <b>long reuse distances</b> (&gt; 2²⁰ for 20% of accesses, larger than typical GPU buffers), which get evicted before reuse; and (2) vectors with <b>few reuses but predictable correlations</b> (e.g., trending content), which LRU never prefetches.</p>
+      <p>RecMG introduces two LSTM-based models to fix this. The <span class="mem-chip chip-ucp">caching model</span> learns to predict which vectors should stay in the GPU buffer by approximating Belady's optimal policy (trained on optgen labels), achieving 38% more cache hits than LRU (Figure 8). The <span class="mem-chip chip-hi">prefetch model</span> learns correlations between access sequences to predict which vectors will be needed soon, even if they haven't been accessed recently — reducing on-demand fetches by 2.2× vs LRU (Figure 14).</p>
+      <p>To make ML practical, RecMG: (1) uses <b>binary classification</b> for caching (just 2 labels: keep or evict), avoiding the billion-label search space; (2) outputs a <b>sequence of vectors</b> for prefetch (not just next address), improving coverage; (3) introduces a <b>Chamfer-based loss function</b> that handles variable-length outputs without bias; (4) deploys on CPU (not GPU) using LSTM (CPU-friendly) and achieves 92 µs per prediction vs 1521 µs for Voyager (Table II).</p>
+      <p><strong>The payoff:</strong> on five Meta datasets, RecMG reduces end-to-end DLRM inference time by <b>31% on average (up to 43%)</b> vs LRU, for under <b>1%</b> extra area. Prefetch correctness: 37% (190× better than Domino, 27× better than TransFetch; Figure 9). Coverage: 10% better than TransFetch (Figure 10).</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>LRU fails on DLRM because 20% of accesses have reuse distance &gt; 2²⁰ (larger than GPU buffer), and many vectors are rarely reused but predictably correlated.</li>
+        <li>RecMG uses <b>two separate ML models</b>: caching (binary classification, approximates Belady) and prefetch (sequence regression, learns correlations).</li>
+        <li>Caching model reduces search space for prefetch by 2× (Figure 14); together they cut on-demand fetches by 4.5× vs rule-based prefetchers.</li>
+        <li>Key innovation: <b>Chamfer measure loss</b> for prefetch model — handles variable-length output sequences without introducing bias (Equation 5).</li>
+        <li>Deployed on CPU (not GPU) using LSTM (not transformers) for low overhead: 92 µs per prediction vs 1521 µs for Voyager (Table II).</li>
+        <li>Result: 31% avg speedup (up to 43%), prefetch correctness 37% (vs 0.3% for Domino), &lt; 1% area overhead.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE: two models + their roles -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">two models, one workflow — caching + prefetch for GPU buffer management</div>
+      <div class="legend">
+        <span><i style="background:var(--ltram)"></i> caching model (UMON)</span>
+        <span><i style="background:var(--dram)"></i> prefetch model</span>
+        <span><i style="background:var(--optane)"></i> LRU baseline</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 340" role="img" aria-label="RecMG workflow: input sequence to caching and prefetch models, then GPU buffer management">
+        <text x="380" y="26" text-anchor="middle" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">Input: sequence of embedding-vector accesses (from DLRM inference batch)</text>
+        <rect x="240" y="44" width="280" height="48" rx="10" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+        <text x="380" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#3a409a">[ vec₁, vec₂, ..., vecₖ ] ← chunk of k accesses</text>
+        <line x1="380" y1="92" x2="380" y2="112" stroke="#D8C8AC" stroke-width="2" marker-end="url(#arrow)"/>
+        <!-- caching model -->
+        <rect x="60" y="120" width="260" height="80" rx="12" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2.5"/>
+        <text x="190" y="145" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#3a409a">Caching Model (1 LSTM stack)</text>
+        <text x="190" y="165" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#5A61B4">Input: [vec₁, ..., vecₖ]</text>
+        <text x="190" y="183" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">Output: [1, 0, 1, ..., 1] ← keep/evict each</text>
+        <line x1="190" y1="200" x2="190" y2="220" stroke="#D8C8AC" stroke-width="2" marker-end="url(#arrow)"/>
+        <!-- prefetch model -->
+        <rect x="440" y="120" width="260" height="80" rx="12" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2.5"/>
+        <text x="570" y="145" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#1f5b51">Prefetch Model (2 LSTM stacks)</text>
+        <text x="570" y="165" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#2C8C7C">Input: [vec₁, ..., vecₖ]</text>
+        <text x="570" y="183" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">Output: [vec_a, vec_b, ...] ← prefetch these</text>
+        <line x1="570" y1="200" x2="570" y2="220" stroke="#D8C8AC" stroke-width="2" marker-end="url(#arrow)"/>
+        <!-- GPU buffer management -->
+        <rect x="160" y="230" width="440" height="60" rx="12" fill="#FBEACB" stroke="#C27D14" stroke-width="2.5"/>
+        <text x="380" y="252" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#6e4a09">GPU Buffer Management (on GPU)</text>
+        <text x="380" y="272" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">Evict: if priority[vec] low (from caching model)</text>
+        <text x="380" y="286" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">Insert: prefetched vecs (from prefetch model)</text>
+        <line x1="380" y1="290" x2="380" y2="308" stroke="#D8C8AC" stroke-width="2" marker-end="url(#arrow)"/>
+        <text x="380" y="326" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#332C24">Result: fewer on-demand fetches, lower inference latency</text>
+        <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#D8C8AC"/></marker></defs>
+      </svg>
+      <figcaption><b>Read top to bottom:</b> Both models take the same input sequence. Caching model outputs binary priorities (eviction decisions); prefetch model outputs a sequence of vectors to insert. GPU buffer uses both to minimize CPU fetches. (Workflow from Section V, deployment from Section VI-B)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → measure → learn → deploy → speedup</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">LRU on GPU buffer misses 20% of accesses (reuse distance &gt; 2²⁰) and can't prefetch irregular patterns</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Data</div><div class="nd">Production traces (400M+ accesses) + optgen labels for training</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Learn</div><div class="nd">Two LSTM models: caching (binary, 37K params) + prefetch (sequence, 74K params)</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Deploy</div><div class="nd">Run on CPU (92 µs/pred), pipeline with GPU inference, manage buffer with priorities + prefetch list</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">31% avg speedup (up to 43%), 4.5× fewer on-demand fetches, &lt; 1% area overhead</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about RecMG</h2>
+      <p class="sub">Each picture stands alone — read in any order. Every card ends with where the analogy breaks.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="50" width="100" height="36" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2.5"/>
+          <text x="68" y="72" text-anchor="middle" font-family="monospace" font-size="10" fill="#1f5b51">frequently reused</text>
+          <circle cx="28" cy="30" r="6" fill="#2C8C7C"/><circle cx="48" cy="30" r="6" fill="#2C8C7C"/><circle cx="68" cy="30" r="6" fill="#2C8C7C"/>
+          <path d="M28 36 v8 M48 36 v8 M68 36 v8" stroke="#2C8C7C" stroke-width="2"/>
+        </svg></div>
+        <span class="term">The core idea · Caching vs prefetching</span>
+        <h3>Library stacks vs delivery service</h3>
+        <p>You're studying in a library with a small desk (GPU buffer). Some books you reference often — keep them on the desk (caching model predicts these). Others you'll need soon but haven't touched yet — have them delivered to your desk just before you need them (prefetch model). LRU only keeps books you've recently touched, missing both.</p>
+        <div class="breaks"><b>Where it breaks:</b> A library has physical limits; RecMG's "delivery" (prefetch) is constrained by CPU-GPU bandwidth and latency, not just shelf space. But the dual-strategy idea holds.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="48" height="52" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <text x="44" y="60" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">keep</text>
+          <rect x="72" y="30" width="48" height="52" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <text x="96" y="60" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">evict</text>
+        </svg></div>
+        <span class="term">Caching model · Binary classification</span>
+        <h3>Sorting mail: keep or shred</h3>
+        <p>You get a stack of mail (input sequence). For each item, decide: keep (utility high) or shred (utility low). The caching model does this for embedding vectors — binary labels ("1" keep, "0" evict), not billions of possible addresses. This simplicity is what makes training feasible.</p>
+        <div class="breaks"><b>Where it breaks:</b> Real mail sorting is independent per item; the caching model uses an LSTM to learn dependencies <i>between</i> items in the sequence, capturing patterns like "if vec A accessed, vec B likely soon."</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <line x1="20" y1="75" x2="120" y2="75" stroke="#9A8E7C" stroke-width="2"/>
+          <circle cx="30" cy="75" r="4" fill="#2C8C7C"/><circle cx="50" cy="75" r="4" fill="#2C8C7C"/><circle cx="70" cy="75" r="4" fill="#2C8C7C"/>
+          <path d="M80 75 q10 -30 30 -30 l10 0" stroke="#5A61B4" stroke-width="2.5" stroke-dasharray="3 3" fill="none"/>
+          <circle cx="120" cy="45" r="6" fill="#C27D14"/>
+        </svg></div>
+        <span class="term">Prefetch model · Long reuse distance</span>
+        <h3>Stocking groceries for rare events</h3>
+        <p>You buy milk weekly (short reuse distance, easy to cache). But you also buy birthday candles once a year (long reuse distance &gt; cache size). The prefetch model predicts the candles will be needed soon by learning correlations — e.g., if you bought cake mix last week, candles are coming. LRU evicts candles as soon as you use them, then fetches on-demand next year.</p>
+        <div class="breaks"><b>Where it breaks:</b> Groceries are planned; DLRM accesses are user-driven and stochastic. But the insight — <i>correlation</i> across sequences predicts rare events — is exactly what RecMG's prefetch model exploits (Figure 10: 10% coverage improvement vs TransFetch).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="40" width="40" height="40" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <rect x="70" y="40" width="50" height="40" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <path d="M40 30 v-10 M95 30 v-10" stroke="#332C24" stroke-width="2"/>
+          <circle cx="40" cy="18" r="3" fill="#2C8C7C"/><circle cx="95" cy="18" r="3" fill="#5A61B4"/>
+          <text x="40" y="64" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">1 stack</text>
+          <text x="95" y="64" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">2 stacks</text>
+        </svg></div>
+        <span class="term">Model architecture · Why two models?</span>
+        <h3>Two tools for two jobs</h3>
+        <p>You have a hammer (caching model — simple, 1 LSTM stack, 37K params) for straightforward tasks (binary keep/evict) and a multi-tool (prefetch model — 2 LSTM stacks, 74K params) for complex tasks (sequence regression). Using one tool for both wastes capacity; using two optimizes each. Table III shows the prefetch model needs 2 stacks for 50% accuracy vs 39% with 1 stack.</p>
+        <div class="breaks"><b>Where it breaks:</b> Tools don't coordinate; the two models <i>do</i> — the caching model reduces the search space for the prefetch model by ~2× (Figure 14), so they're complementary, not just parallel.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="50" rx="6" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <text x="70" y="58" text-anchor="middle" font-family="monospace" font-size="10" fill="#3a409a">seq [ A, B, C, D, E ]</text>
+          <path d="M30 20 l60 0 M30 20 l0 -8 M90 20 l0 -8" stroke="#C27D14" stroke-width="2"/>
+          <text x="60" y="12" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">eval window (3× output len)</text>
+        </svg></div>
+        <span class="term">Chamfer measure · Loss function</span>
+        <h3>Matching party RSVPs to attendees</h3>
+        <p>You invite 5 people (output sequence) to a party expecting 15 guests (evaluation window, 3× longer). Chamfer measure: for each invitee, find the closest actual attendee, and vice versa. This avoids bias (a single match satisfying all invitees) and captures both precision (your invites matched) and recall (attendees were invited). Equation 5 uses this to train the prefetch model.</p>
+        <div class="breaks"><b>Where it breaks:</b> Party guests are independent; prefetch hits have <i>order</i> dependencies (vectors prefetched stay in buffer for a time window). But the loss function's unbiased, two-way matching is exactly what makes RecMG's prefetch training work (Section V-B).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="50" height="50" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="45" y="58" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">GPU</text>
+          <rect x="80" y="30" width="50" height="50" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <text x="105" y="58" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">CPU</text>
+          <path d="M70 55 l10 0 M73 52 l4 3 l-4 3" stroke="#332C24" stroke-width="2" fill="none"/>
+        </svg></div>
+        <span class="term">Deployment · Pipeline execution</span>
+        <h3>Assembly line with inspection</h3>
+        <p>GPU processes DLRM batch <i>i</i> while CPU (running RecMG models) prepares decisions for batch <i>i+1</i>. If CPU is slow, GPU moves on to <i>i+2</i> without waiting — some cached states lag, but inference doesn't stall. Figure 6 shows this pipeline; Section VI-C reports 10× speedup from parallelism + AVX512.</p>
+        <div class="breaks"><b>Where it breaks:</b> An assembly line stops if inspection is too slow; RecMG's pipeline <i>doesn't</i> — it trades freshness of caching decisions for throughput, accepting some stale priorities to avoid GPU idle time.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key mechanisms explained.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem — LRU misses irregular and long-reuse patterns</h3>
+      <p>DLRM inference accesses embedding vectors in two problematic patterns. First, 20% of accesses have <b>reuse distance &gt; 2²⁰</b> (Figure 3), larger than typical GPU buffers (~10⁵ vectors). LRU evicts these before reuse, causing on-demand CPU fetches. Second, some vectors are accessed rarely but predictably (e.g., following trending news) — LRU can't prefetch them because they lack temporal locality.</p>
+      <p>Table I shows the impact: with 192 EMBs, batch size 18K, and 7% caching ratio, embedding-vector accesses take <b>58.7%</b> of total inference time. Even PyTorch's UVM prefetch (which lacks guidance on <i>which</i> vectors to prefetch) doesn't solve this — Section VII-B shows rule-based prefetchers achieve &lt; 1% accuracy.</p>
+      <div class="callout note"><span class="ic">🌱</span><div><b>Concretely:</b> Figure 13 shows that with 20% buffer size, LRU achieves ~60% hit rate. Optgen (Belady's algorithm, which knows the future) achieves ~85%. RecMG closes that gap to ~78% hit rate — a 45% reduction in misses vs LRU.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Caching model — binary classification approximating Belady</h3>
+      <p>The caching model takes a sequence of k embedding-vector accesses as input (each vector = table ID + row ID) and outputs a binary sequence of the same length: "1" means high priority (keep in GPU buffer), "0" means low priority (candidate for eviction). The model is trained on <b>optgen labels</b>: offline, RecMG runs Belady's MIN algorithm on production traces to compute what <i>would</i> have been cached if we knew the future.</p>
+      <pre class="sketch"><span class="cm"># Training data generation</span>
+optgen( trace, buffer_size = 80% of GPU capacity )
+  → <span class="hl">caching_trace</span>: each vector labeled 1 (kept) or 0 (evicted)
+
+<span class="cm"># Caching model architecture (Figure 5a)</span>
+Input: [ (table_id₁, row_id₁), ..., (table_idₖ, row_idₖ) ]
+LSTM encoder-decoder (1 stack, 37K params)
+Attention mechanism (learns long-range dependencies)
+Output: [ 1, 0, 1, ..., 1 ] ← binary keep/evict for each input vector
+
+<span class="cm"># Loss function</span>
+Cross-entropy loss (binary classification)
+  → sigmoid probability distribution over {keep, evict}
+</pre>
+      <p>Figure 8 shows the result: the caching model achieves 83% of optgen's hit rate, and 38% more hits than LRU on all five datasets. The model approximates Belady without knowing the future, by learning correlations in the input sequence.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why binary classification works:</b> Instead of predicting "which vector will be accessed next" (billions of labels), the model predicts "should this vector stay" (2 labels). This shrinks the search space and makes training feasible (Table III: 429 min training time for caching model vs 765 min for prefetch model).</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Prefetch model — sequence regression with Chamfer loss</h3>
+      <p>The prefetch model also takes a sequence of k vector accesses as input, but outputs a <i>shorter</i> sequence of vectors to prefetch (length |PO| &lt; k). Unlike traditional prefetchers that predict the next address, RecMG predicts a <b>sequence</b> to improve coverage — multiple vectors are prefetched at once and stay valid in the buffer for a time window.</p>
+      <pre class="sketch"><span class="cm"># Prefetch model architecture (Figure 5b)</span>
+Input: same as caching model
+LSTM encoder-decoder (2 stacks, 74K params)
+Attention mechanism
+Output embedding layer (fully connected + projection)
+  → Output: [ vec_a, vec_b, ..., vec_m ] ← sequence of m vectors to prefetch
+
+<span class="cm"># Ground truth: evaluation window W</span>
+W = next |W| vectors accessed after input sequence
+  where |W| > |PO| (typically 3× larger, Figure 12)
+  → allows prefetched vectors to stay valid longer
+
+<span class="cm"># Loss function: Chamfer measure (Equation 5)</span>
+dist(PO, W) = α × (1/|PO|) × Σ min|x - y| (x ∈ PO, y ∈ W)
+            + (1 - α) × (1/|W|) × Σ min|x - y| (x ∈ W, y ∈ PO)
+  α = 0.7 (weight toward minimizing PO → W distance)
+  → differentiable, unbiased (both directions), captures locality
+</pre>
+      <p>Figure 9 shows prefetch correctness: RecMG achieves 37% (vs Domino 0.3%, TransFetch 10%). Figure 10 shows coverage: RecMG outperforms TransFetch by 10%, Domino by 190×. The Chamfer loss avoids the "shortcut" problem where all output vectors converge to the same value (Section V-B explains why a single CM term would fail).</p>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Key insight:</b> The evaluation window W is 3× longer than output sequence PO (Figure 12 shows optimal ratio). This means prefetched vectors don't need to match the <i>immediately next</i> accesses — they can stay in buffer and hit in the near future, maximizing prefetch utility.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Model deployment — CPU pipeline, priority-based eviction</h3>
+      <p>RecMG runs on CPU (not GPU) to save GPU cycles for DLRM inference. Figure 6 shows the pipeline: while GPU processes batch <i>i</i>, CPU infers caching/prefetch decisions for batch <i>i+1</i>. If CPU is slow, GPU proceeds to batch <i>i+2</i> without waiting — some caching states lag, but inference doesn't stall.</p>
+      <p>Algorithm 1 (load_embeddings) shows how the two models' outputs are used. For each vector in the current batch, the caching model assigns a <b>priority</b> (high or low). When the buffer is full, Algorithm 2 (gpu_buffer_populate) evicts the vector with the <i>lowest</i> priority. Prefetched vectors (from the prefetch model) are inserted with high priority and protected from immediate eviction by an <b>eviction_speed</b> parameter (set to 4, inspired by RRIP [38]).</p>
+      <pre class="sketch"><span class="cm"># Algorithm 1: load_embeddings (simplified)</span>
+<span class="kw">for</span> each vec in current_batch:
+    priority[vec] = caching_model_output[vec] + eviction_speed
+    <span class="cm"># higher priority → stays longer</span>
+
+<span class="kw">for</span> each vec in prefetch_model_output:
+    <span class="kw">if</span> buffer is full:
+        evict_lowest_priority_vector()  <span class="cm"># Algorithm 2</span>
+    fetch(vec)
+    priority[vec] = eviction_speed  <span class="cm"># protect from immediate eviction</span>
+
+<span class="cm"># Algorithm 2: evict_lowest_priority_vector</span>
+evict_id = argmin( priority[vec] <span class="kw">for</span> vec in buffer )
+priority[all vecs] = max(0, priority - 1)  <span class="cm"># decay over time</span>
+evict(buffer[evict_id])
+</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why eviction_speed matters:</b> It balances the two models' impact. A larger value (e.g., 8) means prefetched vectors stay longer, dominating the buffer; a smaller value (e.g., 2) means caching-model decisions dominate. The paper sets it to 4 based on RRIP's re-reference interval prediction.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · System optimizations — parallelism, vectorization, quantization</h3>
+      <p>To keep CPU overhead low (&lt; 92 µs per prediction, Table II), RecMG uses three techniques:</p>
+      <ol class="seq">
+        <li><b>Pipeline execution:</b> GPU and CPU run in parallel. CPU doesn't block GPU even if inference takes longer than DLRM batch processing (Figure 6).</li>
+        <li><b>Thread-level parallelism:</b> A batch of DLRM inference requests is split into <i>n</i> sub-batches (n = number of idle CPU cores), each served by one thread. Figure 7 shows near-linear scaling (1 thread: 1.8K samples/s, 16 threads: 28K samples/s).</li>
+        <li><b>Vectorization + quantization:</b> AVX512 instructions, C++ implementation, and model quantization combine for 10× speedup vs no optimization (Section VI-C).</li>
+      </ol>
+      <p>Table II compares overhead: RecMG 92 µs/prediction, TransFetch 1052 µs, Voyager 1521 µs. The difference comes from (1) LSTM being more CPU-friendly than transformers, and (2) RecMG's narrower search space (binary classification for caching, small output sequence for prefetch).</p>
+    </div>
+
+    <!-- FIGURE: model architectures -->
+    <figure class="viz reveal">
+      <div class="viz-title">Model architectures (from Figure 5)</div>
+      <div class="viz-kicker">caching: 1 LSTM stack, binary output · prefetch: 2 LSTM stacks, sequence output</div>
+      <svg class="full" viewBox="0 0 700 280" role="img" aria-label="Caching and prefetch model architectures">
+        <!-- caching model -->
+        <text x="20" y="22" font-family="Fraunces" font-size="14" font-weight="600" fill="#3a409a">(a) Caching Model</text>
+        <rect x="20" y="35" width="280" height="100" rx="10" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+        <text x="160" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#5A61B4">Input: [vec₁, ..., vecₖ]</text>
+        <rect x="80" y="65" width="160" height="30" rx="6" fill="#fff" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="160" y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">LSTM (encoder-decoder)</text>
+        <rect x="80" y="100" width="160" height="20" rx="4" fill="#fff" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="160" y="113" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#3a409a">Attention</text>
+        <text x="160" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">Output: [1, 0, 1, ..., 1] ← binary</text>
+        <!-- prefetch model -->
+        <text x="370" y="22" font-family="Fraunces" font-size="14" font-weight="600" fill="#1f5b51">(b) Prefetch Model</text>
+        <rect x="370" y="35" width="310" height="150" rx="10" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+        <text x="525" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#2C8C7C">Input: [vec₁, ..., vecₖ]</text>
+        <rect x="420" y="65" width="210" height="30" rx="6" fill="#fff" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="525" y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">LSTM stack 1 (encoder-decoder)</text>
+        <rect x="420" y="100" width="210" height="30" rx="6" fill="#fff" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="525" y="119" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">LSTM stack 2 (encoder-decoder)</text>
+        <rect x="420" y="135" width="210" height="20" rx="4" fill="#fff" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="525" y="148" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">Attention</text>
+        <rect x="420" y="160" width="210" height="15" rx="3" fill="#fff" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="525" y="170" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#1f5b51">Output embedding (FC + projection)</text>
+        <text x="525" y="186" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">Output: [vec_a, vec_b, ...] ← sequence</text>
+        <!-- params -->
+        <text x="160" y="156" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">37K params</text>
+        <text x="525" y="206" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">74K params</text>
+        <!-- comparison -->
+        <text x="20" y="240" font-family="Fraunces" font-size="13" fill="#332C24">Key difference: Prefetch model uses 2 LSTM stacks (vs 1 for caching) to achieve 50% accuracy (vs 39% with 1 stack, Table III).</text>
+        <text x="20" y="260" font-family="Fraunces" font-size="13" fill="#332C24">Both use attention to learn long-range dependencies across input sequences, even when accesses to the same vector are far apart.</text>
+      </svg>
+      <figcaption><b>Why separate models?</b> Caching is binary classification (2 labels) — simple, 1 stack sufficient. Prefetch is sequence regression (large search space) — needs 2 stacks for accuracy. Together they reduce on-demand fetches by 4.5× vs rule-based methods (Figure 14).</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces using the paper's real numbers and mechanisms.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Computing reuse distance and why LRU fails</h3>
+      <p style="color:var(--ink-soft)">An access sequence: [A, B, C, D, E, F, G, A]. GPU buffer holds 5 vectors. What is A's reuse distance, and does it hit or miss?</p>
+      <ol class="seq">
+        <li><b>Reuse distance = number of distinct vectors between two accesses to the same vector.</b> Between first A and second A: {B, C, D, E, F, G} = 6 distinct vectors.</li>
+        <li><b>GPU buffer holds 5 vectors.</b> Reuse distance 6 &gt; buffer size 5 → A is evicted before the second access.</li>
+        <li><b>Second access to A = cache miss.</b> Must fetch from CPU, O(10 µs) penalty.</li>
+        <li><b>Figure 3 shows 20% of accesses have reuse distance &gt; 2²⁰ ≈ 1 million.</b> Typical GPU buffers hold O(100,000) vectors → these accesses always miss in LRU.</li>
+        <li><b>RecMG's prefetch model learns correlations</b> (e.g., "if B, C, D, then A soon") to prefetch A before the second access, avoiding the miss.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> Reuse distance quantifies <i>how far back</i> temporal locality extends. LRU only works if reuse distance &lt; cache size. For 20% of DLRM accesses, this condition fails — hence the need for ML prefetching.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Training the caching model with optgen labels</h3>
+      <p style="color:var(--ink-soft)">Given a trace of 10 accesses and GPU buffer size = 3, how does RecMG generate training labels for the caching model?</p>
+      <ol class="seq">
+        <li><b>Input trace:</b> [A, B, C, D, A, B, E, F, C, D]. Each is a (table_id, row_id) pair in practice, simplified here to letters.</li>
+        <li><b>Run optgen (Belady's MIN) with buffer size = 3.</b> Optgen evicts the vector whose next access is farthest in the future. Track which vectors stay cached at each step.</li>
+        <li><b>After access to D (step 4):</b> Buffer = {A, B, D} (A reused next at step 5, B at step 6, D at step 10 — keep all 3).</li>
+        <li><b>After access to A (step 5):</b> Buffer still {A, B, D}. No eviction needed.</li>
+        <li><b>After access to B (step 6):</b> Need to insert E. Evict D (next access step 10, farthest). Buffer = {A, B, E}.</li>
+        <li><b>Generate binary labels:</b> For each access, "1" if optgen kept it in buffer at that step, "0" if evicted. Full trace labels: [1, 1, 1, 0, 1, 1, 1, 1, 0, 0].</li>
+        <li><b>Train caching model on (input_sequence, labels) pairs.</b> Model learns to approximate optgen's decision without knowing the future.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Figure 8 shows the caching model achieves 83% of optgen's hit rate. The 17% gap comes from two sources: (1) the model sees only past accesses, not future; (2) the model generalizes across traces, while optgen is trace-specific.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Why Chamfer loss avoids the "shortcut" problem</h3>
+      <p style="color:var(--ink-soft)">Prefetch model outputs PO = [1, 2, 3], ground truth window W = [2, 6, 7, 8]. Why does a single Chamfer term d_CM(PO, W) fail, and how does Equation 5 fix it?</p>
+      <ol class="seq">
+        <li><b>Single Chamfer term:</b> d_CM(PO, W) = Σ min|x - y| for x ∈ PO, y ∈ W. For each x in PO, find closest y in W.</li>
+        <li><b>For x = 1:</b> closest y is 2 (distance 1). For x = 2: closest y is 2 (distance 0). For x = 3: closest y is 2 (distance 1).</li>
+        <li><b>Total distance = 1 + 0 + 1 = 2.</b> But notice: "2" in W is chosen for all three x's. During gradient descent, the model learns "always output 2" to minimize this loss — a shortcut.</li>
+        <li><b>The problem:</b> Single-term CM loses locality information. If all outputs converge to the same value, the prefetch model becomes useless.</li>
+        <li><b>Equation 5 adds a second term:</b> d_CM(W, PO) = Σ min|x - y| for x ∈ W, y ∈ PO. Now each y in W must also find closest x in PO.</li>
+        <li><b>For y = 6, 7, 8:</b> closest x is 3 (distances 3, 4, 5). Total = 3 + 4 + 5 = 12. If all outputs were "2," this term would be huge (distances 4, 5, 6 = 15), penalizing the shortcut.</li>
+        <li><b>Final loss:</b> 0.7 × (2/3) + 0.3 × (12/4) ≈ 1.37. The two terms balance each other, preventing convergence to a single value.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> Chamfer measure is <i>differentiable</i> (needed for gradient descent) and <i>two-way</i> (prevents shortcuts). The weight α = 0.7 prioritizes "did PO match W?" over "did W match PO?" because we care more about prefetch precision than perfect coverage.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Calculating end-to-end speedup from hit rate</h3>
+      <p style="color:var(--ink-soft)">Figure 18 shows a linear model: inference time = f(hit rate). If LRU achieves 60% hit rate (200 ms), and RecMG achieves 78% hit rate, what is the speedup?</p>
+      <ol class="seq">
+        <li><b>Linear model (from Figure 18):</b> Inference_time = a × (100 - hit_rate) + b, where a = slope (ms per 1% miss rate), b = base latency.</li>
+        <li><b>At 60% hit rate (LRU):</b> T_LRU = a × 40 + b = 200 ms (given). At 78% hit rate (RecMG): T_RecMG = a × 22 + b.</li>
+        <li><b>From Figure 18, RMSE &lt; 3.75 ms (1.7% error).</b> Assume linear fit: T_RecMG ≈ 200 - (18% improvement × 200 / 40) = 200 - 90 = 110 ms.</li>
+        <li><b>Speedup = T_LRU / T_RecMG = 200 / 110 ≈ 1.82 (82% faster).</b> But this is theoretical; Figure 16 shows actual speedup 31% avg (up to 43%) because:</li>
+        <li><b>Other factors:</b> (1) GPU buffer management overhead (not just hit/miss), (2) prefetch timing (some prefetches arrive too late), (3) CPU inference overhead (92 µs per prediction adds up).</li>
+        <li><b>Figure 19 validates the model:</b> RecMG's measured hit rate (from Figure 15) predicts 31% speedup, matching Figure 16's result (within 3.6% deviation).</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The linear model is a simplification (reality has non-linear effects like bandwidth saturation), but it's accurate enough (1.7% RMSE) to estimate speedup from hit rate — useful for quick evaluation of new caching/prefetch strategies.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it checks.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Figure 3 shows 20% of accesses have reuse distance &gt; 2²⁰. If a GPU buffer holds 100,000 vectors, what percentage of these accesses will miss in an LRU cache, and why?</div>
+      <details><summary>Show answer</summary><div class="ans">All 20% will miss. Reuse distance 2²⁰ ≈ 1 million &gt; buffer size 100,000 → the vector is evicted before its second access. LRU has no way to predict the second access and keep the vector cached, so every long-reuse-distance access causes an on-demand fetch from CPU.<span class="mis">Misconception: that LRU "learns" from repeated accesses. LRU only tracks <i>recency</i>, not <i>frequency</i> or <i>future reuse</i>. If reuse distance &gt; cache size, the second access always misses.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">RecMG's caching model is trained on optgen labels (Belady's MIN). Belady knows all future accesses. How can RecMG approximate it using only past accesses?</div>
+      <details><summary>Show answer</summary><div class="ans">RecMG uses an LSTM with attention to learn <i>correlations</i> between past accesses that predict future reuse. E.g., if the sequence [A, B, C] historically precedes A's reuse, the model learns to keep A cached when it sees [A, B, C]. The attention mechanism captures long-range dependencies, so even if A's reuse is far away, the model assigns high priority to A. Figure 8 shows this achieves 83% of optgen's hit rate — the model generalizes patterns from training traces to new traces.<span class="mis">Misconception: that you need future knowledge to approximate Belady. RecMG uses <i>statistical patterns</i> from past traces to predict future reuse, not actual clairvoyance. The 17% gap vs optgen is the cost of this approximation.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why does the prefetch model use 2 LSTM stacks while the caching model uses only 1? What happens if you use 1 stack for prefetch?</div>
+      <details><summary>Show answer</summary><div class="ans">Table III shows that with 1 LSTM stack, the prefetch model achieves 39% accuracy; with 2 stacks, 50% (vs caching model 80% with 1 stack, 83% with 3 stacks). The difference: <b>task complexity</b>. Caching is binary classification (2 labels: keep/evict) — simpler, 1 stack sufficient. Prefetch is sequence regression in a large search space (billions of possible vectors) — needs more capacity (2 stacks) to learn complex correlations. Using 1 stack for prefetch underperforms by 11% and reduces coverage (Figure 10).<span class="mis">Misconception: that "more stacks = always better." For caching, adding stacks beyond 1 gives &lt; 5% improvement (Table III: 80% → 83%) but increases training time by 41% (429 → 603 min). RecMG uses the <i>minimum</i> stacks needed for each task.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Equation 5 uses α = 0.7 for the Chamfer loss. What happens if α = 1? If α = 0.5? Justify RecMG's choice.</div>
+      <details><summary>Show answer</summary><div class="ans">If α = 1, the second Chamfer term (d_CM(W, PO)) disappears. The loss becomes single-sided, causing the "shortcut" problem: all outputs converge to the same value (Example 3 in worked examples). If α = 0.5, the two terms are equally weighted. This overpenalizes <i>coverage</i> (did W match PO?) vs <i>precision</i> (did PO match W?). RecMG cares more about precision — prefetch should hit what it predicts — because low-precision prefetch pollutes the buffer with useless vectors, reducing cache hits. α = 0.7 weights precision 2.3× more than coverage (0.7 / 0.3), matching RecMG's design goal: maximize prefetch <i>utility</i>, not just coverage.<span class="mis">Misconception: that α is arbitrary. It's a <i>design choice</i> reflecting RecMG's priority: better to prefetch fewer vectors that <i>will</i> be used than to prefetch many vectors that <i>might</i> be used. Figure 9 shows RecMG's 37% correctness balances precision and coverage effectively.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Figure 12 shows the optimal evaluation window W is 3× the output sequence length |PO|. Why not 1×? Why not 10×?</div>
+      <details><summary>Show answer</summary><div class="ans">If W = 1× |PO|, prefetched vectors must hit <i>immediately</i> (in the next |PO| accesses). This is too strict — many useful prefetches arrive slightly late and miss the window, lowering accuracy. If W = 10× |PO|, the window is too long — the loss function becomes insensitive (many vectors in W will naturally be close to <i>some</i> PO), and the model overfits to noise. Figure 12 shows 3× is the sweet spot: accuracy 37%, coverage &gt; 0 (vs 1× gives lower accuracy, 10× gives no coverage gain). The intuition: prefetched vectors stay valid for ~3 batches, so evaluate them over that window.<span class="mis">Misconception: that "bigger window = more coverage." Coverage <i>saturates</i> beyond 3× (Figure 12) because the model's output length |PO| is the limiting factor, not the window size. The window is for <i>evaluation</i>, not for increasing the number of prefetches.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Table II shows RecMG takes 92 µs per prediction, TransFetch 1052 µs, Voyager 1521 µs. Why is RecMG 11× faster than TransFetch, and why does this matter for production deployment?</div>
+      <details><summary>Show answer</summary><div class="ans">Three reasons: (1) <b>Model architecture</b> — RecMG uses LSTM (CPU-friendly, sequential); TransFetch uses transformers (GPU-optimized, parallel). On CPU, LSTM is faster. (2) <b>Search space</b> — RecMG's caching model has binary output (2 labels), and prefetch model has small sequence output (e.g., 5 vectors); TransFetch predicts from billions of possible addresses. (3) <b>Optimizations</b> — RecMG uses AVX512, C++, quantization (Section VI-C: 10× speedup). The 11× difference matters because: at 1M predictions/sec, RecMG adds 92 ms overhead; TransFetch adds 1052 ms (1 sec) — too slow for production inference (SLA ~hundreds of ms, per paper intro). Figure 6 shows RecMG overlaps with GPU, so 92 µs is hidden; 1052 µs would stall the pipeline.<span class="mis">Misconception: that "transformers are always faster because of parallelism." On <i>GPU</i>, yes (TransFetch is faster there). But RecMG runs on <i>CPU</i> (to save GPU cycles for DLRM), where LSTM's sequential nature is actually an advantage — less synchronization overhead, better cache locality.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">Figure 14 shows RecMG reduces on-demand fetches by 4.5× vs Domino (temporal prefetcher). Why does Domino fail so badly on DLRM workloads?</div>
+      <details><summary>Show answer</summary><div class="ans">Domino assumes <b>temporal locality</b> (if A accessed, A will be accessed again soon). But DLRM has two problems: (1) 20% of accesses have reuse distance &gt; 2²⁰ (Figure 3), far exceeding Domino's metadata capacity (set to 10% of unique indices, per Section VII-B); (2) accesses are user-driven and stochastic (trending content, ad-hoc queries), not deterministic program patterns. Figure 9 shows Domino's prefetch correctness &lt; 0.3% — it predicts the wrong vectors. RecMG's 37% correctness comes from learning <i>correlations</i> (not just recency), so it can predict irregular accesses.<span class="mis">Misconception: that "temporal prefetchers always work." Domino excels on regular programs with short reuse distances (e.g., array scanning). DLRM is the opposite: irregular, long reuse distances, user-driven. The wrong tool for the job.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">Figure 17 shows that at 0.1% buffer size, the prefetch model contributes 67.5% of RecMG's benefit; at 15% buffer size, only 27.7%. Why does the relative importance flip?</div>
+      <details><summary>Show answer</summary><div class="ans">At 0.1% buffer size, the buffer is tiny — LRU can only cache a handful of high-frequency vectors. Most accesses miss, so <b>prefetch dominates</b>: predicting which vectors will be needed soon is more valuable than optimizing the small cache. At 15% buffer size, the buffer is large enough to cache many high-frequency vectors, so <b>caching dominates</b>: keeping the right vectors (via caching model approximating Belady) reduces misses more than prefetching. Figure 17 shows GPU buffer management time drops 2.91× from 0.1% → 15% with RecMG, mostly due to improved caching (2.79× with caching model alone).<span class="mis">Misconception: that "prefetch always dominates." At small buffer sizes, yes (prefetch is crucial). At large buffer sizes, no (caching is crucial). RecMG uses <i>both</i> models because DLRM workloads span this range — some deployments have tiny buffers (memory-constrained), others have large buffers (latency-constrained).</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What's the difference between DLRM training and inference, and why does RecMG target inference?<span class="chev">▾</span></summary><div class="a">DLRM training accesses embedding vectors in a predetermined order (batched samples from a fixed dataset), making prefetch easier (e.g., RecShard [68] uses offline profiling). DLRM inference is user-driven and stochastic — batch size varies (512 to 18K, Table I), pooling factor varies (1 to hundreds, per Section III), and accesses are unpredictable. RecMG targets inference because: (1) it's 80% of AI inference cycles at Meta datacenters (paper intro), and (2) existing methods (LRU, rule-based prefetch) fail on irregular patterns (Figure 9: &lt; 1% correctness).</div></details>
+      <details><summary><span class="q">Q2</span>Why not just increase GPU memory capacity instead of using tiered memory?<span class="chev">▾</span></summary><div class="a">DLRM's EMBs can be multi-TB (paper intro: "terabyte scale"). Even the largest GPUs (e.g., A100 with 80 GB HBM) can't hold this. Tiered memory (GPU + CPU DRAM + SSD) is cost-effective: GPU memory is ~10× more expensive per GB than CPU DRAM. The tradeoff: GPU memory is O(100× faster), so the challenge is <i>what to cache</i>. RecMG optimizes this tradeoff, achieving up to 43% speedup (Figure 16) by learning access patterns.</div></details>
+      <details><summary><span class="q">Q3</span>How does RecMG handle the "cold start" problem — new users or new content with no historical access patterns?<span class="chev">▾</span></summary><div class="a">RecMG learns patterns from <i>aggregated</i> user behavior, not individual users. E.g., if trending news causes correlated accesses across many users, the model learns "if vec A accessed, vec B likely soon" — even for new users following the same trend. For genuinely new content (e.g., a new product launch), RecMG falls back to the caching model (which approximates Belady using temporal locality) until enough traces accumulate to retrain. Section VI-A mentions retraining when EMBs update, which handles content popularity shifts.</div></details>
+      <details><summary><span class="q">Q4</span>Does RecMG work for other ML workloads besides DLRM (e.g., graph neural networks, transformers)?<span class="chev">▾</span></summary><div class="a">RecMG is tailored to DLRM's specific patterns: (1) power-law distribution (20% vectors take 80% accesses), (2) long reuse distances (&gt; 2²⁰ for 20% of accesses), (3) embedding-table structure (table ID + row ID). Other workloads have different patterns. E.g., GNNs have irregular graph traversal (PrefEdge [56] uses graph structure); transformers have attention patterns (Prodigy [76] uses program semantics). RecMG's techniques (binary classification for caching, Chamfer loss for prefetch) could adapt, but the model would need retraining on new workload traces.</div></details>
+      <details><summary><span class="q">Q5</span>Why use LSTM instead of transformers, given that transformers are state-of-the-art for sequence modeling?<span class="chev">▾</span></summary><div class="a">Transformers are GPU-optimized (parallel attention, large batch sizes). RecMG runs on <i>CPU</i> (to save GPU cycles for DLRM inference, Section VI-C). On CPU, transformers are slower: Table II shows TransFetch (transformer-based) takes 1052 µs per prediction vs RecMG's 92 µs (LSTM-based). The difference: (1) LSTM is sequential, better CPU cache locality; (2) transformers need more FLOPS per token (quadratic attention vs linear LSTM). RecMG prioritizes low overhead (&lt; 92 µs) over model expressiveness, and LSTM is sufficient (37% prefetch correctness, Figure 9).</div></details>
+      <details><summary><span class="q">Q6</span>How does RecMG handle multiple DLRM models running on the same GPU (multi-tenancy)?<span class="chev">▾</span></summary><div class="a">The paper doesn't explicitly address multi-tenancy, but the design is flexible. Each DLRM model would have its own caching/prefetch models (trained on its own traces), and the GPU buffer would be partitioned (e.g., 50/50 for two models). The challenge: if models have different access patterns, the buffer partition might be suboptimal. A multi-model RecMG could use a <i>global</i> caching model that learns to partition the buffer dynamically, similar to UCP (the house-style reference). This is future work.</div></details>
+      <details><summary><span class="q">Q7</span>What's the storage overhead of RecMG's models (37K + 74K params)? How big are they on disk?<span class="chev">▾</span></summary><div class="a">37K + 74K = 111K parameters total. At FP32 (4 bytes/param), that's 111K × 4 ≈ 444 KB. With quantization (e.g., INT8, 1 byte/param), it's 111 KB. This is <i>tiny</i> compared to DLRM's EMBs (multi-TB). The models fit in CPU cache (L3 is typically 10s of MB), enabling fast inference (92 µs per prediction, Table II). Compare to Voyager (millions of params for one-hot labeling) or TransFetch (large transformer, 1052 µs overhead) — RecMG is 3–4 orders of magnitude smaller.</div></details>
+      <details><summary><span class="q">Q8</span>How often does RecMG retrain, and what's the training cost?<span class="chev">▾</span></summary><div class="a">Section VI-A: "periodically retrain when the DLRM requires retraining, which typically happens when embedding tables are updated." In production, this is ~weekly to monthly (content popularity shifts). Table III shows training time: caching model 429 min (7 hrs), prefetch model 765 min (13 hrs) on CPU. Total ~20 hrs on a single CPU, parallelizable across cores (Figure 7: near-linear scaling to 16 cores → ~1.5 hrs with 16 cores). The cost is acceptable given the 31% avg speedup (Figure 16) — training once per week to get 31% faster inference 24/7 is a good tradeoff.</div></details>
+      <details><summary><span class="q">Q9</span>Does RecMG require changes to the DLRM model itself, or is it purely a memory-management layer?<span class="chev">▾</span></summary><div class="a">Purely a memory-management layer. RecMG sits between the DLRM (which issues embedding-vector accesses) and the GPU buffer (which serves those accesses). The DLRM is unchanged. RecMG intercepts the access sequence, runs the caching/prefetch models on CPU, and updates buffer priorities + prefetch list (Algorithm 1). This is why RecMG is practical: it's a drop-in replacement for PyTorch's LRU cache, no DLRM retraining needed.</div></details>
+      <details><summary><span class="q">Q10</span>What did the authors leave for future work?<span class="chev">▾</span></summary><div class="a">The paper doesn't have an explicit "future work" section, but implicit gaps: (1) multi-model (multi-tenancy) support; (2) adaptive retraining (detecting when access patterns shift, triggering retraining automatically); (3) larger-scale evaluation (paper uses 5 datasets, all from Meta — generalization to other DLRM workloads?); (4) integrating with CXL (Compute Express Link) for tiered memory — the paper mentions "CPU memory or SSD" but CXL is emerging as a middle tier; (5) extending to DLRM training (currently inference-only).</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>RecMG</b><span>Machine learning-guided memory optimization system for DLRM inference on tiered memory. Uses two LSTM models (caching + prefetch) to manage GPU buffer.</span></div>
+      <div class="term-def"><b>DLRM (Deep Learning Recommendation Model)</b><span>ML model for click-through rate prediction. Combines continuous features (user info) and categorical features (sparse, via embedding tables).</span></div>
+      <div class="term-def"><b>Embedding table (EMB)</b><span>Large lookup table mapping categorical feature indices to dense vectors. Can be 100s of GB per table; multi-TB total. Dominates DLRM memory usage.</span></div>
+      <div class="term-def"><b>Caching model (UMON)</b><span>RecMG's first ML model. Outputs binary priorities (keep/evict) for each vector in input sequence. Approximates Belady's optimal policy via optgen training labels.</span></div>
+      <div class="term-def"><b>Prefetch model</b><span>RecMG's second ML model. Outputs a sequence of vectors to prefetch (insert into GPU buffer before they're accessed). Learns correlations for irregular/long-reuse patterns.</span></div>
+      <div class="term-def"><b>Tiered memory</b><span>GPU (fast, small) + CPU DRAM (slow, big) + SSD (slowest, huge). DLRM's EMBs exceed GPU capacity, so misses fetch from CPU at O(10 µs) cost.</span></div>
+      <div class="term-def"><b>Reuse distance</b><span>Number of distinct vectors accessed between two references to the same vector. Quantifies temporal locality. Paper shows 20% of accesses have reuse distance &gt; 2²⁰.</span></div>
+      <div class="term-def"><b>Optgen (Belady's MIN)</b><span>Offline algorithm that computes optimal caching decisions by knowing all future accesses. Used to generate training labels for the caching model.</span></div>
+      <div class="term-def"><b>Chamfer measure</b><span>Differentiable loss function for comparing two sets of points. RecMG uses it to train the prefetch model (Equation 5: two-way matching avoids shortcuts).</span></div>
+      <div class="term-def"><b>Evaluation window (W)</b><span>Length of future access sequence used to evaluate prefetch hits. Typically 3× the output sequence length (Figure 12: optimal ratio).</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>LRU (Least Recently Used)</b><span>Traditional cache eviction policy. Evicts the vector not accessed for the longest time. Fails on DLRM because 20% of accesses have reuse distance &gt; cache size.</span></div>
+      <div class="term-def"><b>Pooling factor</b><span>Number of embedding vectors gathered per DLRM inference query. Varies widely (1 to hundreds, per Section III), making prefetch challenging.</span></div>
+      <div class="term-def"><b>GPU buffer</b><span>Software-managed cache on GPU memory (e.g., 20% of unique vectors, per paper). Managed by RecMG's caching/prefetch models, not hardware cache.</span></div>
+      <div class="term-def"><b>LSTM (Long Short-Term Memory)</b><span>Recurrent neural network architecture. RecMG uses it for sequence modeling (learns dependencies across input vectors). CPU-friendly (vs transformers).</span></div>
+      <div class="term-def"><b>Attention mechanism</b><span>Neural network layer that learns long-range dependencies. RecMG uses it to capture correlations between distant accesses in the input sequence.</span></div>
+      <div class="term-def"><b>eviction_speed</b><span>Parameter controlling how fast priorities decay (Algorithm 2). Set to 4, inspired by RRIP [38]. Balances caching-model vs prefetch-model influence.</span></div>
+      <div class="term-def"><b>Binary classification</b><span>ML task with two labels (0 or 1). RecMG's caching model uses it (keep/evict), avoiding billion-label search space of address prediction.</span></div>
+      <div class="term-def"><b>Sequence regression</b><span>ML task predicting a sequence of values. RecMG's prefetch model uses it (outputs multiple vectors), improving coverage vs single-address prediction.</span></div>
+      <div class="term-def"><b>Prefetch correctness</b><span>Percentage of prefetched vectors that hit within the evaluation window. RecMG: 37% (Figure 9), vs Domino 0.3%, TransFetch 10%.</span></div>
+      <div class="term-def"><b>Coverage</b><span>Percentage of unique vectors in ground truth that appear in prefetch output (Equation 2). RecMG: 10% better than TransFetch (Figure 10).</span></div>
+    </div>
+
+    <div class="subhead">Key results at a glance</div>
+    <div class="prose" style="font-size:.95rem">
+      <p><b>Performance (Figure 16):</b> RecMG reduces end-to-end DLRM inference time by 31% on average (up to 43%) vs LRU, across five Meta datasets. On-demand fetches reduced by 4.5× vs Domino, 2.8× vs Bingo, 1.5× vs TransFetch (Figure 14).</p>
+      <p><b>Model accuracy (Figures 8, 9, 10):</b> Caching model achieves 83% of optgen's hit rate (38% better than LRU). Prefetch model: 37% correctness (190× better than Domino, 27× better than TransFetch), 10% coverage improvement vs TransFetch.</p>
+      <p><b>Overhead (Table II):</b> 92 µs per prediction (vs Voyager 1521 µs, TransFetch 1052 µs). Training: 429 min (caching), 765 min (prefetch) on CPU. Model size: 111K params ≈ 444 KB (FP32), fits in CPU cache.</p>
+      <p><b>Area overhead (Section VI-C):</b> &lt; 1% (two models + metadata for GPU buffer management). No changes to DLRM model or critical path.</p>
+    </div>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>Recommendation systems and embedding tables <span class="diff easy">easy</span></h4><div class="meta">explainer · 20–30 min</div><p>How categorical features are encoded as embeddings, and why they're so large. Search "DLRM architecture explained" (e.g., Meta's DLRM repo [27]). RecMG's caching/prefetch assume you understand what an embedding lookup is.</p></div>
+    <div class="read-item reveal"><h4>Tiered memory systems <span class="diff medium">medium</span></h4><div class="meta">explainer · 30–40 min</div><p>How GPU + CPU DRAM + SSD interact, and the latency hierarchy. Search "tiered memory for ML" (e.g., [33], [60], [61] from the paper's references). RecMG targets this hierarchy.</p></div>
+    <div class="read-item reveal"><h4>Belady's MIN algorithm (optgen) <span class="diff easy">easy</span></h4><div class="meta">classic paper · 15–20 min</div><p>The 1966 algorithm that evicts the vector whose next access is farthest in the future. RecMG uses it to generate training labels. Read Belady [14] or Jain &amp; Lin's optgen [35] for implementation.</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Utility-Based Cache Partitioning (UCP) <span class="diff medium">medium</span></h4><div class="meta">Qureshi &amp; Patt · MICRO 2006</div><p>The house-style reference for this field guide. UCP partitions a shared cache by <i>utility</i> (benefit from cache), not <i>demand</i> (recency). RecMG adapts this idea: caching model predicts utility, prefetch model handles irregular patterns UCP couldn't.</p></div>
+    <div class="read-item reveal"><h4>RecShard: Memory Optimization for DLRM Training <span class="diff hard">hard</span></h4><div class="meta">Sethi et al. · ASPLOS 2022</div><p>Offline profiling-based memory optimization for DLRM <i>training</i>. RecMG targets <i>inference</i>, where access patterns are unpredictable (no offline profiling). Complements RecMG's approach.</p></div>
+    <div class="read-item reveal"><h4>Voyager: Learning Memory Access Patterns <span class="diff hard">hard</span></h4><div class="meta">Shi et al. · ASPLOS 2021</div><p>ML-based prefetcher using LSTM. RecMG differs: (1) binary classification for caching (not one-hot labeling), (2) Chamfer loss for prefetch (not L2), (3) CPU deployment (Voyager targets GPU). Table II shows RecMG is 16× faster.</p></div>
+    <div class="read-item reveal"><h4>TransFetch: Transformer-Based Prefetching <span class="diff hard">hard</span></h4><div class="meta">Zhang et al. · CF 2022</div><p>Transformer-based prefetcher. RecMG differs: LSTM (CPU-friendly) vs transformer (GPU-optimized), and 11× faster (Table II). Figures 9, 10 show RecMG's 27× better correctness, 10% better coverage.</p></div>
+    <div class="read-item reveal"><h4>Domino: Temporal Data Prefetcher <span class="diff medium">medium</span></h4><div class="meta">Bakhshalipour et al. · HPCA 2018</div><p>Rule-based temporal prefetcher using multiple streams. Fails on DLRM (0.3% correctness, Figure 9) because accesses have low temporal locality (20% reuse distance &gt; 2²⁰). RecMG's ML approach learns correlations Domino can't.</p></div>
+    <div class="read-item reveal"><h4>Bingo: Spatial Data Prefetcher <span class="diff medium">medium</span></h4><div class="meta">Bakhshalipour et al. · HPCA 2019</div><p>Rule-based spatial prefetcher. Fails on DLRM (&lt; 0.1% correctness, Figure 9) because embedding-vector accesses have low spatial locality (indices within a table aren't contiguous). RecMG learns irregular patterns.</p></div>
+
+    <div class="subhead">Source notes (provenance)</div>
+    <div class="prose" style="font-size:.92rem">
+      <p><b>All numbers, claims, and mechanisms come from the paper "Machine Learning-Guided Memory Optimization for DLRM Inference on Tiered Memory" (Ren et al., HPCA 2025).</b> Specific groundings:</p>
+      <ul style="margin:0;padding-left:20px">
+        <li>20% of accesses with reuse distance &gt; 2²⁰: Figure 3, Section III.</li>
+        <li>Up to 58.7% overhead from embedding accesses: Table I, dataset DS4.</li>
+        <li>Caching model 83% of optgen, 38% better than LRU: Figure 8, Section VII-B.</li>
+        <li>Prefetch correctness 37% (vs Domino 0.3%, TransFetch 10%): Figure 9, Section VII-B.</li>
+        <li>Coverage 10% better than TransFetch, 190× better than Domino: Figure 10, Section VII-B.</li>
+        <li>31% avg speedup (up to 43%): Figure 16, Section VII-F.</li>
+        <li>4.5× reduction in on-demand fetches vs Domino: Figure 14, Section VII-E.</li>
+        <li>92 µs overhead (vs Voyager 1521 µs, TransFetch 1052 µs): Table II, Section VII-B.</li>
+        <li>Model sizes 37K (caching), 74K (prefetch) params: Table III, Section VII-C.</li>
+        <li>Optimal evaluation window 3×: Figure 12, Section VII-D.</li>
+        <li>Chamfer loss (Equation 5), α = 0.7: Section V-B, page 5.</li>
+        <li>Eviction_speed = 4: Section VI-B, Algorithm 1.</li>
+        <li>Deployment on CPU, pipeline execution: Section VI-C, Figure 6.</li>
+      </ul>
+      <p><b>Framing, analogies, and pedagogical structure are original,</b> created for this field guide. The house style (warm paper palette, Fraunces/Mulish/JetBrains Mono fonts, 8-tab structure) is adapted from the UCP reference template with colors changed to match RecMG's themes (teal = high-utility, indigo = ML models, terracotta = LRU baseline, honey = prefetch-worthy).</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Ren et al., "Machine Learning-Guided Memory Optimization for DLRM Inference on Tiered Memory" (HPCA 2025)</span>
+    <span><b>Source:</b> HPCA 2025 Proceedings · numbers verified against the paper</span>
+    <span><b>Format:</b> Interactive field guide · tailored for a memory-tiering researcher</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- INIT ---- */
+  runReveals();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
