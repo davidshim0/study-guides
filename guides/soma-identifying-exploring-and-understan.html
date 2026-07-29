@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<!-- SoMa field guide — DRAM Communication Scheduling for DNN Accelerators (Cai et al., HPCA'25).
+     Palette: circuit-teal = SoMa/the winning approach · indigo = Tensor-centric Notation machinery ·
+     rust = Cocco/heuristic baseline · amber = accent/highlights. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Timing the Trip to DRAM — A Field Guide to SoMa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#DE9A33; --honey-deep:#B3730F; --honey-soft:#F8E7C5;
+  --dram:#1C7F8C; --dram-soft:#D9EEF0;      /* teal   = SoMa / the winning approach   */
+  --ltram:#6250C7; --ltram-soft:#E8E4F8;    /* indigo = Tensor-centric Notation / SoMa machinery */
+  --optane:#BD4B2E; --optane-soft:#F5DED2;  /* rust   = Cocco / fixed heuristics (the baseline)  */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(28,127,140,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(98,80,199,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(222,154,51,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(98,80,199,.05) 31px,rgba(98,80,199,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(222,154,51,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:20ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#124e56;font-size:.96rem}
+.primer .ready b{color:#0d3a40}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#124e56}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#382f8a}
+.chip-lru{background:var(--optane-soft);color:#8a3620}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #AFDBDF;color:#124e56}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e2b4a2;color:#8a3620}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9ad4da;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c2b8ee;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e2b4a2;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcd6f2}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6d5bd6,#6250C7)}
+.bf-hi{background:linear-gradient(90deg,#2497a4,#1C7F8C)}
+.bf-lru{background:linear-gradient(90deg,#cf6a4c,#BD4B2E)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (kept for structural parity; inert unless matching DOM exists) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#124e56;border:1px solid #9ad4da}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#124e56}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#8a3620}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#de9a33} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8f7ff0}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#124e56}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#8a3620}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HPCA 2025 · A Field Guide</span>
+    <h1>Deciding <span class="swash">when</span> a chip talks to DRAM — not just <span class="swash" style="color:var(--optane)">whether</span> it fuses layers</h1>
+    <p class="lede">On-chip buffers have grown so large that tuning a single layer's tiling barely moves DRAM traffic anymore. The opportunity left on the table is <strong>timing</strong>: exactly when each tensor should be prefetched or written back. This is the plain-English tour of <strong>SoMa</strong>, the framework that searches that whole space.</p>
+    <div class="hero-meta">
+      <span>📄 "SoMa: Identifying, Exploring, and Understanding the DRAM Communication Scheduling Space for DNN Accelerators" · Cai et al., HPCA 2025</span>
+      <span>🎓 Some dataflow/accelerator basics assumed — the primers cover them</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🗓️</div>
+      <p>Give every tensor's DRAM trip a <span class="ro">deliberately chosen time</span> that fills idle bandwidth — not a fixed <span class="wo">prefetch-just-before / store-right-after</span> rule.<br><em style="font-size:.9rem">Search the whole schedule, not just which layers to fuse.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then the concepts that unlock the paper</h2>
+      <p class="sub">First the acronym soup, defined once so you never have to guess; then eight primer cards you can open in any order.</p>
+    </div>
+
+    <div class="subhead" style="margin-top:6px">Quick glossary of acronyms</div>
+    <div class="gloss">
+      <div class="term-def"><b>SoMa</b><span>The paper's end-to-end scheduling framework — the thing this guide is about.</span></div>
+      <div class="term-def"><b>Cocco</b><span>The prior SOTA layer-fusion framework SoMa is compared against throughout.</span></div>
+      <div class="term-def"><b>GBUF</b><span>Global Buffer — the large on-chip SRAM shared by all cores, sitting between DRAM and the cores.</span></div>
+      <div class="term-def"><b>LFA / DLSA</b><span>Layer-Fusion-related Attributes / DRAM-Load-and-Store-related Attributes — the two halves of the paper's notation.</span></div>
+      <div class="term-def"><b>FLG / LG</b><span>Fine-grained Layer-fusion Group / (DRAM-cut) Layer-fusion Group — chunks of layers computed together on-chip.</span></div>
+      <div class="term-def"><b>FLC / DRAM Cut</b><span>Fine-grained Layer-fusion Cut (splits FLGs) and its subset, the DRAM Cut (splits LGs, forcing a DRAM round-trip).</span></div>
+      <div class="term-def"><b>SA</b><span>Simulated Annealing — the local-search algorithm SoMa uses to explore both LFA and DLSA.</span></div>
+      <div class="term-def"><b>DSE</b><span>Design Space Exploration — sweeping hardware parameters (buffer size, DRAM bandwidth) to see their effect.</span></div>
+      <div class="term-def"><b>IR</b><span>Intermediate Representation — SoMa's output format that a separate Instruction Generator turns into real instructions.</span></div>
+      <div class="term-def"><b>KV cache</b><span>The growing per-token key/value tensors an LLM must keep during decoding — competes with weights for buffer space.</span></div>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>The accelerator template: DRAM, GBUF, cores<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>SoMa targets a generic large-scale DNN accelerator: <b>DRAM</b> (off-chip, slow, high-capacity) feeds a shared <b>Global Buffer (GBUF)</b> on-chip, which feeds several <b>cores</b>, each with small private buffers (WL0/AL0/OL0) next to a PE Array (for GEMM/Conv) and a Vector Unit (for pooling, norm, etc.).</p>
+          <p>Every hardware behavior is abstracted to three instructions: <b>load</b> (DRAM→GBUF), <b>store</b> (GBUF→DRAM), and <b>compute</b>. This is exactly analogous to a CPU/DRAM system's read/write/execute — just with an explicitly-managed buffer instead of a cache.</p>
+          <div class="ready"><b>Now you're ready:</b> everything SoMa schedules is just the timing of load/store instructions relative to compute — nothing more exotic than that.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Layer fusion — reusing the GBUF instead of round-tripping to DRAM<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Without fusion, each layer finishes entirely, writes its output feature map (ofmap) to DRAM, and the next layer reads it back in. <b>Layer fusion</b> instead keeps that ofmap in the GBUF and feeds it straight to the next layer's compute — no DRAM round trip.</p>
+          <p>This only works while both layers' relevant data fit in the buffer at once, so fusing more layers trades DRAM traffic for buffer occupancy.</p>
+          <div class="ready"><b>Now you're ready:</b> "which layers to fuse" is only one knob. SoMa's point is that far more knobs exist and interact.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Tiles and Tiling Number — the granularity of fused computation<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Inside a fused group of layers, you don't compute one whole layer before starting the next — you slice each layer into <b>tiles</b> and pipe tiles through layer-by-layer. The <b>Tiling Number</b> is how many tiles each layer is split into.</p>
+          <p>Finer tiles (more of them) use less buffer at once, but convolution/pooling layers need extra "halo" overlap at tile borders, so more tiles can mean more recomputed/re-fetched data and less on-chip reuse per tile.</p>
+          <div class="ready"><b>Now you're ready:</b> Tiling Number is a buffer-vs-overhead knob, and picking it heuristically (as Cocco does, from core-array parallelism alone) leaves performance on the table.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Compute-bound vs. DRAM-bound tiles<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A tile that loads weights (the first tile of a layer) has high DRAM demand relative to its compute; a later tile of the same layer, needing no weights and often no fmap load (thanks to fusion), can have almost zero DRAM demand for a similar amount of compute.</p>
+          <p>Across a whole fused network these two extremes multiply — you get a scattered mix of very DRAM-heavy and very compute-heavy tiles, with few in between.</p>
+          <div class="ready"><b>Now you're ready:</b> this imbalance (paper's Fig. 3) is the entire motivation for prefetching and delayed storing — idle DRAM time next to a compute-heavy tile can be spent moving data a DRAM-heavy tile will need later.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Double buffering — the traditional (limited) fix<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The standard strategy prefetches a tile's inputs while the <i>previous</i> tile computes, and stores a tile's outputs while the <i>next</i> tile computes — one tile of lookahead, always.</p>
+          <p>When DRAM demand is this imbalanced, one tile of lookahead isn't enough room to hide a big weight load — so compute stalls waiting for DRAM, even while DRAM sat idle several tiles earlier.</p>
+          <div class="ready"><b>Now you're ready:</b> "prefetching and delayed storing" in this paper means loosening that one-tile window into a fully adjustable schedule.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Tensor-centric Notation, in one sentence<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>SoMa encodes any scheduling scheme as six attributes in two groups: <b>LFA</b> (Computing Order, Fine-grained Layer-fusion Cut, Tiling Number, DRAM Cut) decides <i>what gets computed together and when a DRAM round-trip is forced</i>; <b>DLSA</b> (DRAM Tensor Order, Living Duration) decides <i>the exact order and timing window for every load/store</i>.</p>
+          <p>Parsing LFA gives you the compute schedule and which tensors touch DRAM; parsing DLSA on top gives you exactly when each of those DRAM accesses happens.</p>
+          <div class="ready"><b>Now you're ready:</b> the whole "DRAM Communication Scheduling Space" is just the product of these six attributes' possible values.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Simulated annealing, briefly<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Simulated annealing (SA)</b> searches a huge discrete space by repeatedly making a small random change, keeping it if it's better, and <i>sometimes</i> keeping it even if it's worse — with that "sometimes" probability shrinking over time (cooling), so early exploration gives way to late-stage refinement.</p>
+          <p>SoMa runs SA twice: once over LFA, once over DLSA — because a single LFA change can invalidate a carefully-tuned DLSA solution, so mixing them in one search is unproductive.</p>
+          <div class="ready"><b>Now you're ready:</b> SoMa's "two-stage" framework is exactly two separate SA runs, connected by a Buffer Allocator that referees how much buffer each stage gets.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>The optimization goal: Energy × Delay<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>SoMa's cost function is <code>Energy<sup>n</sup> × Delay<sup>m</sup></code> for a full batch of samples, with n and m tunable toward energy or latency priorities. The paper's main experiments use n = m = 1, treating both equally.</p>
+          <p>"Computing Resources Utilization" — used throughout the results — is just actual throughput divided by peak theoretical throughput; it's the paper's stand-in for "how close to ideal is this schedule."</p>
+          <div class="ready"><b>Now you're ready:</b> every result you'll see is ultimately a change in this one cost function, decomposed into energy and utilization/latency terms.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>SoMa in a nutshell</h2>
+      <p class="sub">Why single-layer tuning stopped mattering, what opportunity that leaves behind, and how SoMa captures it.</p>
+    </div>
+    <div class="prose">
+      <p>On-chip buffers have grown to <b>tens or even hundreds of megabytes</b>, large enough to hold most single layers' weights outright. As a direct result, "how do I tile a single layer optimally?" — decades of prior dataflow research — now moves DRAM traffic far less than it used to. The frontier has shifted to a coarser question: how do multiple layers share the buffer, and when exactly does each tensor cross the DRAM boundary?</p>
+      <p><b>Layer fusion</b> answers part of that: keep an early layer's output on-chip and feed it directly to the next layer, skipping a store-then-reload round trip. The SOTA framework <span class="mem-chip chip-lru">Cocco</span> explores only <i>which</i> layers to fuse, using heuristic tiling and a classic one-tile-lookahead double buffer for everything else — and even that narrow slice bought 1.89%–50.33% speedups. The paper's core observation is that fusion, by removing the "average" tiles' DRAM demand, makes the <i>remaining</i> demand far more uneven: weight-loading tiles get DRAM-heavy, everything else gets DRAM-free (see the spread in Fig. 3). A fixed one-tile double buffer can't absorb that unevenness — DRAM sits idle at some moments and stalls compute at others.</p>
+      <p><span class="mem-chip chip-ucp">SoMa</span>'s fix: define the full <b>DRAM Communication Scheduling Space</b> with a <b>Tensor-centric Notation</b> (six attributes across the layer-fusion and DRAM-load/store dimensions), then search it with a two-stage simulated-annealing framework governed by a <b>Buffer Allocator</b> that arbitrates buffer budget between the two stages.</p>
+      <p><strong>The payoff:</strong> averaged over 20 workload/hardware combinations, SoMa delivers <b>2.11×</b> the performance and <b>37.3%</b> less energy than Cocco — with the second (timing) stage alone adding a further <b>1.16×</b> on top of the first (fusion) stage's <b>1.82×</b>, at under 1% off the theoretical-maximum utilization ceiling.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Bigger buffers make single-layer dataflow tuning matter less; the bottleneck moved to cross-layer fusion + DRAM timing.</li>
+        <li>Cocco explores 2 of the notation's 6 attributes (Computing Order, DRAM Cut); the other 4 — including Tiling Number and exact load/store timing — are fixed by heuristics.</li>
+        <li>After fusion, per-tile DRAM demand becomes highly imbalanced — some tiles all-DRAM, many tiles none — which a fixed one-tile double buffer can't absorb.</li>
+        <li><b>Tensor-centric Notation</b>: LFA (what/when to compute together) + DLSA (exact DRAM timing) = the whole space.</li>
+        <li><b>SoMa</b> = Buffer Allocator + two-stage SA (LFA stage, then DLSA stage) + an accurate tile/tensor-level Evaluator.</li>
+        <li>Result: 2.11× performance, 37.3% energy reduction vs. Cocco on average; near-zero gain on LLM decode, which is purely bandwidth-bound.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Where the optimization headroom actually is</div>
+      <div class="viz-kicker">as on-chip buffers grow, one opportunity fades and a bigger one opens</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> single-layer dataflow tuning</span>
+        <span><i style="background:var(--dram)"></i> DRAM comm. scheduling (fusion + timing)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 360" role="img" aria-label="Optimization headroom vs buffer size for single-layer tuning and DRAM communication scheduling">
+        <line x1="70" y1="30" x2="70" y2="250" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="250" x2="700" y2="250" stroke="#D8C8AC" stroke-width="1.4"/>
+        <text x="385" y="284" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">on-chip GBUF size (growing) →</text>
+        <text x="22" y="145" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 22,145)">optimization headroom</text>
+        <polyline fill="none" stroke="#BD4B2E" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" points="109,72 200,95 290,140 380,190 470,222 560,238 650,245 700,247"/>
+        <polyline fill="none" stroke="#1C7F8C" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" points="109,225 200,205 290,175 380,140 470,105 560,78 650,58 700,48"/>
+        <line x1="380" y1="30" x2="380" y2="250" stroke="#9A8E7C" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.6"/>
+        <text x="386" y="42" font-family="JetBrains Mono" font-size="10" fill="#6E6456">"tens–hundreds of MB" GBUFs (today)</text>
+        <text x="700" y="240" text-anchor="end" font-family="Fraunces" font-size="13" font-weight="600" fill="#BD4B2E">single-layer tuning</text>
+        <text x="700" y="42" text-anchor="end" font-family="Fraunces" font-size="13" font-weight="600" fill="#1C7F8C">DRAM comm. scheduling</text>
+        <text x="20" y="312" font-family="JetBrains Mono" font-size="11" fill="#6E6456">Cocco</text>
+        <text x="20" y="346" font-family="JetBrains Mono" font-size="11" fill="#6E6456">SoMa</text>
+        <rect x="70" y="298" width="210" height="22" rx="4" fill="#BD4B2E"/><rect x="280" y="298" width="420" height="22" rx="4" fill="#F3EADA" stroke="#D8C8AC" stroke-dasharray="3 3"/>
+        <text x="175" y="313" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">2 / 6 attributes tuned</text>
+        <text x="490" y="313" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">4 fixed by heuristics</text>
+        <rect x="70" y="332" width="630" height="22" rx="4" fill="#1C7F8C"/>
+        <text x="385" y="347" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">6 / 6 attributes jointly searched</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> as buffers grow past what a single layer needs, single-layer tuning's curve flattens toward zero benefit — exactly what the paper states directly. The DRAM Communication Scheduling Space (fusion + timing) keeps growing in importance instead. Cocco searches 2 of the notation's 6 attributes; SoMa searches all 6. (Paper §I, §III, §IV-B)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → notation → framework → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Fixed heuristics for tiling, fusion, and prefetch timing under-use the buffer</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Notation</div><div class="nd">6 attributes: LFA (fusion) + DLSA (DRAM timing) define the whole space</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">SoMa framework</div><div class="nd">Buffer Allocator + two-stage SA (LFA, then DLSA) + accurate Evaluator</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Stage 1 result</div><div class="nd">1.82× perf, −37.3% energy vs. Cocco, from smarter fusion/tiling</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Stage 2 result</div><div class="nd">+1.16× more perf, same energy — from re-timed prefetch/store only</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Total</div><div class="nd">2.11× performance, −37.3% energy, &lt;1% instructions, deployed to production compiler</div></div>
+      </div>
+    </figure>
+
+    <div class="callout why"><span class="ic">🧠</span><div><b>For a memory-tiering reader:</b> SoMa's central trade — decide the <i>timing</i> of a data movement based on real-time bandwidth idleness, not a fixed rule — is structurally the same problem OS-managed DRAM/NVM or CXL tiering faces when deciding <i>when</i> to prefetch, promote, or demote a page rather than only <i>which</i> pages are hot. The six-attribute notation plays the role a tiering policy's parameters (hotness threshold, batch size, migration timing) play in systems like TPP or Memtis: it turns "when to move data" from a hand-tuned heuristic into an explicitly searchable space. This connection is our framing, not a claim made by the paper.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about SoMa</h2>
+      <p class="sub">Each picture stands alone — read in any order. Every card ends with an honest note about where the picture breaks.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="40" width="30" height="20" rx="3" fill="#DCEFE9" stroke="#1C7F8C" stroke-width="2.2"/>
+          <path d="M44 50 h18" stroke="#1C7F8C" stroke-width="2.2" marker-end="url(#a1)"/>
+          <rect x="62" y="40" width="30" height="20" rx="3" fill="#F7E1D8" stroke="#BD4B2E" stroke-width="2.2"/>
+          <path d="M92 50 h18" stroke="#1C7F8C" stroke-width="2.2"/>
+          <rect x="110" y="40" width="20" height="20" rx="3" fill="#DCEFE9" stroke="#1C7F8C" stroke-width="2.2"/>
+          <path d="M28 40 v-16 M77 40 v-16" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 2"/>
+          <text x="28" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#9A8E7C">DRAM</text>
+          <text x="77" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#9A8E7C">DRAM</text>
+        </svg></div>
+        <span class="term">The core idea · Layer fusion</span>
+        <h3>Passing the baton, not mailing the package</h3>
+        <p>Two relay runners hand the baton directly to each other rather than mailing it to a warehouse and having the next runner pick it up there. Layer fusion keeps a layer's output in the on-chip buffer and hands it straight to the next layer's compute — skipping the "mail it to DRAM and fetch it back" round trip Cocco and SoMa both try to avoid whenever the buffer allows it.</p>
+        <div class="breaks"><b>Where it breaks:</b> a relay only has one baton; a fused layer group has many tensors (weights, ifmaps, ofmaps) with different lifetimes, all fighting for the same limited buffer at once — that competition is what the rest of the notation manages.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <line x1="14" y1="70" x2="126" y2="70" stroke="#9A8E7C" stroke-width="1.5"/>
+          <rect x="18" y="56" width="16" height="14" fill="#BD4B2E"/><rect x="70" y="56" width="12" height="14" fill="#BD4B2E"/>
+          <rect x="40" y="34" width="60" height="10" fill="none" stroke="#332C24" stroke-width="1.5" stroke-dasharray="2 2"/>
+          <text x="70" y="26" text-anchor="middle" font-family="monospace" font-size="7" fill="#8a3620">stall</text>
+          <rect x="18" y="80" width="16" height="10" fill="#1C7F8C"/><rect x="52" y="80" width="12" height="10" fill="#1C7F8C"/><rect x="88" y="80" width="14" height="10" fill="#1C7F8C"/>
+        </svg></div>
+        <span class="term">Why timing matters · Prefetch &amp; delayed storing</span>
+        <h3>A dinner party with one strict rule</h3>
+        <p>Traditional double buffering is a caterer who only ever fetches the next course while the current one is being eaten, and only ever clears a plate for the next diner — one course of lookahead, always. If the next course is a huge roast, that one-course window isn't enough to cook it in time, and diners wait even though the kitchen sat idle two courses earlier. SoMa is the caterer who plans the whole menu's shopping and clearing schedule up front.</p>
+        <div class="breaks"><b>Where it breaks:</b> a caterer plans once; SoMa's schedule must also respect strict data dependencies (a tensor can't be fetched before its "Start" tile, or held past its "End" tile) — it isn't free-form, just far less constrained than one-tile lookahead.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="18" width="100" height="14" rx="3" fill="#fff" stroke="#332C24" stroke-width="1.8"/>
+          <rect x="20" y="38" width="100" height="14" rx="3" fill="#E8E4F8" stroke="#6250C7" stroke-width="1.8"/>
+          <rect x="20" y="58" width="100" height="14" rx="3" fill="#E8E4F8" stroke="#6250C7" stroke-width="1.8"/>
+          <rect x="20" y="78" width="100" height="14" rx="3" fill="#F8E7C5" stroke="#DE9A33" stroke-width="1.8"/>
+          <text x="70" y="28" text-anchor="middle" font-family="monospace" font-size="7" fill="#332C24">order</text>
+          <text x="70" y="48" text-anchor="middle" font-family="monospace" font-size="7" fill="#382f8a">FLC · tiling#</text>
+          <text x="70" y="68" text-anchor="middle" font-family="monospace" font-size="7" fill="#382f8a">DRAM cut</text>
+          <text x="70" y="88" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e4a09">tensor order · duration</text>
+        </svg></div>
+        <span class="term">The notation · Six attributes</span>
+        <h3>A six-knob mixing board</h3>
+        <p>A sound engineer doesn't master a track with one fader — they balance six independent controls together. SoMa's Tensor-centric Notation is the same: Computing Order, FLC, Tiling Number, DRAM Cut (the LFA "what/when to fuse" knobs) plus DRAM Tensor Order and Living Duration (the DLSA "exact DRAM timing" knobs). Cocco effectively only touches two of the six faders and leaves the rest at a fixed heuristic setting.</p>
+        <div class="breaks"><b>Where it breaks:</b> mixing-board faders are independent; these six attributes are coupled — changing Tiling Number changes which DRAM tensors even exist, which is exactly why SoMa searches them in two separate stages rather than all six at once.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="26" fill="none" stroke="#6250C7" stroke-width="2.2" stroke-dasharray="5 3"/>
+          <circle cx="95" cy="48" r="14" fill="none" stroke="#BD4B2E" stroke-width="2.2"/>
+          <path d="M60 30 q10 -6 20 0" stroke="#332C24" stroke-width="1.6" fill="none"/>
+          <circle cx="45" cy="48" r="3" fill="#6250C7"/><circle cx="95" cy="48" r="3" fill="#BD4B2E"/>
+        </svg></div>
+        <span class="term">The search · Simulated annealing</span>
+        <h3>Slowly cooling metal into shape</h3>
+        <p>A blacksmith shaping metal by annealing lets it flex a lot while hot (accepting rough, even worse-looking changes) and locks in shape as it cools. SoMa's SA does the same over scheduling encodings: early on it accepts many worse-cost moves to escape bad local shapes, and as its "temperature" cools it only accepts improvements — settling into a strong final schedule.</p>
+        <div class="breaks"><b>Where it breaks:</b> metal has one shape at the end; SoMa runs two separate annealing processes (LFA, then DLSA) with a Buffer Allocator negotiating between them, so the final "shape" is a joint outcome of two cooling schedules, not one.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="45" height="46" rx="4" fill="#DCEFE9" stroke="#1C7F8C" stroke-width="2.2"/>
+          <rect x="75" y="30" width="45" height="46" rx="4" fill="#E8E4F8" stroke="#6250C7" stroke-width="2.2"/>
+          <path d="M65 46 h10 M65 60 h10" stroke="#332C24" stroke-width="2" marker-end="url(#a2)"/>
+          <text x="42" y="58" text-anchor="middle" font-family="monospace" font-size="9" fill="#124e56">LFA</text>
+          <text x="97" y="58" text-anchor="middle" font-family="monospace" font-size="9" fill="#382f8a">DLSA</text>
+        </svg></div>
+        <span class="term">Sharing resources · Buffer Allocator</span>
+        <h3>Two chefs sharing one pantry</h3>
+        <p>Two chefs (the LFA and DLSA search stages) share one pantry (the on-chip buffer). Give the first chef the whole pantry and the second has no room to stage ingredients for clever timing tricks. SoMa's Buffer Allocator repeatedly trims the first chef's pantry share by 10% and re-runs both, keeping whichever split produced the best overall meal, stopping once trimming further stops helping.</p>
+        <div class="breaks"><b>Where it breaks:</b> real chefs negotiate once; the Buffer Allocator's iterative 10%-step search can take many full two-stage passes, which is exactly why SoMa's runtime (hours, sometimes ~2 days for large batch sizes) is dominated by this outer loop.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="26" width="100" height="18" rx="3" fill="#F8E7C5" stroke="#DE9A33" stroke-width="2"/>
+          <rect x="20" y="52" width="100" height="18" rx="3" fill="#F5DED2" stroke="#BD4B2E" stroke-width="2"/>
+          <text x="70" y="38" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">weights (fixed)</text>
+          <text x="70" y="64" text-anchor="middle" font-family="monospace" font-size="8" fill="#8a3620">KV cache (grows w/ batch)</text>
+        </svg></div>
+        <span class="term">The LLM twist · Decode bottleneck</span>
+        <h3>A guest list that eventually needs its own truck</h3>
+        <p>Catering for more guests usually just means bigger pots (better compute utilization per byte moved) — until the guest list itself (the KV cache, growing with batch size) becomes as bulky as the ingredients (the weights). At that point, hauling the guest list starts to dominate the trip, and adding more guests stops paying off the way it used to.</p>
+        <div class="breaks"><b>Where it breaks:</b> ingredients are fixed size regardless of guest count; weights genuinely are fixed per model, which is precisely why this analogy captures the KV-cache-vs-weights crossover so directly rather than approximately.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">From the notation's six attributes to the two-stage search that fills them in.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Why the traditional double buffer stalls</h3>
+      <p>Under one-tile-lookahead double buffering, a tile can only start once its own prefetch has finished, and a store can only begin once its producing tile is done. When DRAM demand is spread unevenly across tiles (heavy weight-loads for some, none for others), that one-tile window is either wastefully idle or badly insufficient — never both balanced. The paper reports Cocco-scheduled DRAM/compute utilization as low as ~52.7%/62.6% and ~72.5%/45.8% on its example cases: neither resource is close to fully used.</p>
+    </div>
+
+    <!-- SVG: stall timeline before/after -->
+    <figure class="viz reveal">
+      <div class="viz-title">Filling idle DRAM time instead of stalling compute</div>
+      <div class="viz-kicker">the same tensors, rescheduled</div>
+      <svg class="full" viewBox="0 0 700 230" role="img" aria-label="Comparison of double-buffer stalls versus SoMa rescheduled DRAM and compute timelines">
+        <text x="20" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Traditional double buffer (one-tile lookahead)</text>
+        <text x="20" y="42" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">DRAM</text>
+        <rect x="70" y="32" width="60" height="16" rx="3" fill="#BD4B2E"/><rect x="220" y="32" width="90" height="16" rx="3" fill="#BD4B2E"/><rect x="470" y="32" width="50" height="16" rx="3" fill="#BD4B2E"/>
+        <text x="20" y="66" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">COMPUTE</text>
+        <rect x="70" y="56" width="60" height="16" rx="3" fill="#DCEFE9" stroke="#1C7F8C"/>
+        <rect x="130" y="56" width="90" height="16" rx="3" fill="#fff" stroke="#e2b4a2" stroke-dasharray="3 2"/>
+        <rect x="310" y="56" width="160" height="16" rx="3" fill="#DCEFE9" stroke="#1C7F8C"/>
+        <rect x="520" y="56" width="70" height="16" rx="3" fill="#fff" stroke="#e2b4a2" stroke-dasharray="3 2"/>
+        <text x="175" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#8a3620">STALL</text>
+        <text x="555" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#8a3620">STALL</text>
+
+        <line x1="20" y1="92" x2="680" y2="92" stroke="#E7DBC6"/>
+        <text x="20" y="122" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">SoMa — prefetch/store timing re-solved</text>
+        <text x="20" y="140" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">DRAM</text>
+        <rect x="70" y="130" width="60" height="16" rx="3" fill="#1C7F8C"/><rect x="150" y="130" width="90" height="16" rx="3" fill="#1C7F8C"/><rect x="260" y="130" width="50" height="16" rx="3" fill="#1C7F8C"/><rect x="480" y="130" width="60" height="16" rx="3" fill="#1C7F8C"/>
+        <text x="20" y="164" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">COMPUTE</text>
+        <rect x="70" y="154" width="510" height="16" rx="3" fill="#DCEFE9" stroke="#1C7F8C"/>
+        <text x="325" y="150" text-anchor="middle" font-family="monospace" font-size="9" fill="#124e56">no stall — continuous</text>
+      </svg>
+      <figcaption><b>Same weights, ifmaps, ofmaps — different timing.</b> By moving two weight loads earlier into DRAM-idle windows (as the paper does for LG′'s weights during a neighbor's idle tiles), the identical compute stream runs with no gaps. Nothing about the data volume changes — which is exactly why the second stage improves latency without changing energy. (Paper §III-B, §VII-B2)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Parsing the Tensor-centric Notation (LFA then DLSA)</h3>
+      <p>Parsing happens in two passes. First, <b>Computing Order</b> fixes a dependency-respecting layer sequence; <b>FLC</b> cuts it into Fine-grained Layer-fusion Groups; each FLG's <b>Tiling Number</b> sets its computing granularity; and <b>DRAM Cut</b> (a subset of FLC) marks which FLG boundaries force an actual DRAM round trip. This pass alone yields the full compute schedule and the complete list of tensors that must touch DRAM (weight loads, boundary-crossing ifmap loads, boundary-crossing ofmap stores).</p>
+      <p>Second, <b>DRAM Tensor Order</b> fixes the sequence those DRAM tensors are issued in, and each tensor's <b>Living Duration</b> (Start, End) — a tile-ID pair — fixes both its buffer occupancy window and its earliest/latest allowed transfer time. Only after both passes does an encoding become an actual, simulatable hardware timeline.</p>
+    </div>
+
+    <div class="flow-row">
+      <div class="node n-lru"><div class="nt">LFA</div><div class="nd">Computing Order, FLC, Tiling Number, DRAM Cut</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="node n-hi"><div class="nt">Compute schedule + DRAM tensor list</div><div class="nd">what runs when, and which tensors must touch DRAM</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="node n-ucp"><div class="nt">DLSA</div><div class="nd">DRAM Tensor Order, Living Duration</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="node n-rule"><div class="nt">Full timeline</div><div class="nd">exact load/store timing, buffer occupancy per tensor</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · The SoMa framework: Buffer Allocator + two SA stages + Evaluator</h3>
+      <p>The <b>Buffer Allocator</b> runs the outer loop. On the first pass it lets both stages use the full hardware buffer, records the first stage's peak usage (<code>Buffer<sub>max</sub></code>) and the resulting cost. On each subsequent pass it shrinks stage 1's buffer budget by 10% of <code>Buffer<sub>max</sub></code> and re-runs both stages; if the new total cost beats the best so far, it becomes the new best. It stops once two consecutive shrinks fail to improve on the best cost.</p>
+      <p>Within each pass, <b>Stage 1 (LFA search)</b> starts from "no fusion, minimum tiling" and applies four operators — change Computing Order, change Tiling Number (×2 or ÷2), add/delete an FLC, add/delete a DRAM Cut — under a classic double-buffer DLSA, for <code>100 × #layers</code> iterations. <b>Stage 2 (DLSA search)</b> then fixes that LFA and applies two operators — change DRAM Tensor Order, change a tensor's Living Duration — for <code>1000 × #DRAM tensors</code> iterations, with tensors chosen proportional to their size.</p>
+      <pre class="sketch"><span class="cm"># SA acceptance rule, both stages</span>
+<span class="kw">if</span> cost(new) &lt; cost(old): accept
+<span class="kw">else</span>: accept with probability <span class="hl">p = exp((cost(old) - cost(new)) / (cost(old) * T_n))</span>
+<span class="hl">T_n = T_0 * (1 - n/N) / (1 + α * n/N)</span>   <span class="cm"># cools toward 0 as n → N</span></pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why two stages, not one search over all six attributes?</b> An LFA change (adding a DRAM Cut, say) changes <i>which</i> tensors exist and their dependencies, invalidating a tuned DLSA solution outright. Separating the stages lets each search converge on a stable target instead of chasing a moving one — and the paper observes a bonus: minimizing DRAM access first (Stage 1) leaves purer, more schedulable compute time for Stage 2 to exploit.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · The Evaluator — turning a schedule into a number</h3>
+      <p>Evaluation is local-to-global. Each compute tile is scored by a classic dataflow scheduler/evaluator (Timeloop/Interstellar-style) for its energy and time. Each DRAM tensor's energy is data volume × unit energy; its time is data volume ÷ bandwidth. Global runtime then enforces dependencies: a DRAM tensor starts only once the previous DRAM tensor in order finishes <i>and</i> its Living-Duration Start has been reached (and, for ofmaps, only once its producing tile is done); a compute tile starts only once its inputs are ready and any DRAM tensor with an End at or before that tile has completed.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations straight from the paper's reported results, carried through fully.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Multiplying the two stages: 1.82× × 1.16× = 2.11×</h3>
+      <p style="color:var(--ink-soft)">The paper reports Stage 1 alone gives 1.82× performance over Cocco; Stage 2 then adds a further 1.16× on top of Stage 1. What's the combined speedup, and does it match the paper's headline number?</p>
+      <ol class="seq">
+        <li><b>Stage 1 alone:</b> 1.82× the performance of Cocco (from smarter fusion, tiling, and DRAM-cut choices, still using a plain double buffer).</li>
+        <li><b>Stage 2 multiplies on top:</b> 1.82 × 1.16 = <b>2.1112 ≈ 2.11×</b> — matching the paper's stated overall average exactly.</li>
+        <li><b>Energy stays flat across Stage 2:</b> both stages are reported at −37.3% energy vs. Cocco — the same number before and after Stage 2.</li>
+        <li><b>Why:</b> Stage 2 only reorders <i>when</i> the same tensors move — it changes zero bytes transferred, so energy (∝ bytes moved) is untouched; only latency (removed stalls) improves.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the two-stage split isn't just an implementation convenience — it cleanly separates "reduce how much data moves" (Stage 1, changes energy) from "reduce how long moving it takes" (Stage 2, changes latency only).</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② The ResNet-50 case study: 1.57× × 1.25× = 1.96×</h3>
+      <p style="color:var(--ink-soft)">For the specific ResNet-50 example the paper walks through (Fig. 8), Stage 1 gives 1.57× performance and −36.1% energy; Stage 2 adds a further average 1.25× over Stage 1. Verify the total.</p>
+      <ol class="seq">
+        <li><b>Stage 1:</b> 1.57× performance, −36.1% energy vs. Cocco — driven by fewer, larger tiles and fewer DRAM cuts (below).</li>
+        <li><b>Stage 2 multiplies:</b> 1.57 × 1.25 = <b>1.9625 ≈ 1.96×</b> — matching the paper's "total performance gain of 1.96× over Cocco" for this example exactly.</li>
+        <li><b>Where Stage 1's gain came from:</b> Cocco sets Tiling Number from a fixed kernel-channel parallelism heuristic (e.g. 16 for ResNet-50's later, wide layers); SoMa instead lets Tiling Number fall as low as 1 where the buffer allows, cutting halo-overlap recompute and enabling more reuse per tile.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is the same 1.82×/1.16× pattern from Example ① — reproduced on one concrete, inspectable network instead of an average across five.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Fewer, bigger units: 7962 tiles → 751 tiles, 13.0 LGs → 2.5 LGs</h3>
+      <p style="color:var(--ink-soft)">Averaged per network, Cocco produces 7962 computing tiles and 13.0 DRAM-cut Layer-fusion Groups (LGs); SoMa produces 751 tiles and 2.5 LGs (with 3.9 FLGs). What does this ratio mean?</p>
+      <ol class="seq">
+        <li><b>Tile count ratio:</b> 7962 ÷ 751 ≈ <b>10.6×</b> fewer, larger computing tiles under SoMa.</li>
+        <li><b>LG count ratio:</b> 13.0 ÷ 2.5 = <b>5.2×</b> fewer DRAM round-trip boundaries — i.e., far more layers fused together per DRAM trip.</li>
+        <li><b>Why LGs shrink faster than FLGs stay high (3.9):</b> SoMa uses ordinary FLCs (no DRAM access) to free a finished layer's weights and change Tiling Number between groups of layers, reserving actual DRAM Cuts (which do cost a round trip) only when buffer truly runs out.</li>
+        <li><b>Net effect:</b> both Core Array Energy (−34.8%) and DRAM Energy (−44.3%) drop in Stage 1 — larger tiles improve on-chip reuse, and fewer DRAM cuts directly cut DRAM traffic.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> Cocco's conservative, parallelism-only Tiling Number heuristic is the single biggest reason its tile count and LG count are both so much higher than SoMa's jointly-searched values.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ GPT-2 decode: why batch size gives diminishing returns</h3>
+      <p style="color:var(--ink-soft)">After SoMa optimization, GPT-2-Small-Decode utilization at batch sizes 1, 4, 16, 64 is 0.66%, 2.03%, 4.26%, 5.84%. Each step is a 4× batch increase — how does the multiplier on utilization change?</p>
+      <ol class="seq">
+        <li><b>BS 1 → 4</b> (4× batch): 0.66% → 2.03%, a <b>3.08×</b> jump in utilization.</li>
+        <li><b>BS 4 → 16</b> (4× batch): 2.03% → 4.26%, only a <b>2.10×</b> jump.</li>
+        <li><b>BS 16 → 64</b> (4× batch): 4.26% → 5.84%, just a <b>1.37×</b> jump.</li>
+        <li><b>Same 4× batch increase, shrinking payoff each time</b> — because the KV cache grows with batch size and eventually rivals the weights in size, so loading it (not compute) increasingly dominates the DRAM trip, capping how much extra batching can improve compute density.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Even the best DRAM communication scheduler can't fix a workload whose bottleneck is <i>data volume</i>, not <i>data timing</i> — which is exactly why decode's overall speedup (1.14×) is so much smaller than prefill's (2.55×).</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A team doubles their accelerator's GBUF size, hoping single-layer dataflow retuning will now cut DRAM traffic much further. Should they expect that?</div>
+      <details><summary>Show answer</summary><div class="ans">Not much. Once the buffer is large enough to hold most single layers' weights, the paper states plainly that single-layer dataflow optimization's impact on DRAM communication "diminishes significantly." The bigger buffer's real value now lies in cross-layer fusion and DRAM-timing flexibility — exactly the space Cocco and SoMa target.<span class="mis">Misconception: that more buffer always rewards the same optimization that worked before. The frontier of usefulness shifts as buffer size crosses the "fits one layer" threshold.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">After layer fusion, per-tile DRAM-access-to-compute ratios become <i>more</i> spread out (Fig. 3), not less. Why would removing DRAM access (via fusion) make the remaining demand look <i>less</i> uniform?</div>
+      <details><summary>Show answer</summary><div class="ans">Fusion selectively removes DRAM access only for fmaps that are consumed on-chip by the very next layer (e.g. Bi's ofmaps feeding directly into Ci). Weight loads and cross-boundary ifmaps/ofmaps still need DRAM. So the tiles that lost DRAM access drop to near-zero demand while the tiles that still need weights stay high — pulling the population apart into two extremes instead of narrowing it.<span class="mis">Misconception: that "less total DRAM access" implies "smoother DRAM access." Fusion cuts the middle out of the distribution rather than shrinking it uniformly.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Suppose a new accelerator's Stage 1 search gives 1.4× performance and −20% energy over Cocco, and Stage 2 adds 1.2× more on top of Stage 1. What's the total performance multiplier, and what energy number would you expect to report alongside it?</div>
+      <details><summary>Show answer</summary><div class="ans">Total performance = 1.4 × 1.2 = <b>1.68×</b>. Energy should still be reported as <b>−20%</b> (unchanged from Stage 1), because Stage 2 (DLSA) only reschedules timing of existing tensors — it moves zero additional or fewer bytes, so energy, which scales with bytes moved, doesn't change.<span class="mis">Misconception: that a further performance gain from Stage 2 must come with a further energy gain too. Latency and energy are decoupled here precisely because Stage 2 never touches data volume.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Cocco sets each layer's Tiling Number from core-array kernel-channel (KC) parallelism requirements alone — bigger kernel/channel dimensions get a bigger Tiling Number. Explain concretely why this can hurt performance, using the halo-overlap concept.</div>
+      <details><summary>Show answer</summary><div class="ans">A larger Tiling Number means each layer is sliced into more, smaller tiles. For convolution/pooling layers, adjacent tiles need overlapping "halo" border pixels; more (smaller) tiles mean this halo overlap is computed and/or fetched repeatedly at more tile boundaries, adding extra work and DRAM/GBUF traffic. It also shrinks each tile's on-chip reuse opportunity for the Core Array Scheduler. SoMa instead adapts Tiling Number to buffer availability and network depth (letting it fall to 1 where possible), reducing both effects.<span class="mis">Misconception: that matching Tiling Number to compute-unit parallelism is always "correctly sized." Parallelism-driven sizing ignores halo overlap cost and on-chip reuse entirely — both of which SoMa's search accounts for.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">The Buffer Allocator shrinks Stage 1's buffer budget by 10% of its peak usage each iteration and stops after two consecutive non-improving iterations. Why not just give Stage 1 the smallest buffer that still fits, from the start, to maximize Stage 2's room immediately?</div>
+      <details><summary>Show answer</summary><div class="ans">Because Stage 1's own performance and energy also improve with more buffer, just with diminishing returns — starving it too early could lose more in Stage 1 quality than it gains in Stage 2 flexibility. The gradual 10% trims let the Buffer Allocator find the sweet spot where the combined cost of both stages is lowest, rather than assuming Stage 2 always benefits more from extra buffer than Stage 1 does.<span class="mis">Misconception: that DLSA (timing) always deserves more buffer than LFA (fusion) since it's the "more advanced" optimization. Both stages have their own diminishing-returns curve; the allocator exists precisely because neither should be assumed to win by default.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">The DSE results show that pairing both a very large buffer and very high DRAM bandwidth gives almost no extra benefit over more modest configurations, once SoMa is used. Why?</div>
+      <details><summary>Show answer</summary><div class="ans">Past a certain point, latency becomes dominated by compute time itself, not by DRAM access — SoMa's efficient scheduling has already hidden essentially all DRAM latency behind compute. Adding more bandwidth or buffer beyond that point has nothing left to hide, so it buys no further speedup, just cost.<span class="mis">Misconception: that hardware resources always help "linearly" and stacking more of everything is safe. Once one resource stops being the bottleneck, spending more on it (or its neighbor) is pure waste.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 7 · medium</span>
+      <div class="qtext">At batch size 1, increasing buffer size barely reduces GPT-2-Small-Decode latency, but increasing DRAM bandwidth does. At batch size 16, the reverse pattern emerges. Explain both halves.</div>
+      <details><summary>Show answer</summary><div class="ans">At BS 1, fmaps are tiny (a small buffer already holds them), and there's little compute to hide weight-loading behind — even SoMa can't create prefetch opportunities that don't exist, so bandwidth directly gates latency. At BS 16, fmaps are larger (buffer now matters for holding/reusing them) and there's more compute per tile, giving SoMa more room to hide DRAM transfers behind computation — so buffer size (which enables more fusion and prefetch staging) starts to matter more than raw bandwidth.<span class="mis">Misconception: that one hardware resource (buffer or bandwidth) is "the" bottleneck for a workload in general. The dominant resource shifts with batch size, and SoMa's whole DSE contribution is exposing exactly where that shift happens.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 8 · hard</span>
+      <div class="qtext">Why does the paper's "Theoretical Maximum Computing Resources Utilization" diamond ignore dependencies, and why is it still a meaningful comparison target for Stage 2's result?</div>
+      <details><summary>Show answer</summary><div class="ans">The theoretical maximum is defined as Util(MIN(total compute time, total DRAM access time)) — the best possible outcome if DRAM access and compute could be perfectly overlapped with zero stalls, ignoring whether data dependencies would actually allow that overlap in practice. It's an upper bound, not a claim of achievability. It's still meaningful because Stage 2's job is precisely to approach that overlap as closely as dependencies allow — and the paper reports Stage 2's results land within an average of 3.1% of it, showing the DLSA search is nearly exhausting the available scheduling freedom.<span class="mis">Misconception: that an idealized upper bound that "ignores dependencies" is an unfair or unusable comparison. As long as it's used only to gauge how much headroom remains — not as a literal achievable target — it's exactly the right yardstick for Stage 2.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly is SoMa?<span class="chev">▾</span></summary><div class="a">An end-to-end DNN accelerator scheduling framework that jointly searches layer-fusion choices and DRAM load/store timing, expressed through a six-attribute Tensor-centric Notation, to minimize an Energy×Delay cost. It has been built into a production compiler for a commercial accelerator and is open-sourced.</div></details>
+      <details><summary><span class="q">Q2</span>How is SoMa different from Cocco?<span class="chev">▾</span></summary><div class="a">Mapped into SoMa's own notation, Cocco only varies Computing Order and DRAM Cut (with FLC Set forced equal to the DRAM Cut Set); Tiling Number, fine-grained fusion cuts, DRAM tensor order, and living duration are all fixed by heuristics or a classic double buffer. SoMa searches all six jointly.</div></details>
+      <details><summary><span class="q">Q3</span>What's the actual difference between an FLC and a DRAM Cut?<span class="chev">▾</span></summary><div class="a">Every FLC splits the layer sequence into Fine-grained Layer-fusion Groups (FLGs) — but data can still be reused on-chip across an ordinary FLC boundary, just with weights released and Tiling Number possibly changed. A DRAM Cut is specifically an FLC that <i>also</i> forces a real DRAM round trip; the DRAM Cut Set is always a subset of the FLC Set.</div></details>
+      <details><summary><span class="q">Q4</span>Why split the search into an LFA stage and a DLSA stage instead of one big search?<span class="chev">▾</span></summary><div class="a">An LFA change (say, adding a DRAM Cut) changes which tensors exist and their dependencies, invalidating whatever DLSA timing was previously tuned — a joint search would keep discarding good DLSA solutions. Splitting also produces a synergy: minimizing DRAM access first (Stage 1) leaves more scheduling freedom for Stage 2.</div></details>
+      <details><summary><span class="q">Q5</span>Why does GPT-2's decode stage see almost no benefit from SoMa?<span class="chev">▾</span></summary><div class="a">Decode has extremely low compute density — its latency is dominated by loading weights and the KV cache, imposing a nearly pure bandwidth demand with little compute to overlap that loading behind. There's very little stall to eliminate, so even a perfect scheduler barely moves the needle (1.14× vs. 2.55× for prefill).</div></details>
+      <details><summary><span class="q">Q6</span>Why doesn't increasing LLM batch size keep improving utilization?<span class="chev">▾</span></summary><div class="a">As batch size grows, the KV cache — which scales with batch size — grows to become comparable to or larger than the (fixed-size) weights. Since loading the KV cache doesn't add proportionally more useful compute per byte the way batching normally does, the compute-density benefit of larger batches shrinks with each doubling.</div></details>
+      <details><summary><span class="q">Q7</span>What does the Energy×Delay cost function actually optimize for?<span class="chev">▾</span></summary><div class="a">Energy<sup>n</sup> × Delay<sup>m</sup> for one full batch, where n and m let you bias the search toward energy efficiency or raw speed. The paper's headline experiments use n = m = 1 (equal weight), since both matter for inference accelerators.</div></details>
+      <details><summary><span class="q">Q8</span>Is SoMa specific to one accelerator?<span class="chev">▾</span></summary><div class="a">No — the underlying template (DRAM + shared GBUF + cores with a PE array and Vector Unit) covers many industry and academic accelerator designs, and SoMa's modular structure lets the Core Array Scheduler/Evaluator and Instruction Generator be swapped per target. The paper's own production deployment is one concrete instance of this portability.</div></details>
+      <details><summary><span class="q">Q9</span>What do "Ours_1" and "Ours_2" mean in the results figures?<span class="chev">▾</span></summary><div class="a">They're SoMa's Stage 1 (LFA-only, still using a classic double buffer) and Stage 2 (LFA + DLSA, fully re-timed) results, shown side by side with Cocco so you can see how much each stage contributes independently.</div></details>
+      <details><summary><span class="q">Q10</span>What did the authors leave for future work or acknowledge as limitations?<span class="chev">▾</span></summary><div class="a">The DSE and case studies are the paper's own exploration of SoMa's implications for architecture design (buffer vs. bandwidth trade-offs across batch sizes); the SA-based search's runtime (up to ~2 days for the largest batch-size experiments on a 192-core server) is an explicitly reported cost. The paper positions SoMa as a first comprehensive definition of the DRAM Communication Scheduling Space, implying finer per-layer or hardware-specific extensions remain open.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, results at a glance, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>SoMa</b><span>The paper's end-to-end DRAM communication scheduling framework: Buffer Allocator + two-stage SA + Evaluator.</span></div>
+      <div class="term-def"><b>Tensor-centric Notation</b><span>The six-attribute encoding (LFA + DLSA) that represents any point in the DRAM Communication Scheduling Space.</span></div>
+      <div class="term-def"><b>LFA</b><span>Layer-Fusion-related Attributes: Computing Order, FLC, Tiling Number, DRAM Cut.</span></div>
+      <div class="term-def"><b>DLSA</b><span>DRAM-Load-and-Store-related Attributes: DRAM Tensor Order, Living Duration.</span></div>
+      <div class="term-def"><b>FLG / LG</b><span>Fine-grained Layer-fusion Group (from an FLC) / Layer-fusion Group (from a DRAM Cut, a subset of FLCs).</span></div>
+      <div class="term-def"><b>Living Duration</b><span>A (Start, End) tile-ID pair per DRAM tensor fixing its buffer occupancy window and legal transfer timing.</span></div>
+      <div class="term-def"><b>Buffer Allocator</b><span>SoMa's outer loop, trading buffer budget between the LFA and DLSA search stages in 10% steps.</span></div>
+      <div class="term-def"><b>DRAM Communication Scheduling Space</b><span>The full space defined by all six Tensor-centric Notation attributes jointly.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Cocco</b><span>Prior SOTA layer-fusion framework, explores only Computing Order + DRAM Cut with heuristic tiling and double buffering.</span></div>
+      <div class="term-def"><b>GBUF</b><span>Global Buffer — the shared on-chip SRAM between DRAM and the cores.</span></div>
+      <div class="term-def"><b>Tiling Number</b><span>How many tiles an FLG's layers are split into for pipelined, fine-grained computation.</span></div>
+      <div class="term-def"><b>Halo overlap</b><span>Extra border data conv/pooling tiles need from neighboring tiles; grows with more, smaller tiles.</span></div>
+      <div class="term-def"><b>Double buffering</b><span>Baseline strategy: prefetch during the previous tile, store during the next tile — one tile of lookahead.</span></div>
+      <div class="term-def"><b>Simulated Annealing (SA)</b><span>Local search accepting worse moves with cooling probability; used separately for LFA and DLSA search.</span></div>
+      <div class="term-def"><b>Computing Resources Utilization</b><span>Actual throughput ÷ peak theoretical throughput — the paper's performance metric.</span></div>
+      <div class="term-def"><b>DSE</b><span>Design Space Exploration — sweeping buffer size and DRAM bandwidth to study their effect on latency.</span></div>
+      <div class="term-def"><b>KV cache</b><span>Per-token key/value tensors an LLM keeps during decode; grows with batch size, competes with weights for buffer.</span></div>
+      <div class="term-def"><b>IR / Instruction Generator</b><span>SoMa's intermediate output and the module that turns it into hardware instructions.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What SoMa buys (vs. Cocco, average over 20 workloads)</div>
+      <div class="viz-kicker">higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Overall performance<small>avg gain</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="211"><span>2.11× (Stage1 1.82× × Stage2 1.16×)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Best workload<small>RandWire</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="261"><span>2.61×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Energy reduction<small>avg</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="80"><span>−37.3%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Distance to theoretical max<small>Stage 2</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="97"><span>within 3.1%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">GPT2-Decode<small>weakest case</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="35"><span>1.14× only, −3.1% energy</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">bars scaled independently per row's own metric</p>
+      <figcaption>Speedups and energy reductions are all vs. the SOTA Cocco baseline, averaged across ResNet-50, ResNet-101, Inception-ResNet-v1, RandWire, and GPT-2 (prefill+decode), batch sizes 1–64, on both edge (16 TOPS) and cloud (128 TOPS) configurations. (Paper §VI-B)</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes</div>
+    <div class="card">
+      <p style="margin-bottom:.6em"><b>From the paper:</b> all numbers in this guide (2.11× / 37.3%, per-network breakdowns, 1.82×/1.16×, 1.57×/1.25×, tile/LG counts, GPT-2 decode utilization series, hardware configs, SA hyperparameters, Buffer Allocator's 10% step rule, artifact runtimes) are quoted or directly recomputed from the paper's text, Sections III–VII, and the Appendix.</p>
+      <p style="margin:0"><b>Our framing (not the paper's claim):</b> the "optimization headroom" curve in the Big Idea figure is an illustrative visualization of the paper's stated diminishing-returns claim, not a plotted result from the paper. All analogies, the mixing-board/pantry/relay/dinner-party/blacksmith/guest-list framings, and the memory-tiering/CXL connection are this guide's own explanatory devices layered on top of the paper's findings.</p>
+    </div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Cocco: Hardware-Mapping Co-Exploration towards Memory Capacity-Communication Optimization <span class="diff med">medium</span></h4><div class="meta">Tan, Zhu, Ma · ASPLOS 2024</div><p>The SOTA baseline this paper compares against throughout; explores which layers to fuse, with heuristic tiling and double buffering.</p></div>
+    <div class="read-item reveal"><h4>DeFiNES: Enabling Fast Exploration of the Depth-First Scheduling Space <span class="diff med">medium</span></h4><div class="meta">Mei, Goetschalckx, Symons, Verhelst · HPCA 2023</div><p>Analyzes layer-fusion group choice and Tiling Number individually, but not jointly, and not alongside DRAM timing.</p></div>
+    <div class="read-item reveal"><h4>Fused-Layer CNN Accelerators <span class="diff easy">easy</span></h4><div class="meta">Alwani, Chen, Ferdman, Milder · MICRO 2016</div><p>An early layer-fusion paper — good background for why buffering feature maps on-chip saves DRAM traffic.</p></div>
+    <div class="read-item reveal"><h4>Timeloop: A Systematic Approach to DNN Accelerator Evaluation <span class="diff hard">hard</span></h4><div class="meta">Parashar et al. · ISPASS 2019</div><p>The kind of tile-level dataflow evaluator SoMa's Core Array Scheduler builds on for per-tile energy/time scoring.</p></div>
+    <div class="read-item reveal"><h4>Splitwise: Efficient Generative LLM Inference Using Phase Splitting <span class="diff med">medium</span></h4><div class="meta">Patel et al. · ISCA 2024</div><p>Cited by the paper for the low compute density of the LLM decode phase — the source of Insight 1 in Sec. VI-B.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Cai, Wang, Gao, Peng, Zhu, Wei, Wu &amp; Ma, "SoMa: Identifying, Exploring, and Understanding the DRAM Communication Scheduling Space for DNN Accelerators" (HPCA 2025)</span>
+    <span><b>Code:</b> github.com/SET-Scheduling-Project/SoMa-HPCA2025</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 250;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PARTITION EXPLORER (kept for structural parity; no-ops without matching DOM) ---- */
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(!verd) return;
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Not optimal — adjust.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
