@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<!-- MDPeek field guide — Memory Disambiguation Unit side channels break balanced SGX branches (Liu et al., ASPLOS'25).
+     Semantic colors: teal = victim/SGX execution · burnt-orange = leaked signal/attacker readout · indigo = MDU hardware machinery · plum = untrusted OS / attacker control. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Peeking Through the Store Buffer — A Field Guide to MDPeek</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D9542D; --honey-deep:#B23D1A; --honey-soft:#FBE2D2;
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;      /* teal  = victim / legitimate SGX execution   */
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;    /* indigo = MDU hardware machinery              */
+  --optane:#8B3A62; --optane-soft:#F3E1EC;  /* plum = untrusted OS / attacker control       */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,84,45,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,84,45,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#7a2b12}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#6d2c4c}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #F0C7AC;color:#7a2b12}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #d9b7cc;color:#6d2c4c}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#d3a9c0;background:var(--optane-soft)}
+.node.n-rule{border-color:#eeb79a;background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#a6547e,#8B3A62)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#7a2b12}
+.ptag.hard{background:var(--optane-soft);color:#6d2c4c}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#D9542D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#7a2b12}
+.diff.hard{background:var(--optane-soft);color:#6d2c4c}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>ASPLOS 2025 · A Field Guide</span>
+    <h1>Balanced branches, <span class="swash">unbalanced hardware</span></h1>
+    <p class="lede">Two SGX branch paths can look byte-for-byte identical — same pages, same instruction types, same counts, aligned stores. There's still one thing you forgot to balance: a tiny 4-bit counter deep in the out-of-order engine that remembers which store just aliased which load.</p>
+    <div class="hero-meta">
+      <span>📄 "MDPeek" · Liu, Feng, Li, Wang, He, Lyu, Carlson</span>
+      <span>🎓 SGX + out-of-order execution basics assumed — primers cover them</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🕵️</div>
+      <p>A store whose address isn't ready yet, followed by a load — and the <span class="ro">Memory Disambiguation Unit</span> silently remembers whether they aliased, in a counter keyed only by 8 bits of the load's PC. <span class="wo">Branch balancing never touched that counter.</span></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Acronyms and ideas the paper assumes you know</h2>
+      <p class="sub">A quick glossary first, then nine primers on the mechanisms MDPeek builds on. Collapsed by default — open what's unfamiliar.</p>
+    </div>
+
+    <div class="subhead">Quick glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>SGX</b><span>Intel Software Guard Extensions — hardware "enclaves" that isolate a process's code/data even from a malicious OS or hypervisor.</span></div>
+      <div class="term-def"><b>MDU</b><span>Memory Disambiguation Unit — predicts whether a load can skip ahead of an earlier store with an unknown address.</span></div>
+      <div class="term-def"><b>ROB</b><span>Reorder Buffer — holds in-flight instructions so the CPU can execute out of order yet retire in program order. 224 entries on Skylake.</span></div>
+      <div class="term-def"><b>MOB</b><span>Memory Order Buffer — tracks in-flight loads/stores and checks for address aliasing.</span></div>
+      <div class="term-def"><b>TLB</b><span>Translation Lookaside Buffer — caches virtual→physical address translations; a miss delays address resolution.</span></div>
+      <div class="term-def"><b>PMC</b><span>Performance Monitor Counter — CPU hardware counters (e.g. MACHINE_CLEARS.COUNT) used here to detect mispredictions.</span></div>
+      <div class="term-def"><b>BEEA</b><span>Binary Extended Euclidean Algorithm — computes modular inverses via secret-dependent subtract/shift branches; used in RSA key generation.</span></div>
+      <div class="term-def"><b>RSA-CRT</b><span>RSA using the Chinese Remainder Theorem for faster private-key operations; its key generation runs BEEA on the secret primes.</span></div>
+      <div class="term-def"><b>IDCT</b><span>Inverse Discrete Cosine Transform — converts JPEG frequency data back to pixels; Libjpeg's implementation branches on pixel patterns.</span></div>
+      <div class="term-def"><b>LLVM</b><span>The compiler framework MDPeek extends with a static-analysis pass to find exploitable loads.</span></div>
+      <div class="term-def"><b>SGX-Step</b><span>An open-source framework that lets an attacker-controlled OS single-step or interrupt an enclave at page granularity via page faults.</span></div>
+      <div class="term-def"><b>SSBD</b><span>Speculative Store Bypass Disable — an Intel control bit that can turn the MDU off; ineffective here since a root attacker can just disable it.</span></div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> victim / SGX execution</span>
+      <span><i style="background:var(--honey-deep)"></i> leaked signal / attacker readout</span>
+      <span><i style="background:var(--ltram)"></i> MDU machinery</span>
+      <span><i style="background:var(--optane)"></i> untrusted OS / attacker control</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What an SGX enclave protects — and what it can't hide<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>SGX carves out an <b>enclave</b>: memory the OS can't read or write, even though the OS still schedules it, handles its page faults, and manages its page tables. That's the catch — SGX's threat model has always assumed a malicious OS, so anything the OS can <i>observe</i> (page access patterns, interrupt timing, shared hardware state) is fair game unless software explicitly defends against it.</p>
+          <p>The victims in this paper — Libjpeg, MbedTLS, WolfSSL — run inside such an enclave, but their code still contains branches whose direction depends on secret data (an RSA key, an image's pixel values).</p>
+          <div class="ready"><b>Now you're ready:</b> MDPeek's attacker is exactly this "malicious OS" — full page-table control, but no ability to read enclave memory directly.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Out-of-order execution and the ROB<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Modern CPUs don't execute instructions strictly in program order — they dispatch into a <b>Reorder Buffer (ROB)</b> and execute whichever instructions have their inputs ready, retiring results in order only at the end. This is how a slow instruction (say, waiting on a cache miss) doesn't stall everything behind it.</p>
+          <p>The ROB has a fixed size (224 entries on the Skylake CPU used in this paper) — only so many in-flight instructions can be "in the air" before older ones must retire.</p>
+          <div class="ready"><b>Now you're ready:</b> the MDU only updates when a store and a load are <i>both</i> sitting in the ROB at once — which is why ROB size caps how far apart exploitable instructions can be.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Why a load might need to guess about a store<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>If a store writes to address X and a later load reads address Y, and the CPU already knows X ≠ Y, it's safe to execute the load early (out of order) — it can't see stale data. But if the store's address isn't computed yet, the CPU doesn't know whether X = Y. Waiting is always safe but slow; guessing "not aliased" and running the load early is faster but risky.</p>
+          <p><b>Memory disambiguation</b> is the name for this guess. Get it wrong, and the CPU must roll back and re-execute the load with correct data — a "machine clear."</p>
+          <div class="ready"><b>Now you're ready:</b> the MDU is the predictor that makes this specific guess, and its 4-bit counters are exactly a record of how often a given load has aliased in the past.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Secret-dependent branches, and "balancing" them<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>secret-dependent branch</b> takes different paths depending on private data — an RSA prime being odd or even, whether an image block is all one color. If the two paths differ in any observable way (which pages they touch, how many instructions they run, which addresses they store to), an attacker watching the CPU can infer the secret one branch at a time.</p>
+          <p><b>Branch balancing</b> tries to erase those differences: same instruction types on both paths, same instruction counts between pages, store program-counters aligned to the same 16-byte boundary.</p>
+          <div class="ready"><b>Now you're ready:</b> this paper's entire premise is that balancing done against <i>known</i> channels (pages, instruction counts, store PC) still leaves an <i>unknown</i> one — the MDU — completely open.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Flushing microarchitectural state<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The other standard SGX defense: when a context switch happens (the OS interrupts the enclave), the enclave's exit code deliberately clears out structures known to leak — cache lines via eviction sets, branch predictor history, prefetcher state — so the next process can't read anything left behind.</p>
+          <p>This only works for structures researchers have already found and characterized. Anything undocumented survives untouched.</p>
+          <div class="ready"><b>Now you're ready:</b> the MDU was exactly this kind of blind spot — known to exist since 2021, but never flushed, because nobody had shown it leaked anything.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Page faults as an attacker's clock (SGX-Step)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An OS with page-table control can mark a page "not present," forcing a page fault the instant the enclave touches it — even mid-instruction. <b>SGX-Step</b> uses this to single-step or coarsely interrupt an enclave at chosen points, without needing SGX to trust the interrupt source.</p>
+          <p>Between two page faults, the attacker fully controls the CPU and can run its own code — including code that reads or resets hardware predictor state.</p>
+          <div class="ready"><b>Now you're ready:</b> MDPeek's whole workflow is "fault before the branch → let it run → fault after → probe" — the same primitive earlier SGX attacks used, aimed at a new target.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Timing side channels and PMC-based detection<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Many microarchitectural attacks don't read secret bits directly — they read <i>time</i>. If two internal CPU states cause a measurably different number of cycles for the same instruction sequence, an attacker who can measure cycles precisely can distinguish the states, and from that infer which one occurred.</p>
+          <p>Performance Monitor Counters (PMCs) — like <code>MACHINE_CLEARS.COUNT</code> — give an even more direct read on internal events (here, misprediction rollbacks), which is invaluable for reverse engineering, though the end-to-end attacks rely on plain timing.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's probing code measures a ~150-cycle gap between two MDU states (Fig. 11) — small, but stable enough to read out reliably.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>The BEEA modular-inverse algorithm<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>RSA key generation needs a modular inverse (e.g. 𝑒⁻¹ mod λ). The Binary Extended Euclidean Algorithm computes it with a loop of subtract-and-shift steps, where each "sub-step" branches on which of two values is larger — and that comparison depends on the secret primes.</p>
+          <p>Both MbedTLS and WolfSSL use variants of BEEA, and both have already source-balanced this branch (dummy operations on the untaken path) — exactly the kind of "balanced" code MDPeek targets.</p>
+          <div class="ready"><b>Now you're ready:</b> recovering the branch direction at every BEEA sub-step, iteration by iteration, is literally how MDPeek reconstructs the RSA primes 𝑝 and 𝑞.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>Compiler optimization levels and inlining<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Compilers (here, LLVM/Clang) offer optimization levels -O0 through -O3. Higher levels remove redundant memory traffic, allocate more values to registers, and — importantly — <b>inline</b> small functions directly into their callers, eliminating the call but exposing the callee's local variables as new stack stores/loads at the call site.</p>
+          <p>This matters because "the code looks balanced at the source level" doesn't mean the <i>compiled</i> code is: a function call that -O3 decides to inline can inject brand-new, unbalanced store/load pairs.</p>
+          <div class="ready"><b>Now you're ready:</b> this is exactly why MbedTLS and WolfSSL — both written with side-channel resistance in mind — only become exploitable under -O3.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>MDPeek in a nutshell</h2>
+      <p class="sub">A new leakage source, a reverse-engineering effort to characterize it, and three real attacks that survive existing defenses.</p>
+    </div>
+    <div class="prose">
+      <p>SGX developers have two solid, general-purpose defenses against control-flow leaks: <span class="mem-chip chip-hi">flush</span> known leaky hardware state at context switches, and <span class="mem-chip chip-lru">balance</span> both branch paths so they look identical to any known channel (pages, instruction counts, store PC alignment). Both work — against <i>known</i> channels.</p>
+      <p>MDPeek targets a channel nobody had characterized well enough to defend against: the <strong>Memory Disambiguation Unit (MDU)</strong>, 256 4-bit counters (one per value of a load's low 8 PC bits) that predict whether a load can race ahead of an earlier, address-pending store. The counter resets to 15 whenever the store and load truly alias, and otherwise decrements by one each time they don't — a saturating history of "did this load ever collide with a store here." Reading that counter's state via timing tells an attacker exactly what a balanced, flushed branch was hiding: which path executed.</p>
+      <p>To build the attack, the authors first reverse-engineer <i>when</i> the MDU turns on and updates (Section 4) — conditions no prior work had nailed down — then build a static-analysis pass over compiler output that flags loads capable of triggering an update (Section 5), and finally chain page-fault-driven interrupts (SGX-Step) with a calibrated timing probe into full attacks on <b>Libjpeg</b>, <b>MbedTLS</b>, and <b>WolfSSL</b> (Section 6).</p>
+      <p><strong>The payoff:</strong> 98.76% pixel accuracy recovering a JPEG image, near-100% accuracy recovering 2048-bit RSA/RSA-CRT primes from a <i>single trace</i> — and a proposed fix, <b>store-to-load coupling</b>, that cuts mitigation overhead from ~140% (naive fencing) to ~20%.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#F0C7AC">
+      <h3 style="color:#7a2b12">🔥 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#7a2b12">
+        <li>The MDU is 256 4-bit counters, selected purely by the <b>lowest 8 bits of a load's PC</b> — a granularity no existing defense targets.</li>
+        <li>Enabling the MDU needs a store whose <b>address generation is delayed past its load's</b>, with the dependence still unresolved.</li>
+        <li>Updating it further needs the store and load <b>co-resident in the ROB</b> and the load's address <b>TLB-hit</b>.</li>
+        <li>A <b>delay-capacity model</b> (how long can op@rd stall a store's address?) lets LLVM statically flag exploitable loads in real binaries.</li>
+        <li>Because the leak is a hardware counter, not a cache line, it survives <b>both</b> flushing and branch balancing.</li>
+        <li>Attacks succeed from a <b>single trace</b> — critical for one-shot secrets like freshly generated RSA keys.</li>
+        <li><b>Store-to-load coupling</b> (a cheap artificial dependency) blocks the leak for ~7× less overhead than fencing.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">a balanced branch, two identical-looking paths, one counter that isn't</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> path actually taken</span>
+        <span><i style="background:var(--honey-deep)"></i> path not taken</span>
+        <span><i style="background:var(--ltram)"></i> MDU counter bank (256 × 4-bit)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 380" role="img" aria-label="Balanced branch updating an MDU counter on the taken path only">
+        <polygon points="330,20 430,20 460,55 400,90 300,90 270,55" fill="#F3E1EC" stroke="#8B3A62" stroke-width="2"/>
+        <text x="365" y="50" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6d2c4c">secret</text>
+        <text x="365" y="65" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6d2c4c">branch</text>
+        <line x1="330" y1="70" x2="180" y2="130" stroke="#9A8E7C" stroke-width="1.6"/>
+        <line x1="400" y1="70" x2="560" y2="130" stroke="#9A8E7C" stroke-width="1.6"/>
+        <rect x="70" y="130" width="220" height="80" rx="10" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+        <text x="180" y="152" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#1f5b51">Path A — taken</text>
+        <text x="180" y="172" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">store [rd]  (addr delayed)</text>
+        <text x="180" y="190" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">load  [rs]  ← updates MDU</text>
+        <rect x="450" y="130" width="220" height="80" rx="10" fill="#FBE2D2" stroke="#B23D1A" stroke-width="2" stroke-dasharray="5 3"/>
+        <text x="560" y="152" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#7a2b12">Path B — not taken</text>
+        <text x="560" y="172" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#7a2b12">store [rd']  (never runs)</text>
+        <text x="560" y="190" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#7a2b12">load  [rs']  (never runs)</text>
+        <line x1="180" y1="210" x2="180" y2="250" stroke="#2C8C7C" stroke-width="2"/>
+        <line x1="560" y1="210" x2="560" y2="250" stroke="#B23D1A" stroke-width="2" stroke-dasharray="5 3"/>
+        <text x="365" y="245" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">both paths pre-initialized to counter = 15</text>
+        <rect x="80" y="258" width="600" height="60" rx="10" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+        <text x="120" y="280" font-family="Fraunces" font-size="12" font-weight="600" fill="#3a409a">MDU: 256 counters, indexed by load PC[7:0]</text>
+        <rect x="150" y="290" width="46" height="22" rx="4" fill="#2C8C7C"/><text x="173" y="305" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">14</text>
+        <text x="173" y="330" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">counter A ↓</text>
+        <rect x="560" y="290" width="46" height="22" rx="4" fill="#B23D1A"/><text x="583" y="305" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">15</text>
+        <text x="583" y="330" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#7a2b12">counter B unchanged</text>
+        <line x1="180" y1="318" x2="180" y2="352" stroke="#5A61B4" stroke-width="2"/>
+        <line x1="560" y1="318" x2="560" y2="352" stroke="#5A61B4" stroke-width="2"/>
+        <text x="365" y="366" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">attacker probes both → ~150-cycle timing gap reveals which path ran</text>
+      </svg>
+      <figcaption><b>Both branch paths can be truly identical</b> in instruction type, count, and store-PC alignment — everything existing defenses check. But only the taken path's load actually executes, decrementing its MDU counter from 15 to 14 while the other counter sits untouched at 15. A timing probe (Fig. 11) tells them apart. (Recreated from the paper's Fig. 2 &amp; Fig. 3 workflow.)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">assumed-safe defenses → reverse engineering → static analysis → attack → fix</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Assumed safe</div><div class="nd">Flushing + branch balancing (Table 1) were believed to close all known SGX control-flow channels</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Reverse-engineer</div><div class="nd">Enable &amp; update logic of the MDU, at the microarchitecture level (Section 4, Fig. 8)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Model &amp; scan</div><div class="nd">Delay-capacity model + LLVM pass finds exploitable loads in real binaries (Section 5)</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Probe &amp; attack</div><div class="nd">Timing primitive reads the counter; end-to-end attacks on 3 apps (Section 6)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Defend</div><div class="nd">Store-to-load coupling removes the ambiguity itself, cheaply (Section 8)</div></div>
+      </div>
+    </figure>
+
+    <div class="callout why"><span class="ic">💡</span><div><b>If you work on OS-managed tiering:</b> the closest architectural cousin here is page-fault-based hotness tracking (the same mechanism TPP/HeMem-style systems use for access sampling). SGX-Step repurposes that exact primitive — deliberately faulting pages to regain control at precise instants — for microarchitectural forensics instead of counting accesses. Same lever, opposite intent.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Seven everyday pictures</div>
+      <h2>How to think about MDPeek</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with an honest note about where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="42" r="24" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2.5"/>
+          <text x="70" y="48" text-anchor="middle" font-family="monospace" font-size="16" font-weight="700" fill="#3a409a">14</text>
+          <path d="M50 70 q20 14 40 0" stroke="#332C24" stroke-width="2" fill="none" stroke-linecap="round"/>
+          <circle cx="50" cy="70" r="3" fill="#2C8C7C"/><circle cx="90" cy="70" r="3" fill="#2C8C7C"/>
+        </svg></div>
+        <span class="term">The core idea · MDU counters</span>
+        <h3>A doorman with a good memory</h3>
+        <p>A doorman who's watched the same doorway for years learns which regulars always show ID and which never need to — he waves the "never-aliases" crowd straight through. The MDU counter is that doorman's memory for one specific load: each time the preceding store turns out unrelated, his confidence (the counter) ticks down; the moment they truly collide, he resets to full suspicion (15).</p>
+        <div class="breaks"><b>Where it breaks:</b> a real doorman remembers a person; the MDU only remembers a <i>PC address's low byte</i> — it can't tell two unrelated loads apart if they happen to share that byte, and it forgets nothing about <i>which</i> store aliased, only that one did.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="44" height="44" rx="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2.5"/>
+          <rect x="76" y="30" width="44" height="44" rx="6" fill="#FBE2D2" stroke="#B23D1A" stroke-width="2.5" stroke-dasharray="4 3"/>
+          <text x="42" y="56" text-anchor="middle" font-family="monospace" font-size="10" fill="#1f5b51">16B✓</text>
+          <text x="98" y="56" text-anchor="middle" font-family="monospace" font-size="10" fill="#7a2b12">16B✓</text>
+          <path d="M42 20 v-8 M98 20 v-8" stroke="#332C24" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Why balancing fails · Alignment mismatch</span>
+        <h3>Twins in matching uniforms</h3>
+        <p>Balance both branch paths perfectly — same clothes, same posture, standing 16 inches apart on marked tiles (the Frontal Attack's 16-byte store alignment). A guard checking uniforms sees identical twins. But the MDU isn't checking uniforms; it's checking a different, coarser identifier entirely — the load's low 8 PC bits, a 256-byte granularity nobody aligned for.</p>
+        <div class="breaks"><b>Where it breaks:</b> real twins share every visible trait by construction; here the two "identical" branch paths were never actually made identical <i>at the MDU's chosen granularity</i> — balancing solved the wrong dimension.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="10" y="42" width="120" height="14" rx="4" fill="#F3EADA" stroke="#D8C8AC" stroke-width="1.5"/>
+          <rect x="16" y="44" width="18" height="10" rx="2" fill="#8B3A62"/>
+          <rect x="60" y="44" width="18" height="10" rx="2" fill="#2C8C7C"/>
+          <path d="M78 49 h30" stroke="#332C24" stroke-width="2" stroke-dasharray="2 3"/>
+          <text x="105" y="34" font-family="monospace" font-size="9" fill="#6E6456">address?</text>
+        </svg></div>
+        <span class="term">Store-load races · Memory disambiguation</span>
+        <h3>Crossing a one-lane bridge blind</h3>
+        <p>A car (the load) approaches a narrow bridge and can't yet see if another car (the store) is already crossing from the other side because fog (delayed address generation) hides it. Cross now and save time, or wait and be safe? The MDU is the driver's learned instinct, built from every past crossing at this exact bridge — go if it's rarely collided before, wait if it often has.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real driver's instinct is about <i>this</i> bridge; the MDU's instinct is shared by every load whose PC happens to share the same low byte — different bridges, same gut feeling.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="16" rx="3" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <text x="70" y="32" text-anchor="middle" font-family="monospace" font-size="9" fill="#332C24">mul → mul → mul</text>
+          <path d="M70 40 v14" stroke="#5A61B4" stroke-width="2"/>
+          <rect x="30" y="58" width="80" height="16" rx="3" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <text x="70" y="70" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">delay: 20, not 12</text>
+        </svg></div>
+        <span class="term">Delay capacity · Instruction chains</span>
+        <h3>A relay race, not a straight sprint</h3>
+        <p>If one runner (one <code>imul</code>) covers 6 meters of "stall time," you might expect two runners in sequence to cover 12. But a relay has handoffs — each runner must wait for the baton (the register result) before starting, so the whole chain's effective delay compounds past simple addition: two chained <code>imul</code>s reach 20, not 12.</p>
+        <div class="breaks"><b>Where it breaks:</b> real relay handoffs lose time; this chain <i>gains</i> disproportionate delay-capacity as instructions stack, because each extra multiply both adds its own latency and pushes the whole dependent chain further from being ready — the opposite intuition from lost momentum.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="10" y="30" width="50" height="50" rx="6" fill="#F3E1EC" stroke="#8B3A62" stroke-width="2"/>
+          <text x="35" y="60" text-anchor="middle" font-family="monospace" font-size="11" fill="#6d2c4c">film</text>
+          <path d="M64 55 h20" stroke="#332C24" stroke-width="2" stroke-dasharray="3 3"/>
+          <rect x="88" y="30" width="42" height="50" rx="4" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <line x1="88" y1="45" x2="130" y2="45" stroke="#D8C8AC"/>
+          <line x1="88" y1="60" x2="130" y2="60" stroke="#D8C8AC"/>
+        </svg></div>
+        <span class="term">SGX-Step · Page-fault interrupts</span>
+        <h3>Freezing a film, frame by frame</h3>
+        <p>Jam the projector deliberately (a page fault) and you can pause the film wherever you like, peek at the frame, then let it resume. Do this at exactly the two moments that bracket a secret branch, and you've isolated one instruction's worth of execution for inspection — without ever asking the projectionist's permission.</p>
+        <div class="breaks"><b>Where it breaks:</b> pausing a real film erases nothing; halting a CPU still leaves microarchitectural residue (the MDU counter update already happened) behind in hardware that a re-run of the frame won't undo — that residue is exactly what gets read.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="46" cy="48" r="22" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2.5"/>
+          <circle cx="94" cy="48" r="22" fill="#F3E1EC" stroke="#8B3A62" stroke-width="2.5"/>
+          <path d="M60 48 h20" stroke="#332C24" stroke-width="3" stroke-linecap="round"/>
+          <text x="46" y="53" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">store</text>
+          <text x="94" y="53" text-anchor="middle" font-family="monospace" font-size="9" fill="#6d2c4c">load</text>
+        </svg></div>
+        <span class="term">The defense · Store-to-load coupling</span>
+        <h3>Tying a short leash between them</h3>
+        <p>Instead of forbidding the dog (the load) from moving until the owner (the store) is fully settled — which is what a fence instruction does, freezing everything — clip a short leash between them: an explicit, cheap arithmetic dependency that makes the load's address provably derived from the store's. Now the CPU never has to guess; there's nothing left to predict.</p>
+        <div class="breaks"><b>Where it breaks:</b> a leash constrains motion continuously; the coupling instruction only has to delay the store's address by a few cycles, not restrain the whole pipeline — which is exactly why it's ~7× cheaper than a full fence.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="20" width="30" height="56" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="55" y="20" width="30" height="56" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="94" y="20" width="30" height="56" rx="4" fill="#F3E1EC" stroke="#8B3A62" stroke-width="2.5"/>
+          <text x="109" y="52" text-anchor="middle" font-family="monospace" font-size="16" fill="#6d2c4c">✓</text>
+        </svg></div>
+        <span class="term">Coverage · Cache/BPU/prefetcher flushing</span>
+        <h3>Sweeping a room you know has dust</h3>
+        <p>You clean the shelves, the floor, and behind the couch — everywhere you already know dust collects. A room you've never inspected stays untouched, not because it's clean, but because nobody thought to check it. SGX's flushing defenses sweep the cache, branch predictor, and prefetcher — every place prior research had already proven leaks.</p>
+        <div class="breaks"><b>Where it breaks:</b> a room's hiding spots are finite and eventually all get found; a modern CPU has dozens of undocumented predictors, so "we flush everything known" is a moving, never-complete target — MDPeek is simply the next spot found.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How MDPeek actually works</h2>
+      <p class="sub">From reverse-engineered hardware logic to a working, single-trace attack.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · What makes the MDU turn on and update</h3>
+      <p>Reverse engineering (Section 4) pinned down two separate logic blocks. <b>Enable logic</b> fires when: the store and load are both in the ROB, the store's virtual address isn't generated yet, the load's address is valid and translated, and the CPU genuinely can't resolve their dependence. Delays anywhere <i>except</i> store-address generation (execution, retirement, even TLB misses on the store) don't matter — only an address-generation delay that <i>exceeds the load's</i> triggers it.</p>
+      <p><b>Update logic</b> then fires only if the store's address is valid, or — surprisingly — even if it's invalid, as long as its page offset differs from the load's by at least 4 bytes. If they're the same physical address, the counter resets to 15 (alias); otherwise it decrements by one (no alias).</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Enable and update logic, reconstructed</div>
+      <div class="viz-kicker">every gate the paper had to reverse-engineer to make this attack possible</div>
+      <svg class="full" viewBox="0 0 720 260" role="img" aria-label="MDU enable and update logic pipeline">
+        <rect x="20" y="20" width="150" height="60" rx="8" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+        <text x="95" y="44" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#1f5b51">Store addr</text>
+        <text x="95" y="62" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">not yet ready</text>
+        <rect x="20" y="100" width="150" height="60" rx="8" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+        <text x="95" y="124" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#1f5b51">Load addr</text>
+        <text x="95" y="142" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">valid + TLB hit</text>
+        <line x1="170" y1="50" x2="260" y2="90" stroke="#5A61B4" stroke-width="2"/>
+        <line x1="170" y1="130" x2="260" y2="95" stroke="#5A61B4" stroke-width="2"/>
+        <rect x="260" y="65" width="150" height="60" rx="8" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2.5"/>
+        <text x="335" y="90" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#3a409a">MDU enabled</text>
+        <text x="335" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">dependence unresolved</text>
+        <line x1="410" y1="95" x2="490" y2="95" stroke="#5A61B4" stroke-width="2"/>
+        <rect x="490" y="65" width="200" height="60" rx="8" fill="#F3E1EC" stroke="#8B3A62" stroke-width="2.5"/>
+        <text x="590" y="88" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#6d2c4c">Update: alias?</text>
+        <text x="590" y="106" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6d2c4c">yes → 15  ·  no → −1</text>
+        <rect x="20" y="190" width="670" height="50" rx="8" fill="#FBE2D2" stroke="#B23D1A" stroke-width="2"/>
+        <text x="355" y="212" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#7a2b12">Guardrail: store &amp; load must co-reside in the ROB</text>
+        <text x="355" y="230" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#7a2b12">their instruction distance (μops) must stay under the ROB size — 224 on Skylake</text>
+      </svg>
+      <figcaption><b>Two gates, one guardrail.</b> Enable and update logic (recreated from Fig. 8) determine <i>whether</i> the MDU reacts at all; the ROB-size guardrail determines how far apart the exploitable store and load can be — which feeds directly into Section 5's delay-capacity model. (Paper, Fig. 6–8)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · The delay-capacity model — finding exploitable code statically</h3>
+      <p>To decide whether a given <code>store [rd]; …; load [rs]</code> sequence in compiled code can trigger an update, the paper defines two distances: the <b>LS distance</b> (store to load) and the <b>Def distance</b> (the instruction that last wrote <code>rd</code>, to the store). Each instruction type has an empirically measured <b>delay capacity</b> — the largest Def distance at which it still keeps the store's address "not yet ready" more than half the time.</p>
+      <pre class="sketch"><span class="hl">Def distance + LS distance &lt; Delay Capacity of op@rd</span>   <span class="cm"># → the load is flagged exploitable</span></pre>
+      <p>Delay capacity varies hugely by instruction — <code>div</code> exceeds <code>imul</code> by roughly 60 — and compounds non-linearly across dependent chains (a single <code>imul</code>: capacity 6; two chained: capacity 20, not 12). An LLVM backend pass computes this over every basic block (using Floyd's all-pairs shortest path, O(n³) in basic blocks) and flags loads whose measured margin exceeds the LS distance.</p>
+    </div>
+
+    <div class="prose">
+      <h3>3 · What that analysis found in real applications</h3>
+      <table class="tbl">
+        <thead><tr><th>Application / function</th><th>-O0</th><th>-O1</th><th>-O2</th><th>-O3</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">Libjpeg — jpeg_idct_islow (branch b1)</td><td>16</td><td>1</td><td>1</td><td>1</td></tr>
+          <tr><td class="mono">Libjpeg — jpeg_idct_islow (branch b2)</td><td>16</td><td>8</td><td>8</td><td>8</td></tr>
+          <tr class="best"><td class="mono">MbedTLS — mbedtls_mpi_inv_mod</td><td>0</td><td>0</td><td>0</td><td>6</td></tr>
+          <tr class="best"><td class="mono">WolfSSL — mp_invmod_slow</td><td>0</td><td>0</td><td>0</td><td>18</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Read the pattern, not just the numbers.</b> Libjpeg (never designed for side-channel resistance) starts with many exploitable loads at -O0 and mostly loses them to optimization. MbedTLS and WolfSSL (source-balanced) start at zero — until -O3's function inlining injects fresh stack-spill loads at the call sites of <code>mp_sub</code> / <code>s_mp_sub</code>. "More optimized" is not "more secure."</div></div>
+    </div>
+
+    <!-- INTERACTIVE: MDU counter simulator -->
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: watch an MDU counter decay</div>
+      <div class="viz-kicker">slide the number of non-aliased store/load pairs after a reset to 15</div>
+      <div class="part-viz">
+        <div>
+          <div class="ways-strip" id="waysStrip"></div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">non-aliased accesses since reset:</span>
+            <input type="range" min="0" max="20" value="0" id="partRange">
+            <span class="mono" id="partRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">0</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-set="0">Just reset (N=0)</button>
+            <button class="tbtn" data-set="1">Branch touched it once (N=1)</button>
+            <button class="tbtn" data-set="15">Fully decayed (N=15)</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">counter value<b id="pVpr">—</b></div>
+            <div class="pstat">MDU prediction<b id="pEq">—</b></div>
+            <div class="pstat">load timing<b id="pTot">—</b></div>
+          </div>
+          <div class="pverdict sub" id="pVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>The whole attack lives in this one gap:</b> a branch path that fires its vulnerable load even once decrements the counter — measurably, but not necessarily to zero. MDPeek's calibrated timing distributions (~150 cycles apart per Fig. 11) are tuned to catch that difference directly, not just the moment the counter finally hits zero.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · The probing primitive</h3>
+      <p>To read a counter reliably in a single trace (no averaging across repeated runs), the authors auto-search chains of data-dependent instructions placed before the store and after the load, scoring candidates with an evaluation function that rewards a large, stable gap between the two counter states:</p>
+      <pre class="sketch"><span class="hl">F(T1,T2) = W(T1,T2) − 1/5·(V(T1)+V(T2)) − 1/4·(M(T1)+M(T2))</span>
+<span class="cm"># W = Wasserstein distance between the two timing distributions
+# V = variance (want low)  ·  M = mean (want low, i.e. fast overall)</span></pre>
+      <p>The winning code repeats <code>lea</code> 50 times before the store and 50 times after the load, producing a stable ~150-cycle separation between "counter = 0" and "counter &gt; 0" — accurate enough to drive single-trace attacks on secrets that never repeat, like a fresh RSA key.</p>
+    </div>
+
+    <div class="prose">
+      <h3>5 · End-to-end: three applications, one workflow</h3>
+      <ol class="seq">
+        <li><b>Synchronize.</b> Use SGX-Step to fault the enclave right before and right after the target branch, based on a pre-known, secret-independent page-fault sequence.</li>
+        <li><b>Initialize.</b> In the attacker's own address space, run 3 aliased store-load pairs (256-byte-aligned load PC, matching the victim's vulnerable load) to force the shared counter to 15.</li>
+        <li><b>Let the victim run.</b> Resume the enclave through the branch; whichever path executes updates (or doesn't update) the shared counter.</li>
+        <li><b>Probe.</b> Regain control at the second fault, re-run the timing primitive, and classify the counter's state.</li>
+        <li><b>Reconstruct.</b> Repeat per iteration/block, then decode the recovered branch sequence into pixels (Libjpeg) or RSA primes (MbedTLS, WolfSSL).</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations, each using the paper's own reported figures.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Why MbedTLS's Table 2 entry is exactly 6</h3>
+      <p style="color:var(--ink-soft)">Table 2 reports 6 vulnerable loads in MbedTLS's <code>mbedtls_mpi_inv_mod</code> under -O3. Section 6.3 separately states: "for each sub-step, there are three exploitable loads in each branch direction." Do these agree?</p>
+      <ol class="seq">
+        <li><b>One BEEA sub-step has two branch directions</b> (the "then" and "else" paths of the comparison).</li>
+        <li><b>Each direction independently exposes 3 exploitable loads</b>, per the paper's own description of the attack (Fig. 13b).</li>
+        <li><b>Total per sub-step</b> = 3 loads × 2 directions = <b>6</b> — exactly Table 2's reported count.</li>
+        <li><b>Why it matters:</b> the attacker doesn't need all 6; any single one leaks the branch direction, and having several lets them vote to cancel noise (see example ③).</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🔥</span><div><b>Insight:</b> Table 2's static count and the dynamic attack description cross-check exactly — good evidence the LLVM analysis pass is finding the same loads the manual attack actually uses.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Timing the Libjpeg attack, block by block</h3>
+      <p style="color:var(--ink-soft)">The paper reports 7.8 minutes to leak a 640×480 image, interrupting <code>jpeg_idct_islow</code> "twice" per invocation. What does that imply about the per-probe cost?</p>
+      <ol class="seq">
+        <li><b>Blocks per image:</b> IDCT processes 8×8 pixel blocks: 640⁄8 × 480⁄8 = 80 × 60 = <b>4,800 blocks</b>.</li>
+        <li><b>Interrupts per image:</b> 2 page-fault interrupts per block (per Fig. 13a's caption) → 4,800 × 2 = <b>9,600 interrupts</b>.</li>
+        <li><b>Total attack time:</b> 7.8 min = <b>468 seconds</b>.</li>
+        <li><b>Time per interrupt cycle:</b> 468 s ÷ 9,600 ≈ <b>48.75 ms</b> — the round trip of fault, probe, resume, per branch readout.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>That ~49 ms figure is our arithmetic from the paper's stated totals, not a number the paper states directly — it's in the same ballpark as other SGX-Step page-fault attacks' per-fault overhead, which is a useful sanity check that the MDU probe itself isn't the bottleneck.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ How voting turns 97% into "nearly 100%"</h3>
+      <p style="color:var(--ink-soft)">MbedTLS: a single load reaches &gt;97% success; using two loads' votes gets "nearly 100% accuracy." WolfSSL: a single load exceeds 95%; five-plus loads "approach 100%." Where do those combined numbers come from?</p>
+      <ol class="seq">
+        <li><b>MbedTLS, single load:</b> error rate ≤ 3%.</li>
+        <li><b>Two independent loads both wrong:</b> 0.03 × 0.03 = <b>0.0009</b> → combined accuracy ≈ <b>99.91%</b>, matching "nearly 100%."</li>
+        <li><b>WolfSSL, single load:</b> error rate ≤ 5%.</li>
+        <li><b>Five independent loads all wrong:</b> 0.05⁵ ≈ <b>3.1×10⁻⁷</b> → combined accuracy effectively <b>100%</b>, matching "approaches 100%."</li>
+      </ol>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Caveat:</b> this independent-error multiplication is our illustrative model of "why voting works," not a formula the paper states — if the loads' errors were correlated (e.g. all disturbed by the same interrupt jitter), the gain from voting would be far smaller than this math suggests.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Verifying the "7×" defense claim</h3>
+      <p style="color:var(--ink-soft)">The abstract claims store-to-load coupling gives "a 7× latency reduction compared to naive techniques like serialization." Figure 14 reports store-fencing (lfence) at ~140% overhead, load-fencing at ~170%, balancing at ~160%, and coupling at ~20%. Which comparison gives exactly 7×?</p>
+      <ol class="seq">
+        <li><b>Store-fencing overhead:</b> ~140%.</li>
+        <li><b>Coupling overhead:</b> ~20%.</li>
+        <li><b>Ratio:</b> 140 ÷ 20 = <b>7.0</b> — exactly the paper's headline number.</li>
+        <li><b>Careful distinction:</b> this is a ratio of <i>added</i> overhead, not of total runtime — a program running at 2.40× baseline (store-fencing) versus 1.20× baseline (coupling) is only a 2× difference in wall-clock time, even though the overhead itself dropped 7×.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🔥</span><div><b>Insight:</b> a "7× cheaper defense" and "2× faster program" are both true simultaneously — always check which baseline a speedup ratio is taken against.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">The Frontal Attack defense aligns every store's PC to a 16-byte boundary from the branch. Why doesn't this stop MDPeek?</div>
+      <details><summary>Show answer</summary><div class="ans">MDU counters are selected by the <b>load's</b> PC, specifically its lowest 8 bits — a 256-byte granularity, not 16 bytes, and not the store's PC at all. Aligning stores to 16 bytes says nothing about which of the 256 MDU counters a given load will hit.<span class="mis">Misconception: assuming a PC-alignment defense generalizes across every PC-indexed hardware structure. Different predictors key on different address bits and even different instructions (store vs. load) entirely.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 2 · easy</span>
+      <div class="qtext">Table 2 shows MbedTLS and WolfSSL have 0 vulnerable loads at -O0 through -O2, but 6 and 18 respectively at -O3. Why would <i>more</i> optimization make security-conscious code less safe?</div>
+      <details><summary>Show answer</summary><div class="ans">Both libraries already balance their secret-dependent branches at the <b>source level</b>. At -O3, LLVM inlines small helper functions (like <code>mp_sub</code>) directly into their callers. Inlining doesn't add new logic — but it does expose new stack-spill store/load pairs at the former call site, and those weren't present (or weren't a store-load pair at all) in the un-inlined, lower-optimization builds.<span class="mis">Misconception: "more optimized" implies "strictly better" along every axis including security. Optimization decisions are made for speed, and can silently reshape the very memory-access patterns that source-level balancing was trying to control.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Inserting an <code>lfence</code> right after the delayed store defeats MDU updates, but costs 140–170% overhead. Which of the MDU's four enable conditions does it break, and why is it so expensive compared to store-to-load coupling?</div>
+      <details><summary>Show answer</summary><div class="ans">It breaks "store and load co-resident in the ROB, with the dependence unresolved" — the fence forces the store (or load) to fully retire/resolve before anything after it can issue, so the pair is never simultaneously in-flight with an open question between them. It's expensive because it blocks <i>all</i> out-of-order execution around that point, not just the one correlated load — every independent instruction nearby pays the cost too. Coupling, by contrast, only delays the store's own address generation by a few cycles via a cheap dependency.<span class="mis">Misconception: that a "correct" fix must be architecturally blunt. Coupling proves you can remove exactly the ambiguity the predictor exploits without touching anything else in the pipeline.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 4 · medium</span>
+      <div class="qtext">An attacker resets a shared MDU counter to 15, then a test snippet runs 15 non-aliased store-load pairs using a <i>different</i> code region that happens to share the same load PC low byte. What happens to the counter, and what does this imply for placing MDPeek's own probing code?</div>
+      <details><summary>Show answer</summary><div class="ans">The counter decrements 15 times regardless of which code triggered each access — it reaches 0. This is because the MDU only tracks the lowest 8 bits of the load's PC (256 buckets across the <i>entire</i> address space), so unrelated code sharing that byte perturbs the same counter as the victim's load. For MDPeek's probe to read the <i>victim's</i ​counter, the attacker's own probing/init code must be placed so its load's PC shares the exact same low byte as the target vulnerable load — that's why the paper explicitly 256-byte-aligns its probing code.<span class="mis">Misconception: assuming a hardware predictor this narrow (256 buckets) is effectively private per code location. It's shared and collidable across the whole address space, which is a vulnerability but also an implementation constraint the attacker must respect.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 5 · hard</span>
+      <div class="qtext">A single <code>imul</code> has delay capacity 6; a chain of two dependent <code>imul</code>s has delay capacity 20, not 2×6=12. Why does the model need to precompute chains empirically instead of just summing single-instruction capacities?</div>
+      <details><summary>Show answer</summary><div class="ans">Delay capacity isn't a simple "time budget" that adds linearly — each instruction in a dependent chain must wait for the previous one's <i>result</i>, so the chain's total time-to-generate-the-final-address compounds superlinearly with pipeline latencies and instruction-queuing effects, not just instruction count. A purely additive model would systematically underestimate how long real dependent chains can stall a store's address, causing the LLVM pass to miss genuinely exploitable loads.<span class="mis">Misconception: treating instruction latency as a purely additive resource, like a time budget you spend serially. Dependent chains interact with the pipeline non-linearly, which is exactly why the paper measures chains directly rather than deriving them from single-instruction numbers.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 6 · medium</span>
+      <div class="qtext">If a single vulnerable load reveals the correct branch direction 97% of the time, and using 2 loads' majority vote gets you to ~99.9%, what hidden assumption makes that math valid — and when would it fail?</div>
+      <details><summary>Show answer</summary><div class="ans">The math (0.03² = 0.09% combined error) assumes the two loads' errors are largely <b>independent</b> — caused by unrelated noise sources. If instead both counters are perturbed by the same event (e.g. the same page-fault interrupt jitter, or the same OS scheduling hiccup), their errors would be correlated, and a wrong reading on one load would likely coincide with a wrong reading on the other — voting would gain far less than the independent-error math predicts.<span class="mis">Misconception: that adding more redundant measurements always multiplies down the error rate. It only does so cleanly when the error sources are close to independent; correlated noise defeats the benefit of voting.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">Section 7.2 claims MDPeek doesn't need APIC-based single-stepping, unlike some prior SGX attacks — yet it still uses SGX-Step. What's the actual difference in required capability?</div>
+      <details><summary>Show answer</summary><div class="ans">MDPeek still needs page-granularity control (deterministic page faults to regain the CPU at known points around the branch) — that's the SGX-Step part. What it doesn't need is <i>instruction-granularity</i> single-stepping via a precisely-timed local APIC timer interrupt, which some prior attacks require to isolate individual instructions. Because the MDU's counter state persists across the coarser page-fault window regardless of exactly which instruction triggered the fault, a coarser, simpler interrupt primitive is sufficient.<span class="mis">Misconception: "doesn't need complex configuration" means no privileged capability at all. The attacker still needs root-level page-table control — just not the more fragile, finer-grained single-instruction timer trick.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 8 · easy</span>
+      <div class="qtext">SGX developers already flush the cache, BPU, and prefetcher state at every context switch. Why doesn't this stop MDPeek?</div>
+      <details><summary>Show answer</summary><div class="ans">Flushing only clears structures that researchers have already identified as leaky and written eviction code for. The MDU had been discovered (2021) but never shown to leak information via a side channel before this paper, so nobody had written — or thought to write — code to flush it during enclave exits. It's not that flushing is broken; it simply never covered this unit.<span class="mis">Misconception: that "flush known microarchitectural state" means flushing everything the CPU has. It means flushing everything researchers have <i>already found</i> — which by definition excludes any undiscovered predictor.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Twelve questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly does the MDU predict?<span class="chev">▾</span></summary><div class="a">Whether a load can execute out of order ahead of an earlier store whose target address hasn't been computed yet. If the CPU predicts "no alias" and is right, it saved time; if wrong, it must roll back and re-execute the load (a machine clear).</div></details>
+      <details><summary><span class="q">Q2</span>How is a specific MDU counter chosen?<span class="chev">▾</span></summary><div class="a">By the lowest 8 bits of the <b>load's</b> program counter — giving 256 possible counters, each 4 bits wide. Two loads whose addresses share that low byte, anywhere in the whole program, share the same counter.</div></details>
+      <details><summary><span class="q">Q3</span>Why can MDPeek bypass branch balancing when so many prior attacks couldn't?<span class="chev">▾</span></summary><div class="a">Balancing (Table 1) was designed against every channel researchers had previously found: pages, instruction type/count, store-PC alignment. The MDU is indexed and updated by mechanisms none of those match — a load-PC-selected hardware counter that neither pages, instruction mix, nor 16-byte store alignment happens to control.</div></details>
+      <details><summary><span class="q">Q4</span>What conditions actually trigger an MDU update?<span class="chev">▾</span></summary><div class="a">The store's address generation must be delayed past the load's, the dependence must be genuinely unresolved, both instructions must be co-resident in the ROB (within its 224-entry size on Skylake), and the load's address must be TLB-hit and valid. If the store's own address is invalid, the update can still happen provided its page offset differs from the load's by ≥4 bytes.</div></details>
+      <details><summary><span class="q">Q5</span>How does the paper find exploitable code without running the victim first?<span class="chev">▾</span></summary><div class="a">A "delay capacity" model, measured empirically per instruction (and per dependent chain), predicts how long a given instruction sequence can keep a store's address "not ready." An LLVM backend pass then checks every load in compiled code against this model and flags the ones whose preceding store-defining chain plausibly stays unresolved long enough.</div></details>
+      <details><summary><span class="q">Q6</span>Why do the three attacked applications differ so much in exploitable-load count?<span class="chev">▾</span></summary><div class="a">Libjpeg was never written with side-channel resistance in mind, so its unoptimized code is full of exploitable loads (16 per branch at -O0). MbedTLS and WolfSSL both explicitly balance their secret-dependent branches at the source level, so they show zero vulnerable loads until -O3's function inlining reintroduces some.</div></details>
+      <details><summary><span class="q">Q7</span>How accurate and fast are the real attacks?<span class="chev">▾</span></summary><div class="a">Libjpeg: ~7.8 minutes to recover a 640×480 fingerprint image at 98.76% pixel accuracy. MbedTLS RSA-CRT (2048-bit): ~830 ms per attack, single-load accuracy &gt;97%, near-100% with 2 loads voting. WolfSSL RSA (2048-bit): ~880 ms per attack, single-load accuracy &gt;95%, approaching 100% with 5+ loads.</div></details>
+      <details><summary><span class="q">Q8</span>Why does MDPeek work reliably from a single trace, unlike some earlier attacks?<span class="chev">▾</span></summary><div class="a">The MDU's counter state is comparatively insensitive to interrupt/context-switch noise: the paper finds 210 of 256 counters stay stable (unchanged or predictably decreasing) across a page fault with 95% probability. That stability, plus a carefully-tuned timing primitive, is what lets MDPeek skip the hundreds-to-thousands of repeated trials other SGX side channels need — essential for one-shot secrets like a freshly generated RSA key.</div></details>
+      <details><summary><span class="q">Q9</span>What is store-to-load coupling, and why is it cheaper than fencing?<span class="chev">▾</span></summary><div class="a">It inserts a cheap arithmetic instruction (e.g. an AND) that makes the load's address explicitly, artificially depend on the store's address, so the CPU can resolve their relationship deterministically instead of guessing. This only delays the store's own address generation slightly, rather than serializing the entire pipeline (lfence, ~140–170% overhead) or destroying spatial locality (256-byte balancing, ~160% overhead) — coupling measures at ~20%.</div></details>
+      <details><summary><span class="q">Q10</span>Does disabling speculative store bypass (SSBD) stop this attack?<span class="chev">▾</span></summary><div class="a">SSBD can disable the MDU, but under this paper's threat model the attacker is a root-privileged, malicious OS — exactly the entity that controls whether SSBD is even enabled. An attacker can simply turn it off, so it's not an effective mitigation here.</div></details>
+      <details><summary><span class="q">Q11</span>Is the MDU unique to Intel CPUs?<span class="chev">▾</span></summary><div class="a">No — ARM and AMD have their own memory-disambiguation predictors, but with different designs: ARM's has no counters at all, and AMD's is indexed by physical address rather than PC bits, which the authors note would change (and likely complicate) the attack. The paper leaves an AMD-specific version for future work.</div></details>
+      <details><summary><span class="q">Q12</span>What did the authors report to Intel, and what's left open?<span class="chev">▾</span></summary><div class="a">They disclosed the MDU vulnerability to Intel under a 90-day disclosure period; Intel confirmed it and reiterated the importance of side-channel-resistant code. Open questions include MDPeek's applicability to Intel TDX and future TEEs, hardware-level fixes (e.g. dynamically detecting unresolved store-load pairs), and whether similar attacks are practical on AMD's physical-address-indexed predictor.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>MDPeek</b><span>The paper's attack: probing MDU counter state via timing to recover secret-dependent branch directions in SGX, bypassing flushing and balancing.</span></div>
+      <div class="term-def"><b>Memory Disambiguation Unit (MDU)</b><span>256 4-bit counters, indexed by a load's low 8 PC bits, predicting whether that load can bypass an address-pending store.</span></div>
+      <div class="term-def"><b>Enable logic</b><span>The conditions under which the MDU makes a prediction at all — a delayed, unresolvable store-load pair with both in the ROB.</span></div>
+      <div class="term-def"><b>Update logic</b><span>The conditions under which the MDU actually changes a counter's value after the true dependence is resolved.</span></div>
+      <div class="term-def"><b>Delay capacity</b><span>The maximum instruction distance an instruction (or chain) can keep a store's target address unresolved, measured empirically per instruction type.</span></div>
+      <div class="term-def"><b>Def / LS distance</b><span>Def distance = gap from a store's address-defining instruction to the store; LS distance = gap from the store to the following load.</span></div>
+      <div class="term-def"><b>Store-to-load coupling</b><span>MDPeek's proposed defense: an explicit, cheap arithmetic dependency between a store and load's addresses that removes the CPU's need to predict.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>ROB (Reorder Buffer)</b><span>Holds in-flight instructions to enable out-of-order execution with in-order retirement; 224 entries on Skylake.</span></div>
+      <div class="term-def"><b>Branch balancing</b><span>Making both paths of a secret-dependent branch identical in pages touched, instruction type/count, and store-PC alignment.</span></div>
+      <div class="term-def"><b>Microarchitectural flushing</b><span>Clearing known-leaky hardware state (cache, BPU, prefetcher) at SGX context switches.</span></div>
+      <div class="term-def"><b>SGX-Step</b><span>An attack framework using page-table manipulation to interrupt an enclave deterministically at page granularity.</span></div>
+      <div class="term-def"><b>Machine clear</b><span>A pipeline rollback triggered by a mispredicted memory dependence (or other speculation failure), detectable via the MACHINE_CLEARS.COUNT PMC.</span></div>
+      <div class="term-def"><b>BEEA sub-step</b><span>The subtract/shift phase of the Binary Extended Euclidean Algorithm, whose branch direction MDPeek recovers to reconstruct RSA primes.</span></div>
+      <div class="term-def"><b>Speculative Store Bypass (SSB) / SSBD</b><span>The underlying speculative mechanism behind Spectre-V4, and the Intel control bit that can disable it (and the MDU).</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What MDPeek achieves — and what defending it costs</div>
+      <div class="viz-kicker">reported figures from Sections 6 and 8 · higher is better for accuracy, lower is better for overhead</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Libjpeg<small>pixel accuracy</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="98.76"><span>98.76% (7.8 min/image)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">MbedTLS<small>2-load vote</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="99.9"><span>≈99.9% (830 ms/key)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">WolfSSL<small>5-load vote</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="100"><span>≈100% (880 ms/key)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Coupling<small>overhead (low=good)</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="20"><span>+20%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">lfence<small>overhead (low=good)</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="140"><span>+140% (store fence)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 150</p>
+      <figcaption><b>The asymmetry is the point:</b> attack accuracy sits near 100% across all three targets, while the cheapest effective defense (coupling) costs 7× less overhead than the naive one (fencing). (Paper §6, §8.1)</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>Out-of-order execution and memory disambiguation <span class="diff easy">easy</span></h4><div class="meta">explainer · 30–45 min</div><p>How CPUs speculate around unresolved store-load dependencies. Search "memory disambiguation predictor" or Travis Downs' Skylake write-up cited in the paper (ref. [12]).</p></div>
+    <div class="read-item reveal"><h4>SGX threat model and page-fault attacks <span class="diff med">medium</span></h4><div class="meta">explainer · 30 min</div><p>Why a malicious OS can still interrupt and observe an enclave's execution timing even without reading its memory. Start with the SGX-Step paper (ref. [56]).</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Rage Against the Machine Clear <span class="diff hard">hard</span></h4><div class="meta">Ragab, Barberis, Bos, Giuffrida · USENIX Security 2021</div><p>The prior systematic study of MDU-triggered machine clears, used for a Spectre-V4 variant — this is the starting point MDPeek's reverse engineering extends.</p></div>
+    <div class="read-item reveal"><h4>Frontal Attack: Leaking Control-Flow in SGX via the CPU Frontend <span class="diff med">medium</span></h4><div class="meta">Puddu, Schneider, Haller, Čapkun · USENIX Security 2021</div><p>Source of the 16-byte store-PC-alignment balancing defense that MDPeek shows is insufficient.</p></div>
+    <div class="read-item reveal"><h4>Nemesis: Studying Microarchitectural Timing Leaks in Rudimentary CPU Interrupt Logic <span class="diff med">medium</span></h4><div class="meta">Van Bulck, Piessens, Strackx · CCS 2018</div><p>An earlier interrupt-timing SGX attack requiring 1000 repetitions — the noise-resistance baseline MDPeek is compared against in §7.2.</p></div>
+    <div class="read-item reveal"><h4>PathFinder: High-Resolution Control-Flow Attacks Exploiting the Conditional Branch Predictor <span class="diff hard">hard</span></h4><div class="meta">Yavarzadeh et al. · ASPLOS 2024</div><p>A branch-predictor-based control-flow attack in the same lineage of "new leakage source defeats balanced branches" as MDPeek, targeting a different unit.</p></div>
+    <div class="read-item reveal"><h4>Leaky MDU: ARM Memory Disambiguation Unit Uncovered <span class="diff med">medium</span></h4><div class="meta">Liu et al. · DAC 2023</div><p>The same authors' earlier work reverse-engineering ARM's analogous (counter-less) memory disambiguation predictor.</p></div>
+    <div class="read-item reveal"><h4>Context-Sensitive Fencing <span class="diff hard">hard</span></h4><div class="meta">Taram, Venkat, Tullsen · ASPLOS 2019 / IEEE D&T 2022</div><p>The <code>dfence</code> mechanism the authors point to as a template for a future, more fine-grained hardware fix targeting only unresolved loads.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Liu, Feng, Li, Wang, He, Lyu, Carlson, "MDPeek: Breaking Balanced Branches in SGX with Memory Disambiguation Unit Side Channels" (ASPLOS '25)</span>
+    <span><b>Source:</b> paper text as provided (ASPLOS 2025, pp. 622–638, incl. Artifact Appendix)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 150;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- MDU COUNTER SIMULATOR ---- */
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(counter){
+    if(!strip) return;
+    var html = '';
+    for(var i=15;i>=0;i--){ html += '<div class="way '+(i>counter?'eq':'vpr')+'">'+(i===counter?i:'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(n){
+    var range = document.getElementById('partRange'); if(!range) return;
+    n = Math.max(0, Math.min(20, n));
+    range.value = n;
+    document.getElementById('partRangeVal').textContent = n;
+    var counter = Math.max(15 - n, 0);
+    document.getElementById('pVpr').textContent = counter;
+    document.getElementById('pEq').textContent  = counter === 0 ? 'BYPASS' : 'BLOCK';
+    document.getElementById('pTot').textContent = counter === 0 ? '≈ −150 cyc (fast)' : 'baseline (slow)';
+    buildStrip(counter);
+    var verd = document.getElementById('pVerdict');
+    if(counter === 0){ verd.className = 'pverdict opt'; verd.textContent = '🔓 Predicts BYPASS — the load races ahead of the store, producing a measurable ~150-cycle-faster timing signature (Fig. 11).'; }
+    else if(n === 0){ verd.className = 'pverdict sub'; verd.textContent = '🔒 Just reset to 15 — full suspicion. Every alias resets here instantly, regardless of prior history.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = '🔒 Predicts BLOCK — the load still waits for the store’s address; '+counter+' more non-aliased accesses would clear it to 0.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(0);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
