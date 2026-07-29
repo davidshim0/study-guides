@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<!-- PAISE field guide — PIM-Accelerated Inference Scheduling Engine (Lee et al., HPCA'25).
+     Semantic colors: teal = attention layer (always memory-bound, the PIM "high-utility" app) ·
+     honey = FC layer (saturates — only worth PIM at small batch) · indigo = PAISE scheduler/DLA machinery ·
+     terracotta = GPU-only baseline (the default path PAISE improves on). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doing the Math Where the Data Lives — PAISE, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#DDA33E; --honey-deep:#B3790F; --honey-soft:#F8EACB;
+  --dram:#227D82; --dram-soft:#D9EEEE;      /* teal  = attention layer (always memory-bound)  */
+  --ltram:#6459B8; --ltram-soft:#E7E4F5;    /* indigo = PAISE scheduler / DLA machinery       */
+  --optane:#B84A3A; --optane-soft:#F5DED6;  /* terracotta = GPU-only baseline                 */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HPCA 2025 · A Field Guide</span>
+    <h1>Move the math to where the data <span class="swash">already lives</span>, not to where the <span class="swash" style="color:var(--optane)">GPU sits waiting</span></h1>
+    <p class="lede">Every decoder step re-reads a growing Key/Value cache just to score one query. <strong>PAISE</strong> decides, layer by layer, when that memory-bound work is cheaper to run <em>inside</em> memory — on Processing-In-Memory (PIM) — instead of dragging the data across the bus to the GPU.</p>
+    <div class="hero-meta">
+      <span>📄 Lee, Baek, Son, Choi, Moon, Jang · Samsung SDS · HPCA'25</span>
+      <span>🎓 GPU/HBM basics assumed — the primers cover PIM specifics</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">💾</div>
+      <p>Offload a layer to PIM only when its <span class="ro">reuse benefit</span> beats its <span class="wo">layout + padding overhead</span> — recomputed per layer, per model, per batch size.<br><em style="font-size:.9rem">u = benefit − overhead; offload iff u &gt; 0.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary + nine ideas the paper assumes</h2>
+      <p class="sub">Acronyms first, then primers — collapsed, tap any open.</p>
+    </div>
+
+    <div class="card" style="background:var(--paper-2)">
+      <h3>Quick glossary — key acronyms</h3>
+      <div class="gloss">
+        <div class="term-def"><b>LLM</b><span>Large Language Model — here, GPT-2 and Llama2-7B, both decoder-only transformers.</span></div>
+        <div class="term-def"><b>PIM / PNM</b><span>Processing-In-Memory (compute unit inside the DRAM die) vs Processing-Near-Memory (compute unit adjacent, e.g. CXL-PNM).</span></div>
+        <div class="term-def"><b>HBM</b><span>High Bandwidth Memory — 3D-stacked DRAM; the PIM device here is HBM-PIM (Aquabolt-XL).</span></div>
+        <div class="term-def"><b>GEMM / GEMV</b><span>General Matrix-Matrix / Matrix-Vector multiplication — GEMV is GEMM with an input width of 1.</span></div>
+        <div class="term-def"><b>KV cache</b><span>Stored Key and Value matrices from prior tokens, reused each decoder step to avoid recomputing attention from scratch.</span></div>
+        <div class="term-def"><b>MHA / FFN</b><span>Multi-Head Attention block and Feed-Forward Network block — the two halves of a decoder.</span></div>
+        <div class="term-def"><b>FC / AS / AV layer</b><span>Fully-Connected layer; Attention-Score layer (Q·Kᵗ); Attention-Value layer (scores·V).</span></div>
+        <div class="term-def"><b>DLA</b><span>Data Layout Adjustment — PAISE's method for arranging matrices to fit PIM's physical bank layout.</span></div>
+        <div class="term-def"><b>IB-GEMM(V)</b><span>Interleave-Batched GEMM/GEMV — PAISE's modified PIM kernel that skips the costly GPU reduction step.</span></div>
+        <div class="term-def"><b>SiP</b><span>System-in-Package — the physical unit containing GPU + stacked HBM-PIM dies.</span></div>
+        <div class="term-def"><b>TPOT</b><span>Time Per Output Token — a decode-phase latency metric.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:22px">
+      <span><i style="background:var(--dram)"></i> attention layer (always memory-bound)</span>
+      <span><i style="background:var(--honey-deep)"></i> FC layer (saturates — offload only helps sometimes)</span>
+      <span><i style="background:var(--ltram)"></i> PAISE scheduler / DLA machinery</span>
+      <span><i style="background:var(--optane)"></i> GPU-only (the baseline)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Arithmetic intensity: compute-bound vs memory-bound<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Arithmetic intensity = how many FLOPs you do per byte moved from memory. High intensity → the chip is busy computing (<b>compute-bound</b>); low intensity → the chip mostly waits on data (<b>memory-bound</b>).</p>
+          <p>A GPU is built to be compute-bound: thousands of ALUs, fed by a wide but ultimately finite memory bus. Memory-bound work leaves those ALUs idle.</p>
+          <div class="ready"><b>Now you're ready:</b> PAISE's whole premise is that the attention layer stays memory-bound no matter the batch size, so parking its computation next to the memory (PIM) skips the idle wait.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>GEMV vs GEMM, and why batching turns one into the other<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A single inference request needs a matrix-<i>vector</i> multiply (GEMV) — one activation vector times a weight matrix. Serve many requests together and you can stack their vectors into a matrix, turning it into a matrix-<i>matrix</i> multiply (GEMM), which GPUs handle far more efficiently per byte moved.</p>
+          <div class="ready"><b>Now you're ready:</b> this batching trick works for FC layers (shared weights across requests) but <i>not</i> for attention — each request has its own K/V matrices, so attention stays GEMV-shaped even at large batch.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>The KV cache, and why it grows every token<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To avoid recomputing attention over the whole sequence at every step, LLMs cache each token's Key and Value vectors. Each new generated token appends one more row to K and one more column to Vᵗ — so the matrices grow from the prompt length up to the maximum sequence length <code>L<sub>seq</sub></code> as generation proceeds.</p>
+          <div class="ready"><b>Now you're ready:</b> that growth is why attention's memory traffic scales with output length — and why PAISE targets the generation (decode) phase, not the one-shot summarization/prefill phase.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Processing-In-Memory: a compute unit inside the DRAM die<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>PIM places a small Processing Unit (PU) next to each memory bank, so read bandwidth and compute scale together with the number of banks — instead of being bottlenecked by a single external memory bus. This paper uses <b>Aquabolt-XL</b>, a real HBM2-PIM device stacked with the GPU in one package.</p>
+          <div class="ready"><b>Now you're ready:</b> because PIM computes where data sits, it particularly favors GEMV — one read, one local multiply-accumulate, no long trip back to the GPU.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Banks, bankgroups, channels — how PIM is physically organized<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A PIM System-in-Package (SiP) nests: 4 chips → 4 PIM dies each → 4 pseudo-channels each → 4 bankgroups each → 4 banks each (paired even/odd) = <b>1024 banks</b> total. Each bank's PU processes 256B (128 FP16 elements) per iteration.</p>
+          <p>Because a PU alternates between an even and an odd bank per multiply-accumulate step, the smallest useful operation spans 512B (256 elements) across a bank pair.</p>
+          <div class="ready"><b>Now you're ready:</b> PIM is allocated in units of banks and bank-pairs, the same way a cache is allocated in ways — and there's an "optimal" matrix size, (4096, 256), that exactly fills all 512 bank-pairs across a SiP's 64 pseudo-channels.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>DRAM command ordering and the memory fence<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>DRAM controllers normally reorder commands for efficiency — fine for regular reads, but disastrous for PIM, whose correctness depends on commands hitting banks in a specific sequence. HBM-PIM uses fences to preserve ordering, allowing 8 commands to be issued between fences, but fences themselves cost latency.</p>
+          <div class="ready"><b>Now you're ready:</b> PAISE's Data Layout Adjustment exists specifically to arrange data so the host processor never needs to reorder or interrupt a PIM command sequence.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Weight reuse — why batch size changes the offloading math<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Setting up a matrix for PIM (transforming its layout, copying it into PIM memory) costs overhead. That cost is worth paying only if the matrix will be reused many times before being replaced — i.e. across many decode iterations or many batched requests.</p>
+          <div class="ready"><b>Now you're ready:</b> this is exactly the "reuse rate" term in PAISE's offloading formula — more decoder iterations and longer output sequences make PIM more attractive; a single one-shot use does not.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Idle-bank / zero-padding inefficiency<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>If a weight matrix doesn't perfectly match PIM's optimal size (4096, 256), the unused banks in that region still get allocated and zero-padded — you pay for capacity you don't use, and the true compute density drops accordingly.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the second overhead term in PAISE's scheduling formula, and it's exactly what interleaving DLA is designed to shrink by packing several small matrices together instead of padding each one alone.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>Static analytical scheduling vs the online monitoring you know<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>If you've worked with hotness-tracking tiering systems (TPP, HeMem, Memtis) or pool-based CXL memory (Pond), you're used to <i>online</i> decisions: continuously sample access patterns at runtime and migrate data based on observed behavior.</p>
+          <p>PAISE's scheduler is different: it is a closed-form <b>analytical</b> decision computed once from known model configuration (embedding dimension, heads, sequence length) and known PIM hardware constants (α, γ, β) — no runtime access-pattern monitoring at all.</p>
+          <div class="ready"><b>Now you're ready:</b> think of PAISE's offloading decision less like a tiering policy that watches hotness, and more like a compiler-time placement decision — it knows the whole computation graph in advance, so it doesn't need to guess.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>PAISE in a nutshell</h2>
+      <p class="sub">Why attention and FC layers behave differently, and how PAISE turns that difference into a scheduling decision.</p>
+    </div>
+    <div class="prose">
+      <p>In a transformer decoder, the <span class="mem-chip chip-sat">FC layer</span> executes <code>O(khw)</code> compute against <code>O(hw)</code> memory traffic (batch size <code>k</code> ≪ weight dims <code>h,w</code>) — as <code>k</code> grows, compute outgrows memory movement, and the layer shifts from memory-bound to <b>compute-bound</b>, where the GPU wins. The <span class="mem-chip chip-hi">attention layer</span> is structurally different: each request carries its own K/V matrices, so its compute and memory traffic are both <code>O(k·d<sub>head</sub>·h·w)</code> — <b>asymptotically equal for any batch size</b>. Attention never becomes compute-bound; it is memory-bound at every scale.</p>
+      <p>PIM devices like HBM-PIM excel exactly where GEMV dominates: their measured GEMV execution-time ratio (GPU time ÷ PIM time) exceeds <b>1.8×</b> at batch <code>k=1</code>, but that advantage shrinks as <code>k</code> grows and GPUs pull ahead on GEMM. <strong>PAISE</strong> turns this into a per-layer scheduling rule (<span class="mem-chip chip-ucp">Algorithm 1</span>): compute an offloading incentive <code>u</code> = (PIM's speed advantage × weight reuse) − (layout overhead) − (idle-bank padding waste); offload to PIM only when <code>u &gt; 0</code>.</p>
+      <p>Because attention's memory-boundedness doesn't fade with batch size, it is <b>almost always</b> worth offloading. FC layers are worth offloading only when batch size is small and the matrix fits PIM's optimal layout without excess padding — otherwise they stay on <span class="mem-chip chip-lru">GPU</span>. To make offloading actually fast, PAISE also introduces <b>interleaving DLA</b> and an <b>IB-GEMV</b> kernel that removes the standard PIM kernel's costly GPU-side reduction step.</p>
+      <p><strong>The payoff:</strong> offloading attention alone cuts GPT-2 end-to-end latency by up to <b>48.3%</b> (at 80 output tokens) versus GPU-only, with a stable ~10% reduction once output exceeds 200 tokens, and total energy consumption drops by roughly <b>11.5%</b> as execution time falls from 159.0s to 142.6s.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>FC layers become <b>compute-bound</b> as batch size grows; attention stays <b>memory-bound at any batch size</b> (both are O(k·d<sub>head</sub>·h·w)).</li>
+        <li>PIM-GEMV beats GPU by &gt;1.8× at k=1; the advantage shrinks as k grows toward GEMM territory.</li>
+        <li>Offloading incentive <b>u = reuse benefit − DLA overhead − idle-bank waste</b>; offload iff u &gt; 0, decided per layer.</li>
+        <li><b>Interleaving DLA + IB-GEMV</b> pack multiple small matrices into PIM's optimal (4096, 256) region and drop the GPU reduction step.</li>
+        <li>Attention offload is nearly always worth it; FC offload only helps at small batch and when PIM memory (physically limited) permits it.</li>
+        <li>Result: up to <b>48.3%</b> latency cut, ~<b>11.5%</b> energy reduction, on real HBM-PIM hardware — not a simulator.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Why attention is the reliable PIM candidate</div>
+      <div class="viz-kicker">GPU/PIM execution-time ratio vs. batch width k (illustrative trend from Fig. 4)</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> PIM faster region</span>
+        <span><i style="background:var(--optane)"></i> GPU faster region</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 320" role="img" aria-label="GPU to PIM execution time ratio declining as batch width grows">
+        <rect x="60" y="20" width="640" height="100" fill="var(--dram-soft)" opacity="0.55"/>
+        <rect x="60" y="120" width="640" height="100" fill="var(--optane-soft)" opacity="0.55"/>
+        <line x1="60" y1="20" x2="60" y2="220" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="60" y1="220" x2="700" y2="220" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="60" y1="120" x2="700" y2="120" stroke="#9A8E7C" stroke-width="1.3" stroke-dasharray="5 4"/>
+        <text x="705" y="124" font-family="JetBrains Mono" font-size="10" fill="#6E6456">ratio = 1 (break-even)</text>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle">
+          <text x="100" y="236">k=1</text><text x="220" y="236">k=2</text><text x="340" y="236">k=4</text><text x="460" y="236">k=8</text><text x="580" y="236">k=16</text><text x="700" y="236">k=32</text>
+        </g>
+        <text x="380" y="260" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">batch width k (GEMM input matrix columns)</text>
+        <text x="22" y="130" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 22,130)">t_GPU / t_PIM</text>
+        <circle cx="100" cy="40" r="5.5" fill="#fff" stroke="#227D82" stroke-width="2.6"/>
+        <text x="112" y="34" font-family="JetBrains Mono" font-size="11" fill="#16565a">1.8× measured at k=1</text>
+        <polyline fill="none" stroke="#227D82" stroke-width="2.6" stroke-dasharray="7 5" stroke-linecap="round" points="100,40 220,80 340,118 460,150 580,172 700,188"/>
+        <text x="705" y="192" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">declining — exact points not reported</text>
+      </svg>
+      <figcaption><b>Read it as two regimes:</b> the paper reports one hard data point — PIM-GEMV beats GPU by over 1.8× at k=1 — and states the ratio decreases as k grows, without publishing intermediate values (dashed curve here is illustrative, not measured). The consequence for scheduling: attention layers never leave the k≈1 GEMV regime (each request has its own K/V matrix), so they stay in the "PIM faster" band regardless of overall serving batch size — unlike FC layers, whose effective k grows with batch and can cross into "GPU faster." (Paper §II-B, §II-E, Fig. 4)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">config + hardware → incentive → decision → mechanism → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Attention is memory-bound at any batch size; GPU idles waiting on KV cache reads</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Inputs</div><div class="nd">Model config (d<sub>emb</sub>, d<sub>head</sub>, heads, decoders, L<sub>seq</sub>) + PIM constants (α, γ, β)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Compute u</div><div class="nd">Algorithm 1: reuse benefit − DLA overhead − idle-bank waste, per layer</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Decide</div><div class="nd">Offload to PIM iff u &gt; 0 — else keep on GPU</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Enforce</div><div class="nd">Interleaving DLA + IB-GEMV kernel + bulk KV-cache memcpy</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Result</div><div class="nd">Up to 48.3% latency cut, ~11.5% less energy (real HBM-PIM)</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about PAISE</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="52" width="46" height="34" rx="4" fill="#D9EEEE" stroke="#227D82" stroke-width="2.5"/>
+          <circle cx="37" cy="40" r="10" fill="#227D82"/>
+          <rect x="80" y="30" width="50" height="56" rx="4" fill="#F8EACB" stroke="#B3790F" stroke-width="2.5"/>
+          <line x1="88" y1="42" x2="122" y2="42" stroke="#B3790F" stroke-width="2"/>
+          <line x1="88" y1="54" x2="122" y2="54" stroke="#B3790F" stroke-width="2"/>
+          <line x1="88" y1="66" x2="122" y2="66" stroke="#B3790F" stroke-width="2"/>
+        </svg></div>
+        <span class="term">The core idea · Attention vs FC</span>
+        <h3>A short-order cook vs a conveyor bakery</h3>
+        <p>A short-order cook (PIM) is unbeatable for one custom order at a time — no setup, immediate turnaround. A conveyor-belt bakery (GPU) is unbeatable once you need a thousand identical loaves — the per-loaf cost drops as volume rises. Attention always arrives as "one custom order per request" (each has its own K/V matrix), so the cook wins at any serving scale. FC layers can be batched into identical loaves, so the bakery eventually wins.</p>
+        <div class="breaks"><b>Where it breaks:</b> real cooks can hire help to scale up; PIM's hardware layout is fixed at fabrication — it can't restructure itself the way a kitchen can add staff.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="20" width="24" height="56" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="46" y="20" width="24" height="56" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="74" y="20" width="24" height="56" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="102" y="20" width="24" height="56" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="22" y="24" width="16" height="12" fill="#227D82"/><rect x="22" y="40" width="16" height="12" fill="#6459B8"/>
+          <rect x="50" y="24" width="16" height="12" fill="#B3790F"/><rect x="50" y="40" width="16" height="12" fill="#B84A3A"/>
+        </svg></div>
+        <span class="term">Sequential DLA's flaw · Idle banks</span>
+        <h3>Renting four half-empty trucks</h3>
+        <p>Basic sequential DLA gives each small matrix its own PIM region and zero-pads the rest — like renting a full moving truck for every half-load of furniture. You pay for (and can't share) the empty space. PAISE's <b>interleaving DLA</b> instead loads four half-loads into one truck, splitting each shipment into column-fractions that fit a transaction and packing them side by side — no idle capacity.</p>
+        <div class="breaks"><b>Where it breaks:</b> real movers can just add a smaller truck; PIM's unit region size (4096, 256) is fixed by the hardware, so under-filling always means either padding or clever interleaving — there's no third truck size to pick.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="18" fill="#D9EEEE" stroke="#227D82" stroke-width="2.5"/>
+          <circle cx="95" cy="48" r="18" fill="#F8EACB" stroke="#B3790F" stroke-width="2.5"/>
+          <path d="M45 30 v-8 M95 30 v-8" stroke="#332C24" stroke-width="2"/>
+          <path d="M38 48 h14 M88 48 h14" stroke="#332C24" stroke-width="2" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">Bank-level parallelism · Even/odd pairs</span>
+        <h3>A bucket brigade passing bricks left, right, left</h3>
+        <p>Each Processing Unit works a bank pair the way a two-person brigade passes bricks: reach left (even bank), multiply-accumulate, reach right (odd bank), multiply-accumulate, repeat. That alternation is why the smallest efficient operation spans <i>two</i> banks (512B) rather than one — you need both hands moving to keep the line full.</p>
+        <div class="breaks"><b>Where it breaks:</b> a brigade can skip a person if bricks run out; PIM's even/odd alternation is fixed by wiring, so an operand matrix that isn't shaped to use both banks per step just wastes the idle one.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="60" width="100" height="20" rx="4" fill="#E7E4F5" stroke="#6459B8" stroke-width="2"/>
+          <text x="70" y="74" text-anchor="middle" font-family="monospace" font-size="10" fill="#3a3480">u = benefit − cost</text>
+          <path d="M40 55 v-30 M70 55 v-20 M100 55 v-38" stroke="#6459B8" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="40" cy="24" r="4" fill="#227D82"/><circle cx="70" cy="34" r="4" fill="#B3790F"/><circle cx="100" cy="16" r="4" fill="#227D82"/>
+        </svg></div>
+        <span class="term">The scheduler · Reuse vs setup cost</span>
+        <h3>Preheating a specialty oven</h3>
+        <p>Firing up a pizza oven takes real setup time and fuel — worth it only if you'll bake many pizzas before switching dishes. PAISE's incentive <code>u</code> is exactly this calculation for a weight matrix: the DLA "preheat" cost (γ) and idle-bank waste (β) are fixed per use, but the payoff (α × reuse count) grows with how many decoder iterations — how many pizzas — that matrix will serve before being replaced.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real oven's preheat cost doesn't change with the recipe; PAISE's β term does — a matrix that fits PIM's optimal shape "preheats" far cheaper than a mismatched one.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="30" width="24" height="16" rx="2" fill="#D9EEEE" stroke="#227D82" stroke-width="2"/>
+          <rect x="18" y="50" width="24" height="16" rx="2" fill="#D9EEEE" stroke="#227D82" stroke-width="2"/>
+          <path d="M50 38 h30 M50 58 h30" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3"/>
+          <rect x="86" y="38" width="36" height="20" rx="3" fill="#F8EACB" stroke="#B3790F" stroke-width="2.5"/>
+          <text x="104" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">1 trip</text>
+        </svg></div>
+        <span class="term">Bulk memcpy · Fewer, larger trips</span>
+        <h3>One moving van instead of forty grocery bags</h3>
+        <p>Copying a KV-cache update one 32-byte transaction at a time is like carrying groceries into the house one bag per trip. PAISE's bulk-memcpy consolidates a whole token's worth of K/V updates into one transfer — a single van trip — cutting the fixed per-trip overhead that dominates when each trip is tiny.</p>
+        <div class="breaks"><b>Where it breaks:</b> bulk copying still moves the same total bytes — it removes per-transaction overhead, not the underlying data volume. The paper still finds sequential-DLA GEMV slower than GPU-only overall (only 25% bank-bandwidth utilized) even with bulk memcpy; interleaving DLA is what actually fixes bandwidth use.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="56" rx="6" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <line x1="20" y1="48" x2="120" y2="48" stroke="#D8C8AC" stroke-width="1.5"/>
+          <circle cx="45" cy="34" r="6" fill="#227D82"/><circle cx="95" cy="34" r="6" fill="#B3790F"/>
+          <path d="M30 62 h20 M90 62 h20" stroke="#6459B8" stroke-width="2.5" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">vs. runtime tiering · Static vs online</span>
+        <h3>A seating chart printed before the party, not adjusted during it</h3>
+        <p>A seating chart made in advance from the guest list (who's coming, who knows whom) is PAISE's approach: compute the placement once from known model configuration and hardware constants, before inference even runs. Online tiering systems like TPP or HeMem are more like a host rearranging seats mid-party based on who's actually mingling with whom — reacting to observed behavior, not planning from a list.</p>
+        <div class="breaks"><b>Where it breaks:</b> a printed chart can't react if the party's mood shifts; PAISE's decision is recomputed per layer configuration but not per live access pattern, so unlike TPP/HeMem/Memtis it can't adapt within a single inference run if actual reuse deviates from the analytical estimate.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">From hardware layout to the scheduling formula to the kernel that executes it.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Why attention and FC diverge</h3>
+      <p>For an FC layer with batch <code>k</code>, weight height <code>h</code>, width <code>w</code>: compute is <code>O(khw)</code>, memory I/O is <code>O(kh + hw + kw) ≈ O(hw)</code> when <code>k ≪ h,w</code>. As <code>k</code> grows, compute outpaces memory movement — the layer becomes compute-bound, favoring the GPU. For MHA with <code>d<sub>head</sub></code> heads, both compute and memory I/O are <code>O(k·d<sub>head</sub>·h·w)</code> — they scale together, so attention is memory-bound <b>regardless of k</b>.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The PIM memory hierarchy</div>
+      <div class="viz-kicker">SiP → chip → PIM die → pseudo-channel → bankgroup → bank</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">SiP</div><div class="nd">1 GPU + 4 HBM-PIM stacks = 1024 banks total</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">4 chips</div><div class="nd">each with 4 PIM dies</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">4 pseudo-channels</div><div class="nd">per PIM die</div></div>
+      </div>
+      <div style="text-align:center;margin:10px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.2rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">4 bankgroups</div><div class="nd">per pseudo-channel</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">4 banks</div><div class="nd">2 even/odd pairs; PU reads 256B/bank per step</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Unit matrix</div><div class="nd">(4096, 256) fills all 512 bank-pairs across 64 channels</div></div>
+      </div>
+      <figcaption>4 chips × 4 dies × 4 channels × 4 bankgroups × 4 banks = 1024 banks per SiP. The (4096, 256) unit weight matrix is sized precisely to occupy every one of the 512 bank-pairs in a SiP's 64 pseudo-channels without triggering extra memory fences. (Paper §II-C, §II-D)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Standard PIM-GEMV's two limitations</h3>
+      <p>The stock PIM-GEMV kernel multiplies in 32B transaction units, then relies on the <b>GPU</b> to reduce (sum) partial results into the final output vector. Two problems follow: (1) real weight matrices rarely match the optimal (4096, 256) shape, leaving banks idle and zero-padded; (2) because the kernel sums <i>everything</i> in a region into one output, you can't pack multiple small matrices into one region — their results would blend into an unusable sum.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Sequential DLA vs interleaving DLA</div>
+      <div class="viz-kicker">packing four small GEMV operand matrices into one PIM region</div>
+      <svg class="full" viewBox="0 0 700 210" role="img" aria-label="sequential DLA leaves idle padded banks; interleaving DLA packs all four matrices with no idle space">
+        <text x="20" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Sequential DLA — each matrix gets its own region, rest zero-padded</text>
+        <g font-family="JetBrains Mono" font-size="10">
+          <rect x="20" y="36" width="150" height="50" rx="6" fill="#D9EEEE" stroke="#227D82" stroke-width="2"/><text x="95" y="65" text-anchor="middle" fill="#16565a">matrix A</text>
+          <rect x="180" y="36" width="150" height="50" rx="6" fill="#fff" stroke="#D8C8AC" stroke-width="1.4" stroke-dasharray="4 3"/><text x="255" y="65" text-anchor="middle" fill="#9A8E7C">idle / padded</text>
+          <rect x="340" y="36" width="150" height="50" rx="6" fill="#F8EACB" stroke="#B3790F" stroke-width="2"/><text x="415" y="65" text-anchor="middle" fill="#6e4a09">matrix B</text>
+          <rect x="500" y="36" width="150" height="50" rx="6" fill="#fff" stroke="#D8C8AC" stroke-width="1.4" stroke-dasharray="4 3"/><text x="575" y="65" text-anchor="middle" fill="#9A8E7C">idle / padded</text>
+        </g>
+        <text x="20" y="112" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Interleaving DLA — column-fractions of all four matrices share one region</text>
+        <g font-family="JetBrains Mono" font-size="9">
+          <rect x="20" y="124" width="650" height="50" rx="6" fill="#fff" stroke="#D8C8AC" stroke-width="1.4"/>
+          <rect x="26" y="130" width="36" height="38" fill="#227D82"/><rect x="66" y="130" width="36" height="38" fill="#B3790F"/>
+          <rect x="106" y="130" width="36" height="38" fill="#6459B8"/><rect x="146" y="130" width="36" height="38" fill="#B84A3A"/>
+          <rect x="186" y="130" width="36" height="38" fill="#227D82"/><rect x="226" y="130" width="36" height="38" fill="#B3790F"/>
+          <rect x="266" y="130" width="36" height="38" fill="#6459B8"/><rect x="306" y="130" width="36" height="38" fill="#B84A3A"/>
+          <text x="345" y="153" fill="#9A8E7C">… repeats across the transaction period …</text>
+        </g>
+      </svg>
+      <figcaption>Interleaving DLA decomposes each weight matrix column-wise into transaction-sized fractions (a divisor of 32B) and interleaves them within a transaction period, so all four matrices occupy one PIM region with zero idle banks — paired with the IB-GEMV kernel's separate reduction, their outputs stay distinguishable. (Paper §IV-A, §IV-B, Fig. 6, Fig. 7)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · The scheduling algorithm</h3>
+      <p>For an FC layer with weight matrix shaped by DLA into <code>(n, m)</code>, PAISE computes:</p>
+      <pre class="sketch"><span class="hl">u = α<sub>k</sub>·(L<sub>seq</sub>−s)·d·n·m − γ·n·m − β·(n*m* − n·m)</span>
+<span class="cm"># α_k: PIM's GEMM speed advantage at width k · (L_seq−s)·d: reuse count across output tokens × decoders
+# γ·nm: DLA + copy overhead · β(n*m*−nm): idle-bank padding waste</span></pre>
+      <p>For an attention layer, the K/V matrix is updated one row at a time regardless of batch, halving effective reuse and overhead:</p>
+      <pre class="sketch"><span class="hl">u = α<sub>1</sub>·(L<sub>seq</sub>−s)·d·h·nm/2 − γ·nm/2 − β(n*m* − nm/2)</span></pre>
+      <p>Offload to PIM iff <code>u &gt; 0</code>. Since attention's <code>α<sub>1</sub></code> (the k=1 GEMV advantage) stays high at any serving batch size while FC's <code>α<sub>k</sub></code> shrinks as k grows, attention crosses this threshold far more often than FC.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why the summarization phase is excluded:</b> the weight matrix is reused less there (fewer output tokens = smaller <code>L<sub>seq</sub>−s</code>), so the reuse term shrinks and overhead dominates — PAISE deliberately targets only the generation phase.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Execution flow for offloaded attention</h3>
+      <p>Each decoder step: (1) GPU computes Q/K/V; (2) host issues a <b>bulk memcpy</b> of the new K/V row(s) into the PIM memory region, concatenating with the existing cache; (3) PIM's IB-GEMV kernel computes attention scores and values directly against the resident K/V cache; (4) results return to GPU for softmax/residual (PIM cannot execute Softmax, GELU, LayerNorm, or residual — these stay on GPU); (5) after the final token, the PIM region is reset.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Offloaded attention: one decoder step</div>
+      <div class="viz-kicker">execution flow across GPU and PIM</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">1 · GPU</div><div class="nd">Compute Q, K, V for the new token</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">2 · Bulk memcpy</div><div class="nd">New K/V rows copied GPU→PIM in one transfer</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">3 · PIM (IB-GEMV)</div><div class="nd">AS layer (K·Qᵗ), then AV layer (scores·V)</div></div>
+      </div>
+      <div style="text-align:center;margin:10px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.2rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">4 · GPU</div><div class="nd">Softmax, residual, LayerNorm — unsupported on PIM</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Repeat</div><div class="nd">Loop until final token; then reset PIM region</div></div>
+      </div>
+      <figcaption>Steps 2–3 repeat every decoder step through generation; PIM only ever runs the AS/AV GEMV kernels — everything nonlinear stays on GPU by hardware necessity. (Paper §V-B, Fig. 12)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces using the paper's real model configurations, matrix sizes, and measured latencies.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① GPT-2's projection layer: why FC offload is inefficient</h3>
+      <p style="color:var(--ink-soft)">GPT-2's projection layer weight is (768, 768). It's split across three PIM unit regions of (4096, 256). What fraction of allocated PIM capacity is actually used?</p>
+      <ol class="seq">
+        <li><b>Total allocated capacity:</b> 3 regions × 4096 × 256 = <b>3,145,728 elements</b>.</li>
+        <li><b>Actual weight elements:</b> 768 × 768 = <b>589,824 elements</b>.</li>
+        <li><b>Utilization:</b> 589,824 ÷ 3,145,728 ≈ <b>18.75%</b> — over 80% of the allocated banks sit idle, zero-padded.</li>
+        <li><b>Check against the paper's idle-bank figure:</b> 3,145,728 − 589,824 = 2,555,904 elements idle, which the paper reports as a (3328, 768) idle region: 3328 × 768 = 2,555,904. ✓ matches.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this is exactly the idle-bank term β in Algorithm 1 — at only 18.75% utilization, the overhead is large enough that FC offload for GPT-2 needs very high reuse (large batch, many iterations) to pay off, and the paper reports it generally doesn't.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Llama2-7B's 12 GB problem</h3>
+      <p style="color:var(--ink-soft)">Llama2-7B's FC layers per decoder block: 4 matrices of (4096,4096) [Q,K,V,O], 2 of (11008,4096) [gate, up], 1 of (4096,11008) [down], in FP16, across 32 decoder blocks. Does it fit in 8 GB of PIM memory?</p>
+      <ol class="seq">
+        <li><b>QKVO:</b> 4 × 4096 × 4096 = 67,108,864 elements.</li>
+        <li><b>Gate + Up:</b> 2 × 11008 × 4096 = 90,144,768 elements.</li>
+        <li><b>Down:</b> 4096 × 11008 = 45,072,384 elements.</li>
+        <li><b>Per block total:</b> 67,108,864 + 90,144,768 + 45,072,384 = 202,326,016 elements → × 2 bytes (FP16) ≈ <b>385.9 MB</b>.</li>
+        <li><b>× 32 decoder blocks:</b> 385.9 MB × 32 ≈ <b>12.06 GB</b> — matching the paper's "over 12 GB" claim exactly, and exceeding the paper's stated 8 GB PIM memory limit.</li>
+      </ol>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>A discrepancy worth flagging:</b> the paper's text states "8 GB of physical memory," but Table III lists the Aquabolt-XL device as "6 GB (VRAM)." Either figure makes the same point — all FC layers don't fit — but the two numbers in the paper don't agree with each other.</div></div>
+      <div class="callout why"><span class="ic">💡</span><div>This is why PAISE offloads only output, up, and down projections — down projection needs just 43 PIM regions (4096, 43×256 = 11008 columns), fewer than the 48 regions gate/up projections need, so it's chosen first under the memory budget.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Reading Table II: when does FC offload stop paying off?</h3>
+      <p style="color:var(--ink-soft)">Llama2-7B end-to-end latency (seconds), input/output length 2048/2048: batch 1 → 56.48 (GPU-only), 50.73 (attn-only), 41.83 (attn+FC); batch 4 → 87.42, 67.85, 79.12.</p>
+      <ol class="seq">
+        <li><b>Batch 1, attn-only vs GPU-only:</b> (56.48 − 50.73) / 56.48 ≈ <b>10.2%</b> faster.</li>
+        <li><b>Batch 1, attn+FC vs GPU-only:</b> (56.48 − 41.83) / 56.48 ≈ <b>25.9%</b> faster — FC offload adds a further large win at small batch.</li>
+        <li><b>Batch 4, attn-only vs GPU-only:</b> (87.42 − 67.85) / 87.42 ≈ <b>22.4%</b> faster.</li>
+        <li><b>Batch 4, attn+FC vs GPU-only:</b> (87.42 − 79.12) / 87.42 ≈ <b>9.5%</b> faster — still better than GPU-only, but <i>worse</i> than attention-only (22.4%). FC offload has become a net drag relative to leaving FC on GPU.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this is α<sub>k</sub> shrinking as batch k grows (Section II-B) made concrete — at batch 4, FC's compute has grown enough to favor the GPU's GEMM engine, so the earlier win from PIM's GEMV advantage reverses. Attention's incentive doesn't reverse, because its α stays anchored near α₁ regardless of batch.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Energy: why power × time isn't the whole story</h3>
+      <p style="color:var(--ink-soft)">The paper reports average power 103 W (GPU-only) vs 100 W (KV-cache offload), execution time 159.0s → 142.6s, and a total energy reduction of ~11.5%.</p>
+      <ol class="seq">
+        <li><b>Naive estimate, GPU-only:</b> 103 W × 159.0 s ≈ <b>16,377 J</b>.</li>
+        <li><b>Naive estimate, PAISE:</b> 100 W × 142.6 s ≈ <b>14,260 J</b>.</li>
+        <li><b>Naive reduction:</b> (16,377 − 14,260) / 16,377 ≈ <b>12.9%</b> — noticeably higher than the paper's reported 11.5%.</li>
+        <li><b>Why the mismatch:</b> 100 W and 103 W are rounded <i>averages</i> over a fluctuating power trace (Fig. 16 samples every 0.1s); the paper's 11.5% comes from integrating the actual trace, not multiplying two rounded averages. The takeaway direction is right — less energy — but treat "11.5%" as the paper's number and the naive 12.9% as a sanity-check approximation, not a replacement.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The larger latency reduction (10.3%: 159.0→142.6s) is the dominant driver of the energy savings — average power barely moves (103→100 W), which makes sense: PIM offload shifts <i>where</i> memory traffic happens, not how much total power the SiP draws while busy.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it checks for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A team doubles the serving batch size for an LLM. Why does this make offloading the FC layer to PIM less attractive, but barely change the case for offloading the attention layer?</div>
+      <details><summary>Show answer</summary><div class="ans">FC layer compute is O(khw) while its memory I/O stays ~O(hw); doubling k grows compute faster than memory movement, pushing FC toward compute-bound territory where the GPU wins, and shrinking PIM's speed advantage α<sub>k</sub>. Attention's compute and memory I/O are both O(k·d<sub>head</sub>hw) — they grow together — and critically, each request still needs its own K/V GEMV regardless of how many requests are batched, so its effective per-request k stays near 1.<span class="mis">Misconception: that "batch size" is a single global lever. It changes FC's arithmetic intensity but doesn't change attention's fundamentally GEMV-shaped, per-request memory access pattern.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">A weight matrix is (2048, 2048) FP16. How many (4096, 256) PIM unit regions does it need, and what fraction of allocated capacity is used?</div>
+      <details><summary>Show answer</summary><div class="ans">2048 rows fit within one 4096-row region (with 2048 rows unused vertically); 2048 columns need ⌈2048/256⌉ = 8 unit-width slices. So it needs roughly 1 region's worth of row-capacity × 8 column-slices — in practice this is packed as fewer full (4096,256) regions with column concatenation; using the paper's GPT-2-style method, total allocated capacity for 8 slices of (4096,256) = 8 × 4096 × 256 = 8,388,608 elements. Actual weight elements = 2048×2048 = 4,194,304. Utilization ≈ 4,194,304/8,388,608 = <b>50%</b>.<span class="mis">Misconception: assuming a matrix that's "close to square" automatically fits PIM's layout well. Fit depends on matching the (4096, 256) row:column ratio (16:1), not on being square or even large.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why can't the standard PIM-GEMV kernel simply place four unrelated small matrices side-by-side in one (4096,256) region to avoid idle banks?</div>
+      <details><summary>Show answer</summary><div class="ans">The standard kernel performs vector addition (GPU-side reduction) across the entire region to produce one output vector — it can't tell which partial sums belong to which of the four matrices. Interleaving DLA plus the IB-GEMV kernel solve this by decomposing each matrix into transaction-sized column-fractions, interleaving them, and running a <i>separate</i> reduction per matrix instead of one reduction over the whole region.<span class="mis">Misconception: that packing is purely a data-layout problem. It's also a kernel problem — you need a modified reduction step (IB-GEMV), not just clever placement.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Llama2-7B's FC layers need ~12 GB of PIM memory for all 32 decoder blocks at batch 1, but the device provides only 8 GB (per the paper's text). PAISE offloads only output, up, and down projections. Why not simply offload FC layers for the first N decoder blocks and leave the rest on GPU?</div>
+      <details><summary>Show answer</summary><div class="ans">The paper doesn't evaluate that specific per-block-truncation strategy — it chooses which <i>matrix types</i> (down, then up/gate/output) to offload across all blocks within the memory budget, prioritizing the projection with the smallest PIM region count (down needs 43 regions vs 48 for gate/up). This is consistent with the paper's per-layer-type incentive formula, which doesn't have a notion of "give up after decoder block N" — it evaluates u per matrix, not per position in the stack.<span class="mis">Misconception: that PAISE's scheduling operates at block granularity. It operates at the matrix/layer-type granularity, constrained globally by total PIM memory capacity.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Table VI shows the AS layer's output-transformation overhead (68 µs on GPT2-Medium batch 32) is much larger than the AV layer's (13 µs). Why?</div>
+      <details><summary>Show answer</summary><div class="ans">The AS layer's batched output size scales with sequence length L<sub>seq</sub>, which is generally much larger than the head dimension d<sub>head</sub> that bounds the AV layer's output. A bigger output means more elements to transform back from PIM's physical layout to the GPU's logical layout, and the AS layer's use of interleaving DLA (needed because its input is smaller and output larger) requires more complex index calculations than AV's simpler layout.<span class="mis">Misconception: that AS and AV layers are symmetric just because they're both "attention." Their matrix shapes are transposed relative to each other (Lseq×dhead vs dhead×Lseq), which changes which dimension dominates the transformation cost.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">Why can't PIM run the Softmax step of attention, and what does that mean for the execution flow?</div>
+      <details><summary>Show answer</summary><div class="ans">HBM-PIM's Processing Units support multiply-accumulate operations for GEMM/GEMV but not nonlinear functions like Softmax, GELU, LayerNorm, or residual addition — those stay excluded from PIM offloading entirely. This means every offloaded attention step still returns to the GPU between the AS/AV GEMV kernels and the softmax/residual steps, adding a GPU↔PIM handoff that PAISE's kernel stream management must coordinate.<span class="mis">Misconception: that offloading "the attention layer" moves the whole layer's computation onto PIM. Only the GEMV-shaped score/value matmuls move; the nonlinear glue stays on GPU by hardware necessity.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">A colleague argues PAISE's scheduling algorithm is "just like" an online memory-tiering policy (e.g. TPP) because both decide where data/compute should live. What's the key structural difference?</div>
+      <details><summary>Show answer</summary><div class="ans">TPP-style tiering continuously samples access patterns at runtime (e.g. via hardware access bits or PEBS sampling) and migrates pages based on observed hotness — an online, feedback-driven loop. PAISE's Algorithm 1 computes u analytically from known model configuration (d<sub>emb</sub>, heads, L<sub>seq</sub>) and fixed PIM hardware constants (α, γ, β), with no runtime monitoring of actual access behavior — closer to a compile-time placement decision than a tiering policy.<span class="mis">Misconception: that "deciding where computation/data should live" is inherently an online, adaptive process. PAISE shows it can be a closed-form calculation when the workload's structure (a known transformer architecture) is fully known in advance.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">Why does PAISE's latency improvement (Fig. 15) show a sawtooth pattern in Time Per Output Token rather than a smooth curve?</div>
+      <details><summary>Show answer</summary><div class="ans">The GPU allocates memory for growing tensors (like the KV cache) in step-wise increments rather than continuously, so latency jumps at each reallocation boundary and then holds until the next one — producing the sawtooth. Offloading to PIM lowers the peaks of that sawtooth and lengthens the period between jumps, because PIM's KV-cache update kernel writes new tokens directly with constant-time token concatenation, unlike GPU's approach which re-reads the whole cache for concatenation as it grows.<span class="mis">Misconception: that "latency vs output length" should look like a clean line. Real GPU memory management is discrete and step-wise, which is why the paper reports linear regressions rather than exact curves.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What does PAISE actually offload — whole layers or specific operations?<span class="chev">▾</span></summary><div class="a">Specific GEMM/GEMV operations within layers: the attention score (AS) and attention value (AV) matmuls, and — only under favorable batch size and memory constraints — select FC projections (output, up, down for Llama2-7B). Nonlinear operations (softmax, GELU, LayerNorm, residual) never move to PIM; the hardware can't run them.</div></details>
+      <details><summary><span class="q">Q2</span>Why is attention layer offloading almost always beneficial but FC layer offloading only sometimes?<span class="chev">▾</span></summary><div class="a">FC layer compute grows faster than its memory traffic as batch size increases (O(khw) vs O(hw)), eventually favoring the GPU's GEMM engine. Attention's compute and memory traffic scale together at any batch size (O(k·d<sub>head</sub>hw) both), so it stays memory-bound — PIM's home turf — regardless of how many requests are served together.</div></details>
+      <details><summary><span class="q">Q3</span>Is PAISE tested on a simulator or real hardware?<span class="chev">▾</span></summary><div class="a">Real hardware: an AMD Instinct MI100 GPU paired with Samsung Aquabolt-XL HBM2-PIM, running ROCm 4.0 and a modified version of Samsung's open-source PIMLibrary. The paper explicitly contrasts this with prior PIM-LLM work (NeuPIMs, AttAcc, TransPIM) that relies on DRAM simulators like DRAMsim3.</div></details>
+      <details><summary><span class="q">Q4</span>What is interleaving DLA solving that sequential DLA doesn't?<span class="chev">▾</span></summary><div class="a">Sequential DLA gives each small weight matrix its own PIM region, wasting the rest as zero-padded idle banks. Interleaving DLA decomposes multiple matrices into transaction-sized column-fractions and packs them together into one region with no idle banks, paired with an IB-GEMV kernel that keeps each matrix's output distinguishable via separate reduction.</div></details>
+      <details><summary><span class="q">Q5</span>How big is the measured speedup, exactly?<span class="chev">▾</span></summary><div class="a">Offloading the attention layer cuts GPT-2 end-to-end latency by up to 48.3% at 80 output tokens, and by a more stable ~10% once output exceeds 200 tokens. For Llama2-7B at batch 1, offloading attention plus 8 FC layers cuts latency from 56.48s to 41.83s (~25.9%).</div></details>
+      <details><summary><span class="q">Q6</span>Why does the paper report offloading FC layers sometimes making things worse?<span class="chev">▾</span></summary><div class="a">At larger batch sizes (e.g. Llama2-7B batch 4 in Table II), FC compute has grown enough to favor GPU's GEMM engine, so offloading FC to PIM adds overhead without a matching benefit — total latency at batch 4 is worse with FC offloaded (79.12s) than with attention-only offload (67.85s), though still better than GPU-only (87.42s).</div></details>
+      <details><summary><span class="q">Q7</span>What is the KV cache "bulk memcpy," and why was it needed?<span class="chev">▾</span></summary><div class="a">The original PIMLibrary copied KV cache updates in small 32-byte transactions, which profiling showed was a major latency source. PAISE's bulk-memcpy consolidates a token's K/V update into one larger transfer, cutting up to 21.4% of execution time versus the conventional copy — though the sequential-DLA GEMV path still lags GPU-only overall because it only uses 25% of PIM's bank bandwidth; interleaving DLA is what closes that gap.</div></details>
+      <details><summary><span class="q">Q8</span>Does PAISE require changing the model itself?<span class="chev">▾</span></summary><div class="a">No — GPT-2 and Llama2-7B run with their standard Hugging Face pretrained weights. PAISE modifies the inference-serving code path (via a Python-level API) to route specific matmuls through its PIM kernel, not the model architecture or weights.</div></details>
+      <details><summary><span class="q">Q9</span>How does PAISE's scheduling decision differ from an online memory-tiering policy like TPP or HeMem?<span class="chev">▾</span></summary><div class="a">PAISE's Algorithm 1 is a closed-form calculation from known model configuration and fixed PIM hardware constants (α, γ, β) — no runtime access-pattern monitoring. Online tiering systems continuously sample actual access behavior and adapt. PAISE knows the transformer's computation graph in advance, so it can plan rather than react.</div></details>
+      <details><summary><span class="q">Q10</span>What's the energy story?<span class="chev">▾</span></summary><div class="a">In the paper's KV-cache-offload experiment, average power drops only slightly (103W → 100W) but execution time drops from 159.0s to 142.6s, yielding a reported ~11.5% total energy reduction — driven mostly by finishing faster, not by drawing meaningfully less power while running.</div></details>
+      <details><summary><span class="q">Q11</span>What are the main limitations acknowledged by the authors?<span class="chev">▾</span></summary><div class="a">No fine-grained scheduling between GPU-only kernels and PIM kernels (currently hand-coded to avoid concurrent execution), a single-process-only PIM memory allocator, and no multi-GPU support yet — all listed as future work, alongside integration with frameworks like DeepSpeed and FlashAttention.</div></details>
+      <details><summary><span class="q">Q12</span>How does PAISE relate to NeuPIMs, AttAcc, and TransPIM?<span class="chev">▾</span></summary><div class="a">All target PIM acceleration for transformer LLM inference, but NeuPIMs and AttAcc are evaluated via simulators and focus on NPU/PIM pipeline scheduling for batched inference, while TransPIM proposes a hybrid in-bank/near-bank architecture. PAISE's distinguishing contribution is running on real HBM-PIM hardware and contributing a general offloading-decision framework (the scheduling algorithm) plus the DLA/IB-GEMV kernel needed to make that decision executable.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then provenance.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>PAISE</b><span>PIM-Accelerated Inference Scheduling Engine — the paper's framework: a scheduling algorithm plus a modified PIM kernel for offloading transformer LLM operations.</span></div>
+      <div class="term-def"><b>Offloading incentive (u)</b><span>u = PIM's reuse benefit − DLA/copy overhead − idle-bank waste. Offload to PIM iff u &gt; 0.</span></div>
+      <div class="term-def"><b>Interleaving DLA</b><span>Decomposes multiple weight matrices column-wise into transaction-sized fractions and interleaves them into one PIM region, eliminating idle banks.</span></div>
+      <div class="term-def"><b>Sequential DLA</b><span>Row-wise or column-wise placement of one weight matrix per PIM region — simple but leaves idle, zero-padded banks when the matrix doesn't match the optimal size.</span></div>
+      <div class="term-def"><b>IB-GEMV / IB-GEMM</b><span>Interleave-Batched GEMV/GEMM kernel — performs separate per-matrix reduction instead of the standard kernel's single GPU-side reduction, enabling multiple matrices to share one PIM region.</span></div>
+      <div class="term-def"><b>α<sub>k</sub> (effectiveness)</b><span>PIM's execution-time speed advantage over GPU for GEMM/GEMV with input width k. α<sub>1</sub> &gt; 1.8 measured; decreases as k grows.</span></div>
+      <div class="term-def"><b>γ (DLA overhead)</b><span>Per-element cost of transforming and copying a weight matrix into PIM's layout.</span></div>
+      <div class="term-def"><b>β (idle-bank inefficiency)</b><span>Per-element cost of zero-padded, unused banks when a matrix doesn't match PIM's optimal (4096, 256) region.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>AS / AV layer</b><span>Attention-Score layer (K·Qᵗ) and Attention-Value layer (scores·V) — the two GEMV-shaped matmuls inside multi-head attention.</span></div>
+      <div class="term-def"><b>Unit weight matrix (4096, 256)</b><span>The PIM region size that exactly fills all 512 bank-pairs across a SiP's 64 pseudo-channels without extra memory fences.</span></div>
+      <div class="term-def"><b>SiP (System-in-Package)</b><span>GPU + stacked HBM-PIM dies communicating via logic dies and TSV interposer; here, MI100 + 4 Aquabolt-XL stacks.</span></div>
+      <div class="term-def"><b>Memory fence</b><span>A DRAM command barrier preserving PIM's required command ordering; allows 8 commands between fences, at a latency cost.</span></div>
+      <div class="term-def"><b>All-bank mode</b><span>A single DRAM command broadcast to and processed by all PUs in parallel within a pseudo-channel.</span></div>
+      <div class="term-def"><b>Bulk memcpy</b><span>PAISE's consolidated KV-cache transfer API, replacing many small 32B transactions with one larger copy.</span></div>
+      <div class="term-def"><b>TPOT</b><span>Time Per Output Token — shows a sawtooth pattern tied to GPU's step-wise tensor memory allocation.</span></div>
+      <div class="term-def"><b>Summarization / generation phase</b><span>Prefill (process the prompt, produce first token) vs decode (produce each subsequent token autoregressively) — PAISE targets only generation.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What PAISE buys (vs GPU-only)</div>
+      <div class="viz-kicker">selected measured results · higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Peak latency cut<small>GPT-2, 80 out. tok.</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="48.3"><span>up to 48.3%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Attn @ batch 32<small>GPT2-Medium vs GPU</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="98.3"><span>+98.3%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">FC, no batching<small>Llama2-7B vs GPU</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="68.7"><span>+68.7%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Bulk memcpy gain<small>vs conventional copy</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="21.4"><span>up to 21.4%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Energy reduction<small>159.0s → 142.6s run</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="11.5"><span>~11.5%</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 100%</p>
+      <figcaption>Each bar is a distinct measured result from a different experiment (not directly comparable to each other) — see Source notes below for exactly which table/figure each comes from. (Paper §VI)</figcaption>
+    </figure>
+
+    <div class="subhead">Related works cited in the paper</div>
+    <div class="read-item reveal"><h4>NeuPIMs <span class="diff med">medium</span></h4><div class="meta">Heo et al. · ASPLOS · 2024</div><p>NPU-PIM heterogeneous acceleration for batched LLM inference via pipelined computation; evaluated on a simulator. PAISE contrasts its real-hardware results against this line of work.</p></div>
+    <div class="read-item reveal"><h4>AttAcc! <span class="diff med">medium</span></h4><div class="meta">Park et al. · ASPLOS · 2024</div><p>Uses PIM for batched transformer generative-model inference; also simulator-based. Explores similar memory-bound attention offloading motivation.</p></div>
+    <div class="read-item reveal"><h4>TransPIM <span class="diff hard">hard</span></h4><div class="meta">Zhou, Xu, Kang, Rosing · HPCA · 2022</div><p>Hybrid in-bank/near-bank PIM architecture for transformers, supporting complex operations like reduction and softmax in hardware — a contrast to Aquabolt-XL's inability to run nonlinear ops.</p></div>
+    <div class="read-item reveal"><h4>CXL-PNM <span class="diff med">medium</span></h4><div class="meta">Park et al. · HPCA · 2024</div><p>LPDDR5X-based Processing-Near-Memory architecture over CXL, aimed at TCO-efficient LLM inference — the paper's pointer toward PNM as a lower-integration-cost alternative to PIM.</p></div>
+    <div class="read-item reveal"><h4>Aquabolt-XL <span class="diff med">medium</span></h4><div class="meta">Lee et al. · ISCA · 2021 / Kim et al. · IEEE Micro · 2022</div><p>The commercial HBM2-PIM device PAISE runs on; source of the hardware specifics (bank hierarchy, PU design, memory fence behavior) used throughout this guide.</p></div>
+    <div class="read-item reveal"><h4>Optimal Model Partitioning with Low-Overhead Profiling <span class="diff hard">hard</span></h4><div class="meta">Kim et al. · ACM TODAES · 2024</div><p>A PIM-offload decision method using ONNX runtime profiling — a lower-overhead-profiling alternative to PAISE's closed-form analytical incentive.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card">
+      <h3>Provenance</h3>
+      <p><b>From the paper directly:</b> all model configs (Table I), Table II/VI numbers, the 48.3%/~10%/11.5% headline results, the α<sub>k</sub>/γ/β scheduling formulas (Algorithm 1), the PIM hardware hierarchy (§II-C/D), and the DLA/IB-GEMV mechanism descriptions (§III–IV).</p>
+      <p><b>Recomputed by this guide from the paper's stated numbers</b> (shown as worked examples, not paper claims): the 18.75% PIM utilization for GPT-2's projection layer; the 12.06 GB Llama2-7B FC storage total; the exact percentage reductions derived from Table II's raw latencies; the naive vs. reported energy-reduction comparison (12.9% vs. paper's 11.5%).</p>
+      <p><b>Flagged inconsistencies within the paper itself</b> (noted honestly, not resolved): Table I lists Llama2-7B's <code>d<sub>emb</sub></code> as 11008, which matches the FFN intermediate dimension used in gate/up/down projections in the text, not the 4096 hidden dimension used for Q/K/V/O projections elsewhere in the same text; and the paper states "8 GB of physical memory" for PIM in §V-A while Table III lists the device as "6 GB (VRAM)."</p>
+      <p><b>This guide's own framing</b> (not the paper's language): the "short-order cook vs. conveyor bakery" and other analogies, the comparison to online tiering systems (TPP/HeMem/Memtis/Pond), and the "static vs. online scheduling" framing in Start Here/Analogies — offered as a bridge to memory-tiering research, not asserted by the authors.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Lee, Baek, Son, Choi, Moon &amp; Jang, "PAISE: PIM-Accelerated Inference Scheduling Engine for Transformer-based LLM" (HPCA 2025)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text and tables</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PARTITION EXPLORER (unused on this paper; guarded no-op if absent) ---- */
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Not optimal.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
