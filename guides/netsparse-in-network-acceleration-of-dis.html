@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<!-- NetSparse field guide — In-Network Acceleration of Distributed Sparse Kernels (Gerogiannis et al., MICRO'25).
+     Built in the "friendly field guide" house format. Semantic colors:
+     blue = RIG/NIC hardware (host-offloaded fast path) · violet = switch/property-cache machinery ·
+     amber = sparsity-aware (SA) / useful transfers · terracotta = sparsity-unaware (SU) baseline / wasted traffic. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Teaching the Network to Skip the Zeros — NetSparse, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E0A030; --honey-deep:#B8791A; --honey-soft:#FBEEDA;
+  --dram:#2C6FA8; --dram-soft:#DCEAF6;      /* blue    = RIG Units / SNIC hardware (fast path) */
+  --ltram:#7A4FC4; --ltram-soft:#EEE6F8;    /* violet  = switch / Property Cache machinery      */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = SU baseline / redundant traffic     */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f4b6b;font-size:.96rem}
+.primer .ready b{color:#123d5b}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f4b6b}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#4a2f96}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B7D3EA;color:#1f4b6b}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fc2dc;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c9b7e8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#e2d6f5}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f4b6b}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e0a030} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8d7ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f4b6b}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>MICRO 2025 · A Field Guide</span>
+    <h1>Giving the network the same sparsity-awareness as the <span class="swash">accelerator</span></h1>
+    <p class="lede">Sparse accelerators make computation blazingly fast — then a cluster of them spends most of its time waiting on the network. This is the plain-English story of <strong>NetSparse</strong>, four small hardware tricks in the NIC and switch that let distributed sparse kernels finally scale.</p>
+    <div class="hero-meta">
+      <span>📄 "NetSparse: In-Network Acceleration of Distributed Sparse Kernels" · Gerogiannis et al., MICRO'25</span>
+      <span>🎓 Some RDMA/networking basics assumed — the primers cover them</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">📡</div>
+      <p>Fetch each remote value <span class="ro">ONCE, right when a nonzero needs it</span> — not <span class="wo">EVERY TIME it's asked for, and not as part of an all-to-all blast</span>.<br><em style="font-size:.9rem">Push the sparsity pattern into the NIC and the switch, not just the accelerator.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then the concepts the paper assumes</h2>
+      <p class="sub">Ten acronyms up front, then eight primer cards. Read in order the first time, or jump to whatever's unfamiliar.</p>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <h3>Quick glossary</h3>
+      <div class="gloss">
+        <div class="term-def"><b>PR</b><span>Property Request — a fine-grained remote read (or its response) for one input-property value, indexed by a nonzero's column index.</span></div>
+        <div class="term-def"><b>RIG</b><span>Remote Indexed Gather — a new one-sided operation that fetches properties for a whole batch of nonzeros in one host→NIC command.</span></div>
+        <div class="term-def"><b>SU</b><span>Sparsity-Unaware — schedule communication as if the matrix were dense (all-to-all); simple, but wastes bandwidth on data nobody needs.</span></div>
+        <div class="term-def"><b>SA</b><span>Sparsity-Aware — scan the nonzeros and issue one PR per remote index actually needed; less waste, many tiny requests.</span></div>
+        <div class="term-def"><b>SNIC</b><span>SmartNIC — a network card with onboard DRAM and lightweight compute that can act without invoking the host CPU.</span></div>
+        <div class="term-def"><b>ToR</b><span>Top-of-Rack switch — the first switch every node in a rack connects through.</span></div>
+        <div class="term-def"><b>idx</b><span>The column index (cid) of a nonzero — identifies which remote property it needs.</span></div>
+        <div class="term-def"><b>K</b><span>The size of one property, in elements (4B–1KB payloads in this paper's experiments).</span></div>
+        <div class="term-def"><b>CQ / EQ</b><span>Concatenation Queue / Expiration-Time Queue — delay-queue hardware that batches same-destination PRs into one packet.</span></div>
+        <div class="term-def"><b>Goodput</b><span>The fraction of transferred bytes that are actual payload, not packet headers.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:22px">
+      <span><i style="background:var(--dram)"></i> RIG / SNIC hardware</span>
+      <span><i style="background:var(--ltram)"></i> switch / Property Cache machinery</span>
+      <span><i style="background:var(--honey)"></i> sparsity-aware (useful) transfers</span>
+      <span><i style="background:var(--optane)"></i> sparsity-unaware baseline / waste</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What a distributed sparse matmul actually moves around<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>SpMM, SpMV, and SDDMM all multiply a sparse matrix (a graph's edges, say) by an input array of per-vertex "properties," producing an output array. Data is <b>1D-partitioned</b> across nodes: node N<sub>i</sub> owns rows/output-slots [i] and a slice of the input array.</p>
+          <p>A nonzero's row index (rid) decides where its <i>output</i> write lands — always local. Its column index (cid, called <b>idx</b> in this paper) decides which <i>input</i> property it must read — and that can live on a different node entirely.</p>
+          <div class="ready"><b>Now you're ready:</b> every inter-node message this paper discusses is one of these input-property reads — a Property Request (PR).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>RDMA and one-sided operations<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>RDMA</b> lets one node read or write another node's memory directly, without interrupting its CPU — a "one-sided" operation. Today's RDMA (Infiniband verbs) only offers fine-grained reads/writes per address; it has no native "fetch this whole scattered list of addresses" command.</p>
+          <p>So a program that needs many scattered remote values must issue many separate RDMA reads, each requiring the host to hand a request to the NIC over PCIe.</p>
+          <div class="ready"><b>Now you're ready:</b> NetSparse's first mechanism (RIG) is exactly this missing "gather" primitive, added to RDMA and executed in hardware.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>The two baseline strategies: Sparsity-Unaware vs Sparsity-Aware<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>SU</b> ignores the nonzero pattern and transfers data as if the kernel were dense — e.g., broadcasting every property to every node via a collective. Simple, and it uses network bandwidth efficiently, but it moves enormous amounts of data nobody asked for.</p>
+          <p><b>SA</b> scans the actual nonzeros and issues a PR only for the properties really needed. Far less redundant traffic — but generating a PR per nonzero, in software, is expensive.</p>
+          <div class="ready"><b>Now you're ready:</b> NetSparse keeps the SA approach's low redundancy but fixes its software cost with hardware — it never falls back to SU-style blasting.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Why fine-grained software requests are so expensive<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Every SA PR today means: a CPU core reads a nonzero from memory, computes its destination, and hands a request to the NIC — usually via an MMIO write across the PCIe bus. Do this millions of times, one nonzero at a time, and the host-NIC synchronization overhead dominates.</p>
+          <p>The result: even on a 64-core node with a perfectly balanced load and zero network latency, this software path tops out around 16.6% of line rate for large properties — and under 2.3% for tiny ones.</p>
+          <div class="ready"><b>Now you're ready:</b> this ceiling is exactly what RIG Units are built to blow past, by moving PR generation off the host entirely.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>SmartNICs — programmable, memory-equipped network cards<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>SNIC</b> (e.g., AMD Pensando, NVIDIA BlueField) bundles its own DRAM, small caches, and lightweight processing cores onto the NIC itself. It can run logic — filtering, bookkeeping, even small state machines — without ever bothering the host CPU.</p>
+          <p>Modern SNICs comfortably carry gigabytes of onboard DRAM, far more than a per-column bitvector for even huge sparse matrices would need.</p>
+          <div class="ready"><b>Now you're ready:</b> NetSparse's RIG Units and Idx Filter live entirely inside the SNIC, using this onboard compute and memory.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Programmable switches and the rack hierarchy<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Datacenter and HPC networks are hierarchical: nodes plug into a <b>Top-of-Rack (ToR)</b> switch, and racks plug into a spine. Modern switches (Tofino-style) run programmable P4 pipelines at line rate, but their per-stage register arrays are limited (32-bit words, tight per-cycle access budgets).</p>
+          <p>Because of this hierarchy, two nodes in the same rack are "close," and a property fetched from a remote rack by one node might well be useful to its rack-mates too.</p>
+          <div class="ready"><b>Now you're ready:</b> that closeness is what NetSparse's in-switch Property Cache is built to exploit.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Packet headers and goodput<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Properties are small — 4 bytes to 1 KB (K = 1 to 256 elements). But every network packet carries tens of bytes of header (addressing, protocol framing) regardless of payload size. For a 4-byte property, headers can be over <b>97%</b> of the packet.</p>
+          <p><b>Goodput</b> is the fraction of transferred bits that are actual payload; it's always ≤ line utilization, and header overhead is what widens that gap.</p>
+          <div class="ready"><b>Now you're ready:</b> shrinking the per-PR header share — by sharing one header across many PRs — is the whole point of NetSparse's concatenation mechanism.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Temporal remote destination locality<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Nonzeros are usually scanned in some fixed order (e.g., row by row). If a matrix's nonzero pattern is clustered (e.g., near the diagonal), PRs generated close together in time tend to target the <i>same</i> destination node, even though each PR is for a different property.</p>
+          <p>The paper measures this directly: in matrices like <code>queen</code>, 64 consecutive PRs from a node go, on average, to just 1 unique destination out of 127 possible ones.</p>
+          <div class="ready"><b>Now you're ready:</b> this locality is exactly what makes packing many PRs into one packet (concatenation) so effective.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>NetSparse in a nutshell</h2>
+      <p class="sub">The problem, the four fixes, and how they connect.</p>
+    </div>
+    <div class="prose">
+      <p>Put a sparse accelerator on every node of a cluster and computation gets fast — fast enough that the network becomes the bottleneck. The two existing communication strategies both fail, just in different ways. <span class="mem-chip chip-lru">SU</span> (Sparsity-Unaware) transfers as if the matrix were dense: on average, it sends <b>720 redundant properties for every useful one</b>. <span class="mem-chip chip-sat">SA</span> (Sparsity-Aware) fixes the redundancy by scanning the real nonzero pattern — but generating millions of fine-grained requests in software is so expensive that measured line utilization drops to an average of <b>0.24%</b>, with goodput even lower once you subtract packet-header overhead.</p>
+      <p><strong>NetSparse</strong> keeps SA's low redundancy and fixes its software bottleneck with four hardware mechanisms. <span class="mem-chip chip-hi">RIG Units</span> in the SmartNIC let the host offload PR generation for a whole batch of nonzeros in one command, instead of synchronizing with the NIC per nonzero. An <b>Idx Filter</b> bitvector plus a <b>Pending PR Table</b> drop redundant or duplicate requests in hardware, for free. A <b>Concatenation</b> protocol packs multiple PRs headed to the same node into one packet, sharing the header cost. And a <span class="mem-chip chip-ucp">Property Cache</span> inside each Top-of-Rack switch serves a rack's repeated requests for the same remote value without another trip across the network.</p>
+      <p><strong>The payoff:</strong> on a simulated 128-node cluster, NetSparse's communication alone is <b>33× faster than SU and 15× faster than SA</b> (geometric mean). Paired with per-node SPADE accelerators for SpMM, the 128-node cluster runs <b>38× faster than a single node</b> — more than half of the <b>72×</b> a hypothetical system with zero communication overhead would reach. (For contrast: with SU communication, the 128-node cluster is actually <i>slower</i> than one node — 0.7×; with SA, it's only 3×.) All of this for well under <b>1%</b> extra chip area in the SNIC and switch, with nothing added to the routing critical path.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🕸️ Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>SU wastes bandwidth on data nobody needs (720× avg redundancy); SA wastes bandwidth utilization on software overhead (~0.24% avg line utilization).</li>
+        <li><b>RIG</b> offloads a whole batch of nonzeros to the NIC in one command — no per-nonzero host↔NIC round trip.</li>
+        <li><b>Idx Filter</b> (bitvector) + <b>Pending PR Table</b> (CAM) drop already-fetched or in-flight-duplicate PRs, in hardware, for free.</li>
+        <li><b>Concatenation</b> shares one packet header across many same-destination PRs, exploiting temporal remote destination locality.</li>
+        <li><b>Property Cache</b> in the ToR switch serves a rack's repeat requests for the same value locally — no second network hop.</li>
+        <li>Result: 33×/15× communication speedup over SU/SA; 38× end-to-end vs. one node — over half of the 72× no-communication ceiling.</li>
+        <li>Cost: ~3.5 MB extra SRAM total, &lt;1% area, ~4% power at max activity, and nothing on the critical path.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE: stacking the four mechanisms -->
+    <figure class="viz reveal">
+      <div class="viz-title">Stacking the four mechanisms (arabic matrix, K=16)</div>
+      <div class="viz-kicker">cumulative communication speedup vs. SUOpt, as each mechanism is added</div>
+      <svg class="full" viewBox="0 0 760 320" role="img" aria-label="Cumulative speedup as RIG, Filter, Coalesce, Concatenation, and Property Cache are added, for the arabic matrix at K=16">
+        <line x1="170" y1="20" x2="170" y2="290" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="11" fill="#6E6456">
+          <text x="160" y="55" text-anchor="end">RIG only</text>
+          <text x="160" y="105" text-anchor="end">+ Idx Filter</text>
+          <text x="160" y="155" text-anchor="end">+ Coalescing</text>
+          <text x="160" y="205" text-anchor="end">+ Concat (NIC)</text>
+          <text x="160" y="255" text-anchor="end">+ Switch (full NetSparse)</text>
+        </g>
+        <rect x="170" y="34" width="62" height="26" rx="5" fill="#2C6FA8"/>
+        <rect x="170" y="84" width="367" height="26" rx="5" fill="#E0A030"/>
+        <rect x="170" y="134" width="466" height="26" rx="5" fill="#B8791A"/>
+        <rect x="170" y="184" width="506" height="26" rx="5" fill="#7A4FC4"/>
+        <rect x="170" y="234" width="545" height="26" rx="5" fill="#5B3894"/>
+        <g font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#fff">
+          <text x="178" y="52">1.8×</text>
+          <text x="540" y="102">34.2×</text>
+          <text x="639" y="152">88.0×</text>
+          <text x="679" y="202">129.1×</text>
+          <text x="700" y="252">184.1×</text>
+        </g>
+        <text x="170" y="308" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">speedup vs. SUOpt (bar length ∝ log₁₀ of speedup) · Paper Table 8</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> offloading PR generation to the NIC alone (RIG) is worth 1.8×. Filtering out already-fetched idxs is the single biggest lever for this dense matrix — it alone jumps the speedup to 34.2×, because arabic's nodes repeatedly ask for the same handful of properties. Coalescing, concatenation, and switch caching each add a further, smaller multiplier, reaching 184.1× total. (Paper, Table 8, arabic/K=16.)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → offload → dedupe → pack → cache → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">SU wastes bandwidth; SA's software overhead wastes line utilization</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">RIG Units</div><div class="nd">Host offloads a whole batch of nonzeros to the SNIC in one command</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Idx Filter + Coalescing</div><div class="nd">Drop already-fetched or in-flight-duplicate PRs in hardware</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Concatenation</div><div class="nd">Pack same-destination PRs into one packet, sharing the header</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Property Cache</div><div class="nd">ToR switch serves a rack's repeat requests without another network hop</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">33×/15× vs. SU/SA communication; 38× end-to-end vs. 1 node</div></div>
+      </div>
+    </figure>
+
+    <div class="callout why"><span class="ic">💡</span><div><b>For tiering/CXL readers:</b> the shape of this problem should feel familiar — it's "avoid fetching the same remote line twice, and share fetched data with nearby consumers," the same motivation behind directory-based coherence or a shared near-memory cache in a CXL pooled-memory system. NetSparse's Idx Filter is essentially a cheap, workload-specific presence bit, and its Property Cache is a shared "last-level" cache one hop closer than DRAM — placed in the switch instead of in a CXL switch/fabric-manager, but solving the same "don't re-fetch, don't re-migrate" problem for network hops instead of memory-tier hops.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about NetSparse</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with an honest note about where it breaks.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="34" width="46" height="34" rx="4" fill="#DCEAF6" stroke="#2C6FA8" stroke-width="2.5"/>
+          <path d="M22 44h30M22 52h20M22 60h24" stroke="#2C6FA8" stroke-width="2" stroke-linecap="round"/>
+          <path d="M64 50h20" stroke="#332C24" stroke-width="2" stroke-linecap="round" marker-end="url(#ah1)"/>
+          <rect x="88" y="30" width="38" height="42" rx="5" fill="#fff" stroke="#332C24" stroke-width="2.5"/>
+          <circle cx="107" cy="51" r="10" fill="#EEE6F8" stroke="#7A4FC4" stroke-width="2"/>
+          <defs><marker id="ah1" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#332C24"/></marker></defs>
+        </svg></div>
+        <span class="term">RIG offload · Batch commands</span>
+        <h3>A shopping list, not a walkie-talkie</h3>
+        <p>Instead of calling your assistant on the radio for every single item ("get milk" ... wait ... "now get eggs" ...), you hand over one written list and let them work through it themselves. RIG does exactly this: the host hands the SNIC one batch of nonzero indices, and the RIG Unit generates and tracks every resulting Property Request on its own — no per-item host↔NIC round trip.</p>
+        <div class="breaks"><b>Where it breaks:</b> a human assistant uses judgment about pacing; a RIG Unit just executes mechanically. Hand it too big a list and one unit gets overloaded while others idle (load imbalance); too small a list and you're back to per-item overhead.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="14" width="100" height="68" rx="6" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <text x="70" y="34" text-anchor="middle" font-family="monospace" font-size="9" fill="#332C24">already have:</text>
+          <rect x="30" y="42" width="14" height="14" rx="2" fill="#E0A030"/><rect x="48" y="42" width="14" height="14" rx="2" fill="#E7DBC6"/>
+          <rect x="66" y="42" width="14" height="14" rx="2" fill="#E0A030"/><rect x="84" y="42" width="14" height="14" rx="2" fill="#E7DBC6"/>
+          <path d="M30 68 l8 8 l16 -16" stroke="#2C8C7C" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <text x="70" y="76" text-anchor="middle" font-family="monospace" font-size="8" fill="#6E6456">skip the request</text>
+        </svg></div>
+        <span class="term">Idx Filter &amp; coalescing · Redundant PRs</span>
+        <h3>Checking your notes before you ask again</h3>
+        <p>If you've already written down an answer, you don't ask the question a second time — and if you've already asked and are still waiting on a reply, you don't ask again either. That's the Idx Filter (a bit per column, set once the property arrives) and the Pending PR Table (tracks requests still in flight). Together they stop a program from sending two PRs for the same property.</p>
+        <div class="breaks"><b>Where it breaks:</b> this only works within one "notebook" — a single RIG Unit. Two different RIG Units in the same node checking for the same idx at once can still both ask, since cross-unit coalescing needs synchronization the design skips for simplicity.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="46" y="18" width="48" height="34" rx="4" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <path d="M46 22 l24 16 l24 -16" stroke="#332C24" stroke-width="1.5" fill="none"/>
+          <text x="70" y="42" text-anchor="middle" font-family="monospace" font-size="8" fill="#6E6456">1 envelope</text>
+          <rect x="30" y="62" width="16" height="12" rx="2" fill="#7A4FC4"/><rect x="52" y="62" width="16" height="12" rx="2" fill="#7A4FC4"/>
+          <rect x="74" y="62" width="16" height="12" rx="2" fill="#7A4FC4"/><rect x="96" y="62" width="16" height="12" rx="2" fill="#7A4FC4"/>
+          <path d="M38 62 v-6 M60 62 v-6 M82 62 v-6 M104 62 v-6" stroke="#9A8E7C" stroke-width="1.4"/>
+        </svg></div>
+        <span class="term">Concatenation · Temporal destination locality</span>
+        <h3>One envelope, many letters to the same house</h3>
+        <p>If four letters are all headed to the same address, mailing them separately means paying for four envelopes and four stamps. NetSparse's Concatenation Queues hold PRs bound for the same node briefly, then ship them together in one packet — one shared header instead of several. This works because nonzeros scanned close together in time often target the same destination node (Table 4).</p>
+        <div class="breaks"><b>Where it breaks:</b> waiting for a full envelope delays every letter inside it. The paper's sweep shows a sweet spot around 500 delay cycles — wait 100× longer (50,000 cycles) and the delay costs more than the header savings are worth.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="10" y="30" width="34" height="34" rx="6" fill="#EEE6F8" stroke="#7A4FC4" stroke-width="2.5"/>
+          <path d="M27 40 v16 M19 48 h16" stroke="#7A4FC4" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="70" cy="47" r="6" fill="#332C24"/><circle cx="95" cy="30" r="6" fill="#332C24"/><circle cx="95" cy="64" r="6" fill="#332C24"/><circle cx="120" cy="47" r="6" fill="#332C24"/>
+          <path d="M44 47 L70 47 M70 47 L95 30 M70 47 L95 64 M95 30 L120 47 M95 64 L120 47" stroke="#9A8E7C" stroke-width="1.4"/>
+        </svg></div>
+        <span class="term">Property Cache · Rack-local sharing</span>
+        <h3>Borrowing from a neighbor instead of driving across town</h3>
+        <p>If your neighbor already drove across town for a part you also need, it's faster to borrow theirs than make the same trip. The ToR switch's Property Cache saves properties fetched from remote racks so that other nodes in the <i>same</i> rack can reuse them — the paper finds 85% of PRs (after removing redundant ones) are useful to more than one node in a 16-node group.</p>
+        <div class="breaks"><b>Where it breaks:</b> the neighbor only has what they happened to fetch. For a matrix like <code>stokes</code>, rack-mates rarely want the same property, so the cache sits mostly idle regardless of how big it is (Figure 18 shows ~0% benefit at any size).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="36" rx="6" fill="#F7E1D8" stroke="#C0563B" stroke-width="2.5"/>
+          <rect x="26" y="40" width="6" height="16" fill="#C0563B"/>
+          <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">97.6% header · K=1</text>
+        </svg></div>
+        <span class="term">Header overhead · Goodput</span>
+        <h3>Shipping a grain of rice in a shipping container</h3>
+        <p>Ship one grain of rice and the container itself is nearly the whole shipment — 4 bytes of property data behind 50–78 bytes of headers is a 97.6% "container" for K=1. Concatenation shrinks that per-shipment container cost by spreading it over several grains at once, but never eliminates it.</p>
+        <div class="breaks"><b>Where it breaks:</b> for a big enough grain (K=256, a 1KB property), the container is already mostly rice — headers are just 13.5% of traffic — so concatenation has much less left to save.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M10 70 h120" stroke="#9A8E7C" stroke-width="3"/>
+          <path d="M40 70 v-14 h60 v14" fill="none" stroke="#7A4FC4" stroke-width="3"/>
+          <circle cx="70" cy="48" r="7" fill="#EEE6F8" stroke="#7A4FC4" stroke-width="2.5"/>
+          <path d="M60 20 h20" stroke="#332C24" stroke-width="2" stroke-linecap="round" marker-end="url(#ah2)"/>
+          <defs><marker id="ah2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#332C24"/></marker></defs>
+        </svg></div>
+        <span class="term">Middle pipes · Two crossbars</span>
+        <h3>A rest stop beside the highway, not on it</h3>
+        <p>You can add a service station without rerouting the highway — just build an off-ramp beside it. NetSparse's switch adds a new layer of "middle pipes" (with the Property Cache) between the existing ingress and egress pipes, and a second crossbar, so packets can check the cache without disturbing the switch's normal routing tables.</p>
+        <div class="breaks"><b>Where it breaks:</b> the rest stop still needs its own lanes. That second crossbar isn't free — the authors could only bound its area cost loosely (1–15% of switch area) given public data on comparable designs.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key diagrams rebuilt as visuals you can read at a glance.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem, quantified</h3>
+      <p>Across five large SparseSuite matrices on a simulated 128-node cluster, <span class="mem-chip chip-lru">SU</span> issues an average of <b>720 redundant transfers per useful one</b> (from 1:32 for stokes to 1:1947 for arabic). <span class="mem-chip chip-sat">SA</span> avoids most of that, but its software overhead — one MMIO-driven host↔NIC exchange per nonzero — caps measured line utilization at an average of <b>0.24%</b> and goodput lower still, since 55.6–97.6% of SA's traffic (for K=32 down to K=1) is packet headers, not property data.</p>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Architecture overview — the PR lifecycle</h3>
+      <p>NetSparse re-plumbs the path a Property Request takes end to end, moving nearly everything off the host and CPU-driven paths.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Lifetime of a Property Request, with NetSparse</div>
+      <div class="viz-kicker">host → RIG Unit → concatenation → switch (filter + cache) → response</div>
+      <svg class="full" viewBox="0 0 780 210" role="img" aria-label="Pipeline stages a Property Request passes through under NetSparse">
+        <g font-family="JetBrains Mono" font-size="11" font-weight="700" fill="#fff" text-anchor="middle">
+          <rect x="10" y="70" width="120" height="60" rx="10" fill="#2C6FA8"/><text x="70" y="96">Host RIG cmd</text><text x="70" y="112" font-size="9" font-weight="500">batch of idxs</text>
+          <rect x="150" y="70" width="130" height="60" rx="10" fill="#2C6FA8"/><text x="215" y="90">RIG Unit</text><text x="215" y="106" font-size="9" font-weight="500">filter + coalesce</text><text x="215" y="118" font-size="9" font-weight="500">→ generate PRs</text>
+          <rect x="300" y="70" width="110" height="60" rx="10" fill="#B8791A"/><text x="355" y="96">Concatenator</text><text x="355" y="112" font-size="9" font-weight="500">pack by dest.</text>
+          <rect x="430" y="70" width="120" height="60" rx="10" fill="#7A4FC4"/><text x="490" y="90">ToR Switch</text><text x="490" y="106" font-size="9" font-weight="500">Property Cache</text><text x="490" y="118" font-size="9" font-weight="500">hit → respond</text>
+          <rect x="570" y="70" width="100" height="60" rx="10" fill="#2C6FA8"/><text x="620" y="96">Deconcat</text><text x="620" y="112" font-size="9" font-weight="500">+ write DMA</text>
+          <rect x="690" y="70" width="80" height="60" rx="10" fill="#5B3894"/><text x="730" y="96">Host mem</text><text x="730" y="112" font-size="9" font-weight="500">Idx Filter set</text>
+        </g>
+        <g stroke="#9A8E7C" stroke-width="1.6" fill="none" marker-end="url(#ah3)">
+          <path d="M130 100 H150"/><path d="M280 100 H300"/><path d="M410 100 H430"/><path d="M550 100 H570"/><path d="M670 100 H690"/>
+        </g>
+        <defs><marker id="ah3" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#9A8E7C"/></marker></defs>
+        <text x="10" y="30" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Everything past the first box happens without host CPU involvement</text>
+        <text x="10" y="165" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">On a cache miss, the deconcatenated read PR continues to the destination node's RIG Unit (server thread), which reads its host's memory and returns a response PR — same pipeline, reversed.</text>
+      </svg>
+      <figcaption>One RIG command triggers this whole pipeline for a batch of nonzeros. Filtering, coalescing, concatenation, and cache lookups all happen in dedicated hardware — the host only sees the command's completion. (Paper, Fig. 3.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · RIG Units, the Idx Filter, and coalescing</h3>
+      <p>Each SNIC hosts multiple <b>RIG Units</b>, configurable as client threads (issue PRs) or server threads (answer them). A client thread DMAs a batch of idxs from host memory, then for each idx: checks the <b>Idx Filter</b> (a 1-bit-per-column bitvector in SNIC DRAM — already fetched?) and the <b>Pending PR Table</b> (a per-unit CAM — already outstanding?). If either says yes, the idx is dropped; otherwise a PR is generated and pipelined out, without stalling for the previous idx's response. This pipelining is what lets a RIG Unit read one new idx per cycle instead of blocking on network round trips.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Concatenation — the protocol and the math</h3>
+      <p>NetSparse defines a 2-layer header on top of RDMA: a <b>Concatenation layer</b> (destination, type, length, #PRs) shared by every PR in a packet, and a per-PR <b>PR layer</b> (source, source thread id, idx, request id). Assume 50 bytes of upper-layer header. Unconcatenated, each PR packet costs 50+10+18 = <b>78 bytes</b> of header; N PRs sent separately cost 78N bytes total. Concatenated into one packet, N PRs cost 50+14+18N = <b>64+18N bytes</b> total — the 50B upper-layer header and most of the 10–14B concatenation header are paid only once.</p>
+      <pre class="sketch"><span class="cm"># hardware concatenation, per Concatenation Point (SNIC or ToR switch)</span>
+<span class="kw">on</span> PR arrival:
+    push PR into CQ[destination][type]        <span class="cm"># one queue per {dest, read|response}</span>
+    <span class="kw">if</span> CQ was empty: register CQ's Expiration Time (ET) in the EQ
+<span class="kw">every cycle</span>:
+    <span class="kw">if</span> head-of-EQ's CQ is full <span class="kw">or</span> now &gt; its ET:
+        concatenate CQ's PRs into one packet → forward for transmission</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why not just do this in P4?</b> Tofino-style register arrays cap out at 32-bit words, and concatenation needs far more register accesses per cycle than a P4 pipeline stage allows. NetSparse instead adds dedicated Concatenator/Deconcatenator hardware modules, invoked from P4 as new control-block externs.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · In-switch Property Caching</h3>
+      <p>The ToR switch's <b>Property Cache</b> lives in a new layer of "middle pipes" between the existing ingress and egress pipes, reachable through a second 16×16 crossbar. An arriving read PR is deconcatenated, checked against the cache; on a hit, it becomes a response PR redirected back to its source — all before it ever leaves the rack. Because different kernels use different property sizes, the cache is built from 32 fixed-size <b>segments</b> (16B each) that can be ganged together (2 segments for 32B properties, all 32 for 512B) so the full capacity is usable regardless of K.</p>
+      <div class="callout note"><span class="ic">🗄️</span><div>Unlike NetCache's control-plane-updated switch cache (built for long-lived key-value stores), the Property Cache is updated entirely in the <b>data plane</b> — necessary because a sparse-kernel iteration is far shorter-lived than a KVS's operating lifetime.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations, straight from the paper's tables and formulas.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① How much do headers shrink with concatenation?</h3>
+      <p style="color:var(--ink-soft)">Take N = 8 Property Requests bound for the same destination. Compare total header bytes unconcatenated vs. concatenated.</p>
+      <ol class="seq">
+        <li><b>Unconcatenated:</b> each PR pays its own full header — 50 (upper layers) + 10 (concat layer) + 18 (PR layer) = <b>78 bytes</b>. For 8 separate packets: 78 × 8 = <b>624 bytes</b> of header.</li>
+        <li><b>Concatenated:</b> one packet carries all 8 — 50 (upper layers, once) + 14 (concat layer, once) + 18 × 8 (PR layer, per PR) = 64 + 144 = <b>208 bytes</b> of header.</li>
+        <li><b>Savings:</b> (624 − 208) / 624 ≈ <b>66.7% fewer header bytes</b> for the same 8 PRs.</li>
+        <li>Notice the PR-layer cost (18B × N) never goes away — concatenation only removes the <i>duplicated</i> per-packet overhead, not the per-PR bookkeeping.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this is exactly why concatenation matters most for small K — a fixed header savings of ~50–60 bytes per PR is huge relative to a 4-byte property, and comparatively small relative to a 1KB one.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Just how wasteful is SU?</h3>
+      <p style="color:var(--ink-soft)">Table 1 gives useful:redundant ratios per matrix under SU: arabic 1:1947, europe 1:582, queen 1:74, stokes 1:32, uk 1:966. What's the average redundancy, and what does it imply for arabic specifically?</p>
+      <ol class="seq">
+        <li><b>Average:</b> (1947+582+74+32+966) / 5 = 3601 / 5 = <b>720.2</b> redundant transfers per useful one — matching the paper's headline "720x" figure.</li>
+        <li><b>For arabic:</b> 1 useful transfer accompanies 1947 redundant ones, so out of every 1948 property transfers SU sends, only 1 is used. That's a useful fraction of 1/1948 ≈ <b>0.051%</b>.</li>
+        <li>This is also the theoretical ceiling on how much SU's traffic <i>could</i> shrink if all redundancy were eliminated — consistent with NetSparse's measured 283× traffic reduction vs. SU for arabic at K=16 (Table 7), which is in the same ballpark once tail-node imbalance is accounted for.</li>
+      </ol>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Careful:</b> "1:1947" describes average redundancy across the whole run, while the 283× traffic reduction NetSparse actually measures is for the <i>tail node</i> specifically — the node that determines total execution time, and whose imbalance (Fig. 19) can differ from the cluster-wide average.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Which mechanism matters most for a dense matrix?</h3>
+      <p style="color:var(--ink-soft)">Table 8's arabic/K=16 row: RIG alone 1.8×, +Filter 34.2×, +Coalesce 88.0×, +Concat(NIC) 129.1×, +Switch 184.1× (all vs. SUOpt). What's each mechanism's own multiplicative contribution?</p>
+      <ol class="seq">
+        <li><b>Filter's contribution:</b> 34.2 / 1.8 ≈ <b>19.0×</b> on top of RIG alone — by far the largest single jump.</li>
+        <li><b>Coalescing's contribution:</b> 88.0 / 34.2 ≈ <b>2.57×</b> more.</li>
+        <li><b>NIC concatenation's contribution:</b> 129.1 / 88.0 ≈ <b>1.47×</b> more.</li>
+        <li><b>Switch's contribution:</b> 184.1 / 129.1 ≈ <b>1.43×</b> more.</li>
+        <li><b>Conclusion:</b> for arabic, eliminating redundant idx repeats (Filter) dwarfs every other mechanism — consistent with arabic being a denser matrix where many nonzeros in the same node share a column index.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Compare with europe (sparser): its Table 8 row shows RIG alone already reaching 82.8× (vs. arabic's 1.8×), while Filter adds almost nothing (82.8→84.8×). Sparsity structure — not just "turn on every mechanism" — determines which piece of NetSparse actually pays off.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Is the hardware overhead actually small?</h3>
+      <p style="color:var(--ink-soft)">The paper reports SNIC extensions at 2.1W (worst-case combined static+dynamic power) and 1.43mm², against a 50W / ~300mm² Pensando Elba baseline. Check the percentages.</p>
+      <ol class="seq">
+        <li><b>SNIC power overhead:</b> 2.1W / 50W = <b>4.2%</b> at maximum activity — matches the paper's "~4%" claim (and drops to ~1% when idle).</li>
+        <li><b>SNIC area overhead:</b> 1.43mm² / 300mm² ≈ <b>0.48%</b> — matches the paper's "~0.5%."</li>
+        <li><b>Switch side:</b> caches (21.3mm²) + concatenators (1.5mm²) = 22.8mm² of a ~700mm² switch die ≈ <b>3.3% area</b>; combined power ~10W of a 270W Tofino2 ≈ <b>3.7% power</b> — both match the paper's reported "~3.2%" and "~4%."</li>
+        <li>Total extra SRAM across all NetSparse structures: about <b>3.5 MB</b> — smaller than a single modern LLC slice, for a 15–33× communication speedup.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div>Same shape of argument as most "smart hardware" proposals: a few percent of area/power buys back an order of magnitude of the thing that was actually bottlenecking the system.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Under SU, matrix uk has a useful:redundant ratio of 1:966. What fraction of uk's SU traffic is actually useful?</div>
+      <details><summary>Show answer</summary><div class="ans">1 useful transfer for every 966 redundant ones means 967 total transfers per useful one, so the useful fraction is 1/967 ≈ <b>0.10%</b>.<span class="mis">Misconception: that SU's high line-bandwidth utilization means it's an efficient scheme. High utilization just means the network is busy — it says nothing about whether the bytes moving across it are needed.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Using the header formulas (78N unconcatenated, 64+18N concatenated), compute the percentage header-byte reduction for N=4 PRs to the same destination.</div>
+      <details><summary>Show answer</summary><div class="ans">Unconcatenated: 78×4 = 312 bytes. Concatenated: 64+18×4 = 136 bytes. Reduction = (312−136)/312 ≈ <b>56.4%</b>.<span class="mis">Misconception: assuming concatenation makes header overhead disappear. It scales down but never to zero — 18 bytes of per-PR header remain no matter how many PRs share a packet.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Table 4 shows queen has near-perfect temporal remote destination locality (avg. 1.00 unique destination in 64 consecutive PRs). Yet Table 1 shows queen's SA approach still has a 1:25 useful:redundant ratio — plenty of redundant transfers. Why doesn't destination locality fix that?</div>
+      <details><summary>Show answer</summary><div class="ans">Destination locality (many PRs going to the <i>same node</i>) and idx redundancy (many PRs asking for the <i>same property</i>) are different properties of the sparsity pattern. Concatenation exploits the former; the Idx Filter exploits the latter. queen's nonzeros cluster near the diagonal (great destination locality) but that says nothing about how often the same column index repeats within a node.<span class="mis">Misconception: conflating "PRs go to the same place" with "PRs ask for the same thing." A matrix can have one property without the other.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Figure 10 shows that even with 64 out-of-order cores, perfectly balanced load, and zero network latency, ideal SA goodput only reaches 16.6% (K=128) or 2.25% (K=1). Why can't more cores or better latency-hiding close this gap?</div>
+      <details><summary>Show answer</summary><div class="ans">The bottleneck isn't network transit time — the experiment assumes zero network latency. It's the CPU-side cost of generating each PR: reading a nonzero, computing its destination, and synchronizing with the NIC over PCIe (typically an MMIO write) for every single one. That per-PR software cost scales with the number of nonzeros, not with available parallelism, so adding cores helps sublinearly and never removes the fixed cost of managing each fine-grained request.<span class="mis">Misconception: that SA's bottleneck is a latency problem solvable with more overlap/parallelism. It's a throughput problem in per-request software overhead — exactly what motivates offloading PR generation into hardware (RIG) instead of scaling up cores.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">For arabic (K=16), RIG alone reaches only 1.8× speedup, but adding the Idx Filter jumps it to 34.2×. For europe (K=16), RIG alone already reaches 82.8×, and Filter barely helps (84.8×). What does this contrast tell you about the two matrices' structure?</div>
+      <details><summary>Show answer</summary><div class="ans">arabic must have many nonzeros within the same node sharing the same column index (idx) — so a large share of its naive PRs are pure duplicates, which only the Idx Filter removes. europe is sparser with far less idx repetition, so simply offloading PR generation (RIG) captures nearly all of the achievable speedup, and there's little redundancy left for the Filter to catch.<span class="mis">Misconception: assuming one mechanism (like RIG offload) is "the fix" for SA's slowness in general. Which mechanism dominates is workload-dependent — this is exactly why NetSparse bundles four different, complementary techniques rather than just one.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">Figure 18 shows the Property Cache gives arabic up to a 40% speedup as cache size grows, but gives stokes ~0% benefit at any cache size. Why would a bigger cache not help stokes?</div>
+      <details><summary>Show answer</summary><div class="ans">Caching only helps when a property fetched by one node is later wanted by another node in the same rack. If stokes' sparsity pattern rarely produces that kind of rack-local reuse, there's simply nothing for a bigger cache to capture — the cache isn't undersized, the workload just doesn't have the sharing pattern to exploit.<span class="mis">Misconception: that more cache capacity always improves cache-based schemes. Capacity only matters if there's exploitable reuse; below that, size is irrelevant.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What's the actual difference between SU and SA, in one sentence?<span class="chev">▾</span></summary><div class="a">SU moves data as if the matrix were dense (fast to schedule, wasteful); SA scans the real nonzero pattern and requests exactly what's needed (efficient in bytes, expensive in software overhead per request). NetSparse keeps SA's efficiency and fixes its overhead with hardware.</div></details>
+      <details><summary><span class="q">Q2</span>What exactly does a RIG operation do that a normal RDMA read doesn't?<span class="chev">▾</span></summary><div class="a">A normal RDMA read fetches one address per host-issued command. A RIG command hands the NIC a whole batch of nonzero indices at once; the NIC's RIG Unit then generates, tracks, and completes every resulting Property Request on its own, notifying the host only when the entire batch is done.</div></details>
+      <details><summary><span class="q">Q3</span>How does the Idx Filter avoid re-fetching a property without expensive preprocessing?<span class="chev">▾</span></summary><div class="a">It's a simple bitvector, one bit per column of the sparse matrix, set the moment that property's value has been written to host memory. Checking it before issuing a PR is a single memory lookup — no scanning, sorting, or offline analysis of the matrix required, so it costs nothing extra even when the matrix changes between iterations.</div></details>
+      <details><summary><span class="q">Q4</span>Why can't cross-RIG-Unit coalescing also be done cheaply?<span class="chev">▾</span></summary><div class="a">Coalescing (skipping a PR because an identical one is already in flight) relies on a private, per-unit Pending PR Table — a CAM checked without contention. Extending that across multiple RIG Units in the same node would require synchronizing that CAM across units, adding real hardware complexity the authors chose to avoid.</div></details>
+      <details><summary><span class="q">Q5</span>Doesn't waiting to concatenate PRs add latency?<span class="chev">▾</span></summary><div class="a">Yes, individual PRs are delayed by up to the configured DelayCycles (500 by default). But what matters is when the whole kernel finishes, not any one PR — and that delay is small next to typical network round-trip times. The paper's sweep (Fig. 17) shows performance improves as delay increases from 0, then degrades again past a point (50,000 cycles), confirming there's a real tradeoff to tune.</div></details>
+      <details><summary><span class="q">Q6</span>Does the Property Cache change how packets get routed?<span class="chev">▾</span></summary><div class="a">No — cached responses are redirected to their requester's node, but the switch's normal routing tables and paths are untouched. The cache lives in a separate "middle pipe" layer with its own crossbar, specifically so it doesn't interfere with existing routing logic.</div></details>
+      <details><summary><span class="q">Q7</span>Why build a new switch cache instead of reusing NetCache's design?<span class="chev">▾</span></summary><div class="a">NetCache updates its cache from the control plane, which is fine for a long-running key-value store but far too slow for a sparse-kernel iteration that completes in a fraction of the time. NetSparse's Property Cache updates entirely in the data plane, at line rate, to keep up with short-lived kernels.</div></details>
+      <details><summary><span class="q">Q8</span>Is NetSparse specific to SpMM, or does it generalize?<span class="chev">▾</span></summary><div class="a">The core communication pattern — reading remote "properties" indexed by nonzero column indices — is shared by SpMM, SpMV, and SDDMM, all evaluated in the paper. The authors also suggest RIG-style offload could help other throughput-oriented, fine-grained-irregular-access kernels beyond sparse linear algebra.</div></details>
+      <details><summary><span class="q">Q9</span>Does NetSparse always deliver its best-case speedups?<span class="chev">▾</span></summary><div class="a">No — matrices like europe and stokes see less of the full 128–184× ceiling other matrices reach, mainly due to imperfect concatenation (18B/PR is still non-negligible for tiny properties), statically-chosen parameters (like RIG batch size) that aren't optimal for every matrix, and inter-node load imbalance from how the matrix itself is partitioned — a partitioning problem NetSparse's hardware doesn't address.</div></details>
+      <details><summary><span class="q">Q10</span>Is this deployable on real infrastructure, or purely simulated?<span class="chev">▾</span></summary><div class="a">The evaluation is simulation-based (SST + Merlin + DRAMSim3), but the design is meant to be backward-compatible: NetSparse headers ride as opaque RDMA payloads, so existing routing infrastructure doesn't need to change. Only end-host SNICs (both sides of a PR) need RIG Units to speak the protocol; NetSparse-capable switches can be rolled out incrementally. The authors also synthesized the core logic in RTL to validate the area/power numbers.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results, and provenance</h2>
+      <p class="sub">Every term in one place, the headline numbers, then what's paper fact vs. our framing.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>NetSparse</b><span>The paper's proposal: four hardware mechanisms in SmartNICs and ToR switches to accelerate distributed sparse-kernel communication.</span></div>
+      <div class="term-def"><b>RIG (Remote Indexed Gather)</b><span>A one-sided operation that fetches properties for a whole batch of nonzeros in a single host→NIC command, executed by hardware RIG Units.</span></div>
+      <div class="term-def"><b>Idx Filter</b><span>A per-column bitvector in SNIC DRAM marking properties already fetched, used to drop redundant PRs at issue time.</span></div>
+      <div class="term-def"><b>Pending PR Table</b><span>A per-RIG-Unit CAM tracking in-flight PRs, used to coalesce (skip) duplicate requests for an idx already outstanding.</span></div>
+      <div class="term-def"><b>Concatenation (CQ / EQ)</b><span>Hardware that batches same-destination, same-type PRs into one packet via delay queues (CQs), tracked for expiration by an Expiration-Time Queue (EQ).</span></div>
+      <div class="term-def"><b>Property Cache</b><span>A data-plane-updated hardware cache in the ToR switch that serves a rack's repeat requests for the same remote property.</span></div>
+      <div class="term-def"><b>Goodput</b><span>The fraction of transferred bytes that are payload, not header — always ≤ line utilization.</span></div>
+      <div class="term-def"><b>Temporal remote destination locality</b><span>The tendency of PRs generated close in time to target the same destination node — what concatenation exploits.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>PR (Property Request)</b><span>A fine-grained remote read/response for one input-property value, indexed by a nonzero's column index (idx).</span></div>
+      <div class="term-def"><b>SU / SA</b><span>Sparsity-Unaware (dense-style, all-to-all) vs. Sparsity-Aware (per-nonzero, fine-grained) communication strategies.</span></div>
+      <div class="term-def"><b>SNIC</b><span>SmartNIC — a network card with onboard DRAM and compute, hosting NetSparse's RIG Units and Idx Filter.</span></div>
+      <div class="term-def"><b>K</b><span>Property size in elements (4B–1KB payloads across the paper's experiments).</span></div>
+      <div class="term-def"><b>1D partitioning</b><span>Splitting rows/output slots and input properties across nodes so writes are always local; reads may be remote.</span></div>
+      <div class="term-def"><b>Segmented cache design</b><span>The Property Cache's 32-segment structure, letting one cache serve multiple configurable property sizes.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">Big wins, small footprint</div>
+      <div class="viz-kicker">tail-node averages across arabic/europe/queen/stokes/uk (K=16) · hardware overhead vs. baseline chips</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Tail-node goodput<small>NetSparse</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="36"><span>~36% (vs. ~10% for SAOpt)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Property Cache<small>avg. hit rate</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="23"><span>~23% (up to 50%, queen)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Filter + coalesce<small>avg. rate</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="70"><span>~70% (up to 97%, arabic)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">SNIC power<small>overhead, max activity</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="4"><span>+4% (2.1W of 50W)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Switch area<small>cache + concat overhead</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="3.2"><span>+3.2% (22.8mm² of ~700mm²)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 25%+ (top row capped for display)</p>
+      <figcaption><b>The punchline:</b> the performance rows (goodput, cache hits, filtering) are what NetSparse buys; the bottom two rows are what it costs. Communication speedups of 15–33× (gmean) and 38× end-to-end vs. one node come from single-digit-percent hardware overhead. (Paper §9.1, §9.5.)</figcaption>
+    </figure>
+
+    <div class="card" style="margin-top:22px">
+      <h3>Source notes</h3>
+      <p style="font-size:.95rem;color:var(--ink-soft);margin-bottom:10px"><b>From the paper (facts, recomputed where noted):</b> all matrix statistics (Tables 1–4, 7, 8), goodput/line-utilization measurements (Table 2, Fig. 10), header-overhead percentages (Table 3), end-to-end speedups (Figs. 12, 13, 21, 22), sensitivity sweeps (Figs. 15–18), and hardware area/power figures (§9.5) are as reported by Gerogiannis et al. Averages such as "720× redundant" (Table 1), the 70%/23%/36% bar-chart averages, and the per-mechanism multiplicative breakdowns in Worked Example ③ are our own arithmetic performed on the paper's per-matrix numbers, not numbers stated verbatim in the text.</p>
+      <p style="font-size:.95rem;color:var(--ink-soft);margin:0"><b>Our framing:</b> the "one rule" plaque, all analogies, the CXL/tiering connection callout, the concept-map diagram, and the practice-problem misconceptions are this guide's interpretation, meant to build intuition — not text from the paper itself.</p>
+    </div>
+
+    <div class="subhead">Related work</div>
+    <div class="read-item reveal"><h4>NetCache: Balancing Key-Value Stores with Fast In-Network Caching <span class="diff med">medium</span></h4><div class="meta">Jin, Li, Zhang, Soulé, Lee, Foster, Kim, Stoica · ACM SOSP · 2017</div><p>The control-plane-updated switch cache design NetSparse's data-plane Property Cache improves on for short-lived sparse kernels.</p></div>
+    <div class="read-item reveal"><h4>Flare: Flexible In-Network Allreduce <span class="diff med">medium</span></h4><div class="meta">De Sensi, Di Girolamo, Ashkboos, Li, Hoefler · SC · 2021</div><p>In-network collective reduction for sparse gradients — a related but distinct in-network sparsity application (aggregation, not gather).</p></div>
+    <div class="read-item reveal"><h4>Two-Face: Combining Collective and One-Sided Communication for Distributed SpMM <span class="diff hard">hard</span></h4><div class="meta">Block, Gerogiannis, Mendis, Azad, Torrellas · ASPLOS · 2024</div><p>The hybrid SU/SA software scheme this paper's SAOpt baseline is built on top of (via the Conveyors framework).</p></div>
+    <div class="read-item reveal"><h4>Conveyors for Streaming Many-To-Many Communication <span class="diff med">medium</span></h4><div class="meta">Maley, DeVinney · IA3 Workshop · 2019</div><p>The software batching/message-concatenation framework used to build NetSparse's idealized SAOpt baseline.</p></div>
+    <div class="read-item reveal"><h4>Taurus: A Data Plane Architecture for Per-Packet ML <span class="diff hard">hard</span></h4><div class="meta">Swamy, Rucker, Shahbaz, Gaur, Olukotun · ASPLOS · 2022</div><p>The chiplet-based approach to extending switch pipelines with custom hardware, referenced as the integration path for NetSparse's Concatenator and Property Cache modules.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Gerogiannis, Merkouriadis, Block, Zulfiqar, Tofalos, Shahbaz, Torrellas, "NetSparse: In-Network Acceleration of Distributed Sparse Kernels" (MICRO'25)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PARTITION EXPLORER (inert unless matching elements exist) ---- */
+  var strip = document.getElementById('waysStrip');
+  var range = document.getElementById('partRange');
+  if(range){
+    var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+    var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+    var optV = 1, optTot = Infinity;
+    for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+    function buildStrip(v){ if(!strip) return; var html=''; for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'"></div>'; } strip.innerHTML = html; }
+    function setPart(v){
+      v = Math.max(1, Math.min(15, v));
+      range.value = v;
+      var el = document.getElementById('partRangeVal'); if(el) el.textContent = v;
+      buildStrip(v);
+    }
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
