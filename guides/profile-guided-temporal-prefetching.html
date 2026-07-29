@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<!-- Prophet field guide — Profile-Guided Temporal Prefetching (Li, Zhang, Gao, Fang, Lu, Ren, Xie, ISCA'25).
+     Semantic colors: teal = Prophet (profile-guided winner) · honey = Triangel (SOTA hardware, partial success)
+     · indigo = Prophet's machinery (hints/CSR/PEBS) · terracotta = RPG2/Triage (naive or ineffective baseline). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>What the Prefetcher Can't See — Profile-Guided Temporal Prefetching, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#F7F3EA; --paper-2:#EFE7D4; --card:#FFFCF5;
+  --ink:#2E2B24; --ink-soft:#68604F; --ink-faint:#96896F;
+  --line:#E4D8BF; --line-strong:#D3C2A0;
+  --honey:#DDA23A; --honey-deep:#B36A10; --honey-soft:#F7E3BC;
+  --dram:#1E8C74; --dram-soft:#DBF0E7;      /* teal   = Prophet (profile-guided winner)         */
+  --ltram:#4A57B8; --ltram-soft:#E6E7F7;    /* indigo = Prophet's machinery (hints/CSR/PEBS)     */
+  --optane:#B14B34; --optane-soft:#F5DED2;  /* terracotta = RPG2 / Triage (ineffective baseline) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,140,116,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(74,87,184,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(221,162,58,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(74,87,184,.05) 31px,rgba(74,87,184,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(247,243,234,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#2ba38f,#1E8C74)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#1E8C74)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#B14B34)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#DDA23A} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8891df}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>ISCA 2025 · A Field Guide</span>
+    <h1>Managing prefetcher metadata by what <span class="swash">paid off</span>, not what happened <span class="swash" style="color:var(--optane)">most recently</span></h1>
+    <p class="lede">A hardware temporal prefetcher must decide, on the fly, which address correlations are worth remembering. Short-term runtime heuristics guess wrong constantly. This is the plain-English story of <strong>Prophet</strong>, a profiler that hands the prefetcher the answer it can't compute for itself.</p>
+    <div class="hero-meta">
+      <span>📄 "Profile-Guided Temporal Prefetching" · Li, Zhang, Gao, Fang, Lu, Ren, Xie</span>
+      <span>🎓 Cache & prefetching fundamentals assumed</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🔮</div>
+      <p>Manage the metadata table by <span class="ro">PROFILED, WHOLE-RUN PAYOFF</span>, not <span class="wo">SHORT-TERM RUNTIME GUESSES</span>.<br><em style="font-size:.9rem">Profile once with cheap counters, inject hints, keep learning as inputs change.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then eight building blocks</h2>
+      <p class="sub">Cache and prefetching fundamentals are assumed. What follows is the vocabulary and machinery specific to <em>temporal</em> prefetching and profile-guided hardware — read the glossary first, then open whichever primer looks unfamiliar.</p>
+    </div>
+
+    <div class="card" style="background:var(--ltram-soft);border-color:#bcbfe8">
+      <h3 style="color:#3a409a">🔎 Quick glossary</h3>
+      <div class="gloss" style="margin-top:6px">
+        <div class="term-def"><b>TP</b><span>Temporal Prefetcher — predicts the <i>next</i> address from a recorded history of address correlations (Markov metadata), not from stride.</span></div>
+        <div class="term-def"><b>Markov metadata</b><span>A record of "after address A, we saw address B" — the correlation the TP stores and later replays.</span></div>
+        <div class="term-def"><b>PMU</b><span>Performance Monitoring Unit — on-chip counters for hardware events (misses, issued prefetches, ...).</span></div>
+        <div class="term-def"><b>PEBS</b><span>Processor Event-Based Sampling — an Intel PMU facility that records the instruction (PC) responsible for a sampled event.</span></div>
+        <div class="term-def"><b>CSR</b><span>Control and Status Register — one global switch Prophet uses to pass an application-level hint (e.g. table size) to hardware.</span></div>
+        <div class="term-def"><b>Hint</b><span>A few bits (≤3) attached to a memory instruction or its demand requests, encoding a profiled decision for that PC.</span></div>
+        <div class="term-def"><b>MVB</b><span>Multi-path Victim Buffer — Prophet's structure for remembering more than one plausible next-address per entry.</span></div>
+        <div class="term-def"><b>EL_ACC</b><span>"Extremely Low Accuracy" — the threshold below which Prophet's insertion policy discards a PC's metadata entirely.</span></div>
+        <div class="term-def"><b>Coverage / Accuracy</b><span>Coverage = share of demand misses eliminated by prefetches. Accuracy = share of issued prefetches that were actually used.</span></div>
+        <div class="term-def"><b>PGO</b><span>Profile-Guided Optimization — using a prior execution's measurements to steer a later (or the same) binary's behavior.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:24px">
+      <span><i style="background:var(--dram)"></i> Prophet (profile-guided)</span>
+      <span><i style="background:var(--honey-deep)"></i> Triangel (SOTA hardware, partial success)</span>
+      <span><i style="background:var(--ltram)"></i> Prophet's machinery (hints/CSR/PEBS)</span>
+      <span><i style="background:var(--optane)"></i> RPG2 / Triage (naive or ineffective baseline)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What a temporal prefetcher actually predicts<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Stride and spatial prefetchers exploit <i>regular</i> patterns (constant offsets, nearby cache lines). Temporal prefetchers target the opposite case: irregular, pointer-chasing, data-dependent accesses. They log "PC1 saw address A, then address B" and, next time PC1 sees A again, prefetch B — a per-address Markov correlation, not an arithmetic stride.</p>
+          <p>This needs storage proportional to the number of distinct correlations seen, which is where the whole paper's problem begins.</p>
+          <div class="ready"><b>Now you're ready:</b> Prophet doesn't change <i>what</i> is predicted — it changes <i>which correlations are worth keeping</i> in a storage-constrained table.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Where the metadata lives: off-chip vs on-chip<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Early temporal prefetchers stored correlations in DRAM, which meant every lookup itself risked a memory access — burning the bandwidth the prefetcher was supposed to save. <b>Triage</b> moved metadata on-chip, sharing space with the LLC (Markov table = a slice of the L3, here 2 MB/core, 16-way).</p>
+          <p>On-chip space is precious and shared with regular demand data, so <i>which</i> correlations occupy that slice now matters enormously.</p>
+          <div class="ready"><b>Now you're ready:</b> "Metadata table management" = deciding who gets to live in that carved-out slice of LLC. That's the entire subject of this paper.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Insertion policy = training-data filtering<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Not every demand access is worth training the prefetcher on. Some memory instructions produce addresses with no reusable pattern at all — storing their correlations only pollutes the table. An <b>insertion policy</b> decides, per access, whether to bother inserting.</p>
+          <p><b>Triage</b> has no insertion policy (inserts everything). <b>Triangel</b> uses a 4-bit runtime confidence counter, <code>PatternConf</code>, updated from very recent hits/misses.</p>
+          <div class="ready"><b>Now you're ready:</b> Prophet replaces Triangel's short-term <code>PatternConf</code> guess with a profiled, whole-run <code>EL_ACC</code> threshold per PC.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Replacement policy = picking the victim<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>When the metadata table is full, something must be evicted. <b>Triage</b> borrows <code>Hawkeye</code> (a strong cache-replacement policy) at a 13 KB overhead cost. <b>Triangel</b> swaps it for the much cheaper <code>SRRIP</code>, trading some accuracy for storage.</p>
+          <p>Both only reason about <i>reuse distance</i> — how soon an entry will be touched again — never about whether that reuse produces a <i>useful</i> prefetch.</p>
+          <div class="ready"><b>Now you're ready:</b> Prophet's replacement policy adds a second axis — profiled prefetching accuracy per PC — on top of the existing reuse-distance mechanism.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Resizing = the moving boundary with the LLC<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Since the metadata table borrows LLC capacity, its size is a trade-off: bigger table, fewer metadata evictions, but less LLC left for ordinary demand data. <b>Triage</b> tracks table occupancy with a Bloom Filter (&gt;200 KB for ~200,000 entries). <b>Triangel</b>'s <code>Set Dueller</code> samples a few sets to estimate the best size cheaply (~2 KB).</p>
+          <div class="ready"><b>Now you're ready:</b> Prophet skips runtime resizing experiments entirely — it profiles the program's actual peak metadata usage once and sets the size directly via a CSR hint.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Software indirect-access prefetching & prefetch kernels<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An alternative to hardware TPs: insert explicit software prefetch instructions ahead of indirect accesses like <code>a[b[i]]</code>. This only works when the "prefetch kernel" <code>b[i]</code> follows a regular <i>stride</i> (index <code>i, i+d, i+2d, ...</code>), so the right prefetch distance can be computed and inserted at compile/profile time.</p>
+          <p><b>RPG2</b> is the state-of-the-art of this family.</p>
+          <div class="ready"><b>Now you're ready:</b> most SPEC CPU pointer-chasing/indirect patterns (e.g. mcf's index arithmetic) simply don't have a strideable kernel — this is why RPG2 struggles on them (Tab 05, FAQ Q9).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>PMU counters and PEBS sampling<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A full memory <b>trace</b> records every access (gigabytes of data, heavy overhead to collect and analyze). A PMU <b>counter</b> just tallies how many times an event happened — bytes, not gigabytes. <b>PEBS</b> extends this by also recording <i>which instruction</i> (PC) triggered a sampled event, without recording every event.</p>
+          <div class="ready"><b>Now you're ready:</b> Prophet's entire profiling step is "count a couple of PEBS events per PC, plus one or two plain PMU counters" — that's what makes it cheap enough to leave enabled in production.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Coverage vs. accuracy — the prefetcher's two knobs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Coverage</b>: what fraction of demand misses did prefetches eliminate? <b>Accuracy</b>: what fraction of issued prefetches were actually used? Aggressive prefetching raises coverage but can tank accuracy (wasted bandwidth, cache pollution); conservative filtering raises accuracy but can tank coverage (missed opportunities).</p>
+          <div class="ready"><b>Now you're ready:</b> Prophet's headline result is raising coverage <i>without</i> sacrificing accuracy — evidence its gain comes from better metadata management, not just prefetching more aggressively (Tab 05, FAQ Q2).</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Prophet in a nutshell</h2>
+      <p class="sub">The problem, the cheap measurement that fixes it, and how the pieces click together.</p>
+    </div>
+    <div class="prose">
+      <p>A hardware temporal prefetcher's metadata table is a scarce, shared resource: which correlations get stored (<span class="mem-chip chip-lru">insertion</span>), which get evicted (<span class="mem-chip chip-sat">replacement</span>), and how big the table is allowed to be (<span class="mem-chip chip-sat">resizing</span>) all determine whether the table is full of <i>useful</i> correlations or junk. <b>Triage</b> makes no attempt to filter; the state-of-the-art <b>Triangel</b> filters using short-term runtime confidence counters (<code>PatternConf</code>, <code>ReuseConf</code>) — but Triangel's own ablation study shows this machinery buys almost nothing, because short windows of highly variable, interleaved useful/useless accesses fool it constantly.</p>
+      <p><strong>Prophet</strong>'s fix: stop guessing about the future from a short runtime window, and instead <i>measure</i> each memory instruction's true prefetching accuracy across a whole profiling run, using nothing heavier than PMU/PEBS counters. That per-PC accuracy becomes a 3-bit <b>hint</b> baked into the binary: below an extremely-low threshold (<code>EL_ACC</code>), discard the PC's metadata outright (insertion); otherwise, bucket it into one of four priority levels that steer eviction (replacement). A separate application-level hint, derived from the peak number of metadata entries observed, sets the table size once via a <b>CSR</b> at program start (resizing).</p>
+      <p>Because a single profiling run may not represent every future input, Prophet adds a <b>learning</b> loop: each new input's counters are merged with prior ones (weighted toward whichever is more frequently observed), so one optimized binary converges toward near-optimal hints across <i>all</i> the inputs it has ever seen — without needing to re-profile from scratch each time.</p>
+      <p><strong>The payoff:</strong> across representative SPEC CPU and CRONO graph workloads, Prophet delivers a <b>34.58%</b> speedup over no temporal prefetching, beating Triangel (20.35%) by <b>14.23%</b> and RPG2 (0.1%) by <b>34.48%</b> — driven by higher prefetching coverage at comparable accuracy, with negligible profiling, analysis, and instruction overhead.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🔮 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Existing hardware TPs manage metadata with <b>short-term runtime</b> heuristics (PatternConf/ReuseConf, SRRIP/Hawkeye, Set Dueller) that fail to balance "store the useful, filter the useless."</li>
+        <li>Prophet profiles with <b>cheap PMU/PEBS counters</b> (not traces) to compute per-PC <b>prefetching accuracy</b> — a whole-run signal, not a short-window guess.</li>
+        <li>That accuracy drives three hints: <b>insertion</b> (Eq. 1, threshold <code>EL_ACC</code>), <b>replacement</b> (Eq. 2, 4 priority levels), and <b>resizing</b> (Eq. 3, CSR-set table size).</li>
+        <li>A <b>Multi-path Victim Buffer</b> remembers a second/third Markov target per address, since ~45% of addresses have more than one.</li>
+        <li>A <b>learning loop</b> (Eq. 4–5) merges counters across inputs, so one optimized binary adapts without re-profiling from zero each time.</li>
+        <li>Prophet <b>coexists</b> with the runtime prefetcher — hints apply only where profiled; rarely-run code keeps the original hardware policy.</li>
+        <li>Result: <b>+14.23%</b> over Triangel, <b>+34.48%</b> over RPG2, for &lt;2% profiling overhead and negligible instruction/analysis cost.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">IPC speedup over "no temporal prefetcher" · geomean across workloads</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> RPG2 — software, stride-only</span>
+        <span><i style="background:var(--honey-deep)"></i> Triangel — SOTA hardware, short-term filtering</span>
+        <span><i style="background:var(--dram)"></i> Prophet — profile-guided</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 320" role="img" aria-label="Bar chart comparing IPC speedup for RPG2, Triangel, and Prophet">
+        <line x1="70" y1="40" x2="70" y2="270" stroke="#D3C2A0" stroke-width="1.4"/>
+        <line x1="70" y1="270" x2="700" y2="270" stroke="#D3C2A0" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#96896F" text-anchor="end">
+          <text x="62" y="273">0%</text><text x="62" y="223">10%</text><text x="62" y="173">20%</text><text x="62" y="123">30%</text><text x="62" y="73">40%</text>
+        </g>
+        <text x="22" y="160" font-family="JetBrains Mono" font-size="10" fill="#68604F" transform="rotate(-90 22,160)">IPC speedup vs. no TP</text>
+        <!-- RPG2 bar (near zero) -->
+        <rect x="110" y="266" width="100" height="4" fill="#B14B34"/>
+        <text x="160" y="252" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#9a3a22">0.1%</text>
+        <text x="160" y="295" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#9a3a22">RPG2</text>
+        <!-- Triangel bar -->
+        <rect x="330" y="168" width="100" height="102" rx="4" fill="#B36A10"/>
+        <text x="380" y="156" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#6e4a09">20.35%</text>
+        <text x="380" y="295" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#6e4a09">Triangel</text>
+        <!-- Prophet bar -->
+        <rect x="550" y="97" width="100" height="173" rx="4" fill="#1E8C74"/>
+        <text x="600" y="85" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#1f5b51">34.58%</text>
+        <text x="600" y="295" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#1f5b51">Prophet</text>
+        <!-- gap bracket Triangel -> Prophet -->
+        <line x1="440" y1="168" x2="540" y2="97" stroke="#68604F" stroke-width="1.2" stroke-dasharray="4 3"/>
+        <text x="500" y="118" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">+14.23 pp</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> RPG2's stride-only approach barely helps on irregular SPEC CPU patterns. Triangel's runtime filtering recovers a real 20.35%. Prophet's profiled, whole-run accuracy signal recovers another 14.23 percentage points on top — for negligible extra hardware. (Paper, Fig. 10)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → profile → analyze &amp; inject → learn &amp; coexist</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Triangel/RPG2 each solve only part of metadata management; neither balances coverage vs. accuracy</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Profile (Step 1)</div><div class="nd">Run with a simplified prefetcher; sample PEBS + PMU counters — no full trace</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Analyze &amp; Inject (Step 2)</div><div class="nd">Per-PC accuracy → insertion/replacement hints; table usage → CSR resize hint</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Learn (Step 3)</div><div class="nd">Merge new counters with old ones (Eq. 4–5) so one binary adapts across inputs</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Coexist</div><div class="nd">Hints override the runtime policy only where profiled; rarely-run code keeps Triangel's heuristics</div></div>
+      </div>
+    </figure>
+
+    <div class="callout note"><span class="ic">🧭</span><div><b>For a tiering reader:</b> this insertion/replacement/resizing triad, applied to Markov correlation entries instead of physical pages, is structurally the same three knobs an OS-managed tiering system tunes for hot/cold page placement. Keep that parallel in mind — it recurs in "How It Works" and "Reference."</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about Prophet</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with an honest note about where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="26" width="100" height="20" rx="4" fill="#F5DED2" stroke="#B14B34" stroke-width="2.2"/>
+          <path d="M28 36 l8 -6 l8 8 l8 -10 l8 6 l8 -8 l8 6 l8 -4 l8 6" stroke="#B14B34" stroke-width="2" fill="none"/>
+          <line x1="20" y1="52" x2="120" y2="52" stroke="#332C24" stroke-width="1.5" stroke-dasharray="3 2"/>
+          <text x="70" y="66" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">threshold</text>
+          <path d="M30 78 v-8 M30 70 l-5 5 M30 70 l5 5" stroke="#68604F" stroke-width="1.6"/>
+        </svg></div>
+        <span class="term">The problem · PatternConf's mood swings</span>
+        <h3>A mood-based bouncer</h3>
+        <p>Triangel's <code>PatternConf</code> is like a bouncer judging a whole crowd by the last few faces at the door: a short burst of troublemakers and he shuts the door on everyone after, missing the well-behaved guests right behind them. That's exactly what happens in Figure 1 — a run of useless accesses drags the confidence below threshold, and the next genuinely useful access gets rejected too.</p>
+        <div class="breaks"><b>Where it breaks:</b> a bouncer with a notebook of everyone's past behavior (Prophet's profiled accuracy) isn't infallible either — it's judging based on the <i>last profiling run</i>, which is why Prophet still needs the learning loop for new inputs.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="56" rx="6" fill="#E6E7F7" stroke="#4A57B8" stroke-width="2.2"/>
+          <circle cx="45" cy="48" r="10" fill="#1E8C74"/><circle cx="70" cy="48" r="10" fill="#DDA23A"/><circle cx="95" cy="48" r="10" fill="#B14B34"/>
+          <text x="45" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#fff">B</text>
+          <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#fff">A</text>
+          <text x="95" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#fff">C</text>
+        </svg></div>
+        <span class="term">Profiling · Counters vs. traces</span>
+        <h3>Exit-poll counts, not a full census</h3>
+        <p>A full memory trace is like recording every single voter's full ballot — accurate, but enormous to collect and store. Prophet instead runs an exit poll: a couple of PEBS/PMU counters per PC, tallying just "how many prefetches issued, how many were useful." That's enough to compute per-PC accuracy without ever writing down an address.</p>
+        <div class="breaks"><b>Where it breaks:</b> an exit poll can miss rare-but-important voters. If a PC's behavior is highly bimodal (great on one code path, terrible on another) a single aggregated accuracy number can blur the two — Prophet's per-input learning loop is the partial fix.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="24" width="30" height="48" rx="4" fill="#DBF0E7" stroke="#1E8C74" stroke-width="2"/>
+          <rect x="55" y="24" width="30" height="48" rx="4" fill="#F7E3BC" stroke="#DDA23A" stroke-width="2"/>
+          <rect x="92" y="24" width="30" height="48" rx="4" fill="#fff" stroke="#96896F" stroke-width="2" stroke-dasharray="3 2"/>
+          <text x="33" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">L3</text>
+          <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">L1</text>
+          <text x="107" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#96896F">L0</text>
+        </svg></div>
+        <span class="term">Replacement · Priority buckets</span>
+        <h3>A four-shelf pantry, not one long queue</h3>
+        <p>Plain LRU-style eviction is one long queue: oldest goes first, full stop. Prophet's replacement policy is more like a pantry with four shelves — front (L3, high accuracy), then L2, L1, and a back shelf (L0) nearest the discard bin — sorted once by profiled accuracy (Eq. 2), with plain LRU only used to break ties <i>within</i> a shelf.</p>
+        <div class="breaks"><b>Where it breaks:</b> shelves are assigned once per learning round and held fixed; a real pantry gets restocked continuously. If accuracy shifts faster than Prophet's learning loop updates, an item can sit on the wrong shelf for a while.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 h100" stroke="#96896F" stroke-width="2"/>
+          <path d="M40 70 v-30 l20 -14 l20 14 v30" fill="none" stroke="#B14B34" stroke-width="2.4"/>
+          <path d="M40 40 l-14 8 v22 h14" fill="none" stroke="#1E8C74" stroke-width="2.4" stroke-dasharray="3 2"/>
+          <circle cx="60" cy="26" r="4" fill="#DDA23A"/>
+        </svg></div>
+        <span class="term">Multi-path Victim Buffer</span>
+        <h3>A detour sign for a closed exit</h3>
+        <p>Normally the metadata table stores one "next address" per entry — one highway exit per address. But the same address can lead to different destinations depending on context (54.85% of addresses have exactly one Markov target, but 20.88% have two, 9.71% have three). The <b>MVB</b> is the detour sign: when the main table evicts a target, MVB remembers it as an alternate exit rather than losing it entirely.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real detour sign is free; MVB costs real bits (344 KB for 65,536 entries in the paper's config) — worth it only because it beats simply giving that same storage straight to the LLC (4.95% vs. 2.74% gain).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="30" fill="none" stroke="#4A57B8" stroke-width="2.4"/>
+          <path d="M70 48 l0 -22" stroke="#4A57B8" stroke-width="2.4" stroke-linecap="round"/>
+          <path d="M70 48 l16 10" stroke="#1E8C74" stroke-width="2.4" stroke-linecap="round"/>
+          <circle cx="70" cy="48" r="3.5" fill="#332C24"/>
+          <path d="M46 24 a34 34 0 0 1 0 48" stroke="#DDA23A" stroke-width="1.8" fill="none" stroke-dasharray="3 2"/>
+        </svg></div>
+        <span class="term">Learning across inputs · Eq. 4–5</span>
+        <h3>Recalibrating a thermostat across seasons</h3>
+        <p>A thermostat that only ever remembers "right now" overreacts to one cold morning. One that averages every reading ever taken reacts too slowly to a real seasonal shift. Prophet's merge rule splits the difference: it nudges the old estimate toward the new reading by <code>1/min(l+1, L)</code>, so recent, frequently-seen inputs dominate but a single one-off input can't swing the hint wildly.</p>
+        <div class="breaks"><b>Where it breaks:</b> a thermostat has one number; Prophet is merging <i>per-PC</i> accuracy independently for potentially thousands of instructions, so different PCs can be "in different seasons" at once — some converged, some still adapting.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="42" height="42" rx="5" fill="#DBF0E7" stroke="#1E8C74" stroke-width="2.2"/>
+          <rect x="78" y="30" width="42" height="42" rx="5" fill="#F7E3BC" stroke="#DDA23A" stroke-width="2.2" stroke-dasharray="3 2"/>
+          <path d="M62 51 h16" stroke="#332C24" stroke-width="2" stroke-linecap="round"/>
+          <path d="M74 45 l4 6 l-4 6" stroke="#332C24" stroke-width="2" fill="none"/>
+        </svg></div>
+        <span class="term">Compatibility · Coexisting with Triangel</span>
+        <h3>Training wheels that detach cleanly</h3>
+        <p>Prophet doesn't replace the runtime prefetcher's hardware — it sits alongside it, sharing the same metadata table and physical replacement machinery, but taking over the <i>decisions</i> only for PCs it has profiled. Un-profiled or rarely-executed code keeps riding on Triangel's original heuristics, like training wheels still attached for streets you haven't practiced on yet.</p>
+        <div class="breaks"><b>Where it breaks:</b> training wheels are binary (on/off); Prophet's override is per-PC and continuous, and its priority levels still feed into (rather than fully replace) the underlying LRU-style tiebreaker.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key equations and figures rebuilt as diagrams.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem — short-term confidence misreads long-run behavior</h3>
+      <p>Triangel's <code>PatternConf</code> is a 4-bit counter updated from very recent metadata accesses: useful accesses (hits that lead to correct prefetches) push it up, useless ones push it down. When it drops below threshold, Triangel disables insertion for that PC entirely — including for subsequent accesses that <i>would</i> have exhibited a temporal pattern.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">A short run of bad luck poisons the decision</div>
+      <div class="viz-kicker">recreated from Fig. 1 · metadata access pattern for one PC in omnetpp</div>
+      <svg class="full" viewBox="0 0 720 200" role="img" aria-label="Timeline of useful and useless metadata accesses with PatternConf dropping below threshold and rejecting a later useful star access">
+        <line x1="40" y1="150" x2="680" y2="150" stroke="#D3C2A0" stroke-width="1.4"/>
+        <text x="360" y="184" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#68604F">time (metadata accesses, one PC)</text>
+        <polyline fill="none" stroke="#4A57B8" stroke-width="2.4" points="60,60 110,100 160,70 210,120 260,132 310,138 360,142 410,90 460,60 510,55 560,50 610,48 660,46"/>
+        <line x1="40" y1="128" x2="680" y2="128" stroke="#B14B34" stroke-width="1.2" stroke-dasharray="4 3"/>
+        <text x="46" y="122" font-family="JetBrains Mono" font-size="9" fill="#9a3a22">PatternConf threshold</text>
+        <g font-family="monospace" font-size="11">
+          <circle cx="60" cy="150" r="5" fill="#1E8C74"/><circle cx="110" cy="150" r="5" fill="#B14B34"/><circle cx="160" cy="150" r="5" fill="#1E8C74"/>
+          <circle cx="210" cy="150" r="5" fill="#B14B34"/><circle cx="260" cy="150" r="5" fill="#B14B34"/><circle cx="310" cy="150" r="5" fill="#B14B34"/>
+          <path d="M360 150 l-6 -10 h12 z" fill="#1E8C74"/>
+          <path d="M410 150 l-6 -10 h12 z" fill="#1E8C74"/>
+          <circle cx="460" cy="150" r="5" fill="#1E8C74"/><circle cx="510" cy="150" r="5" fill="#1E8C74"/>
+        </g>
+        <text x="360" y="172" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">rejected ✗</text>
+        <text x="410" y="172" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">rejected ✗</text>
+      </svg>
+      <figcaption><b>Circles</b> = accesses that happened (teal = led to a useful prefetch, terracotta = useless). <b>Triangles</b> = the first access of a genuinely useful new pattern — but PatternConf had already dropped below threshold from the preceding run of useless accesses (Eq.-driven decay), so Triangel wrongly discards them. Prophet's profiled, whole-run accuracy for this PC would have kept insertion on throughout.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Profiling — accuracy per PC, from counters alone</h3>
+      <p>Prophet profiles with a <i>simplified</i> temporal prefetcher: insertion policy disabled, fixed 1 MB metadata table, prefetch degree 1 — an unbiased baseline. It uses Intel PEBS to sample two events per PC:</p>
+      <pre class="sketch"><span class="hl">PrefetchingAccuracy(PC)</span> = L2_Prefetch_Useful(PC) / L2_Prefetch_Issue(PC)
+<span class="cm"># Allocated metadata entries (application-level, standard PMU counters):</span>
+<span class="hl">AllocatedEntries</span> = Insertions − Replacements</pre>
+      <p>Both derive from minor modifications to an event Intel Xeon already supports (<code>MEM_LOAD_RETIRED.L2_MISS</code>), so no new hardware event type is required — only PC-attribution via PEBS.</p>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Insertion policy — Equation 1</h3>
+      <pre class="sketch"><span class="kw">I</span>(acc) = <span class="hl">1</span> if acc ≥ EL_ACC  <span class="cm"># train + insert metadata for this PC</span>
+         <span class="hl">0</span> if acc &lt; EL_ACC  <span class="cm"># discard all demand requests from this PC</span></pre>
+      <p><code>EL_ACC</code> is deliberately conservative — set low enough that only PCs with almost no temporal pattern at all get filtered, avoiding Triangel's mistake of over-filtering. The decision is a single bit, injected once per PC as a hint.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Replacement policy — Equation 2</h3>
+      <p>For PCs that pass insertion, accuracy is bucketed into <code>2ⁿ</code> priority levels (paper adopts <code>n = 2</code> → 4 levels, a 2-bit state per entry):</p>
+      <pre class="sketch"><span class="hl">R(acc)</span> = level <span class="hl">k</span>  where  k / 2ⁿ ≤ acc &lt; (k+1) / 2ⁿ ,  k = 0 … 2ⁿ−1</pre>
+      <p>On eviction, Prophet first narrows candidates to the <i>lowest</i> priority level present in the set, then applies plain LRU among those candidates only — reusing the runtime replacement state rather than replacing it outright.</p>
+    </div>
+
+    <!-- INTERACTIVE: accuracy threshold explorer -->
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: classify a PC by its profiled accuracy</div>
+      <div class="viz-kicker">slide the accuracy, watch Eq. 1 (insertion) and Eq. 2 (n=2 replacement) decide</div>
+      <div class="part-viz">
+        <div>
+          <div class="ways-strip" id="levelStrip"></div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">PC prefetching accuracy:</span>
+            <input type="range" min="0" max="100" value="40" id="accRange">
+            <span id="accRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">40%</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-elacc="0.05">EL_ACC = 0.05</button>
+            <button class="tbtn" data-elacc="0.15">EL_ACC = 0.15</button>
+            <button class="tbtn" data-elacc="0.25">EL_ACC = 0.25</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">Insertion (Eq. 1)<b id="insDecision">—</b></div>
+            <div class="pstat">Priority level, n=2 (Eq. 2)<b id="prioLevel">—</b></div>
+          </div>
+          <div class="pverdict sub" id="accVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>What you'll find:</b> the three <code>EL_ACC</code> presets are exactly the values swept in the paper's sensitivity study (Fig. 16a) — too low lets junk metadata through, too high starts discarding entries that would have been useful. (Paper §4.2, §5.6)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · Resizing — Equation 3</h3>
+      <pre class="sketch">S = <span class="hl">round_to_power_of_2</span>(AllocatedEntries)         <span class="cm"># capped at 196,608 (1 MB table)</span>
+lines = ceil(S / 12)                              <span class="cm"># 12 packed 41-bit entries per 64B line</span>
+<span class="hl">AllocatedWays</span> = ceil(lines / NumberOfSetsInLLC)   <span class="cm"># disable TP entirely if this rounds < 0.5</span></pre>
+      <p>This is injected once, as a CSR-manipulation instruction at the program's entry point — a single global hint, unlike the per-PC insertion/replacement hints.</p>
+    </div>
+
+    <div class="prose">
+      <h3>6 · Learning across inputs — Equations 4 and 5</h3>
+      <p>Figure 7's three cases motivate the merge rule: a PC executed identically across inputs (e.g. shared <code>Load A</code>) should keep the same hint; a PC seen for the first time (e.g. <code>Load C</code> under a new input) should adopt the new reading outright; a PC whose behavior genuinely differs by input (e.g. <code>Load E</code>) should shift gradually toward whichever input has been observed most.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Why one profile run isn't enough</div>
+      <div class="viz-kicker">recreated from Fig. 7 · two inputs, shared and divergent code paths</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:6px">Input X</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Load A</div><div class="nd">Same on both inputs → hints agree, merge is a no-op</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-lru"><div class="nt">Load B</div><div class="nd">Only executed under input X → no counterpart to merge with</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Load E</div><div class="nd">Executed on both, but context differs → hints may diverge</div></div>
+      </div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin:14px 0 6px">Input Y</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Load A</div><div class="nd">Merge (Eq. 4) confirms the existing hint</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Load C</div><div class="nd">New to Prophet (o ∉ X) → merged accuracy = n, hint learned fresh</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Load E</div><div class="nd">Merge nudges the old estimate toward the new reading by 1/min(l+1,L)</div></div>
+      </div>
+      <figcaption>Repeated over several rounds of Step 3, this converges to near the "direct profile this exact input" ideal — validated in the paper on gcc's 9 inputs within 4 learning rounds (§5.3, Fig. 13).</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four passes through the paper's own equations and quoted figures.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Sizing the metadata table (Eq. 3) — and a sanity check</h3>
+      <p style="color:var(--ink-soft)">The paper's L3: 2 MB/core, 16-way, 64 B lines. A metadata entry packs into 41 bits (10-bit tag + 31-bit target), 12 per 64 B line. Suppose profiling reports a peak of 70,000 allocated entries.</p>
+      <ol class="seq">
+        <li><b>Number of LLC sets</b> = 2 MB / (16 ways × 64 B) = 2,097,152 / 1,024 = <b>2,048 sets</b>.</li>
+        <li><b>Round 70,000 to the nearest power of two:</b> between 2¹⁶ = 65,536 and 2¹⁷ = 131,072, the nearer is <b>65,536</b> entries.</li>
+        <li><b>Lines needed</b> = ceil(65,536 / 12) = <b>5,462 lines</b>.</li>
+        <li><b>Allocated ways</b> = ceil(5,462 / 2,048) = <b>3 ways</b> — Prophet claims 3 of the LLC's 16 ways for metadata, leaving 13 for demand data.</li>
+        <li><b>Sanity check against the paper:</b> at the maximum table size (1 MB), lines = 1 MB/64 B = 16,384; entries = 16,384 × 12 = <b>196,608</b> — exactly the cap the paper states in §5.10.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Step 5 is the important check: the same formula that produces a hypothetical 3-way allocation also reproduces the paper's own stated maximum-entries number exactly, confirming the packing arithmetic.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Insertion &amp; replacement hints for two PCs (Eq. 1–2, n=2)</h3>
+      <p style="color:var(--ink-soft)">With <code>EL_ACC = 0.15</code>: PC₁ has profiled accuracy 0.08; PC₂ has profiled accuracy 0.62.</p>
+      <ol class="seq">
+        <li><b>PC₁:</b> 0.08 &lt; 0.15 → <code>I(0.08) = 0</code>. Insertion policy discards every demand request from PC₁ — no metadata entry, no priority level.</li>
+        <li><b>PC₂:</b> 0.62 ≥ 0.15 → <code>I(0.62) = 1</code>. PC₂'s metadata is inserted and trained.</li>
+        <li><b>PC₂'s priority level</b> (n=2, buckets of width 1/4): 0.5 ≤ 0.62 &lt; 0.75 → <b>level 2</b> of 0–3.</li>
+        <li><b>Consequence:</b> on a full table, entries from PC₂ survive unless the set is entirely level-2-or-below; entries at level 3 (e.g. accuracy 0.9) would outlive PC₂'s under contention.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Reproducing the paper's storage totals exactly</h3>
+      <p style="color:var(--ink-soft)">Section 5.10 states two overheads — recompute both from the config it gives.</p>
+      <ol class="seq">
+        <li><b>Replacement state:</b> 196,608 max entries × 2 bits = 393,216 bits = 49,152 bytes = <b>48 KB</b> — matches the paper exactly.</li>
+        <li><b>Multi-path Victim Buffer:</b> per-entry storage = 31-bit address + 10-bit tag + 2-bit counter = 43 bits. For 65,536 entries: 65,536 × 43 = 2,818,048 bits = 352,256 bytes = <b>344.0 KB</b> — matches the paper's "344 KB" exactly.</li>
+        <li><b>Hint buffer:</b> 128 entries at 0.19 KB total — the smallest of the three, and the only one needed if reserved instruction bits aren't available.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> both non-trivial totals fall out of one-line arithmetic on quantities the paper states explicitly (max entries, per-entry bit widths) — there's no hidden fudge factor in Prophet's overhead accounting.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Reading "+14.23%" correctly</h3>
+      <p style="color:var(--ink-soft)">Prophet: 34.58% speedup over no-TP baseline. Triangel: 20.35%. RPG2: 0.1%. The paper reports Prophet "outperforms Triangel by 14.23%" and "RPG2 by 34.48%."</p>
+      <ol class="seq">
+        <li><b>Check the Triangel gap:</b> 34.58 − 20.35 = <b>14.23</b> — matches exactly.</li>
+        <li><b>Check the RPG2 gap:</b> 34.58 − 0.1 = <b>34.48</b> — matches exactly.</li>
+        <li><b>What this confirms:</b> these are <i>percentage-point</i> differences between two already-relative speedup numbers, not a further relative improvement (it is <i>not</i> "1.2035 × 1.1423").</li>
+      </ol>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Common misread:</b> treating "outperforms X by N%" as always meaning a relative (multiplicative) improvement over X. Here it's an arithmetic subtraction of two percentages already expressed relative to a third, shared baseline (no-TP) — worth double-checking whenever you compare speedup numbers across papers, tiering baselines included.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Triage stores metadata for every demand request (no insertion policy) and uses Hawkeye, an advanced replacement policy, at a 13 KB overhead. Its measured gain from that replacement policy is under 0.25%. Why doesn't more sophisticated replacement fix a table that's flooded with junk?</div>
+      <details><summary>Show answer</summary><div class="ans">Replacement only decides <i>which existing entry to evict</i> — it can't undo the fact that the table is full of entries that never should have been inserted in the first place, because there's no insertion policy filtering them out. A smarter eviction rule applied to an already-polluted table still spends most of its "smartness" choosing between bad options.<span class="mis">Misconception: that a better replacement policy alone can compensate for a missing insertion policy. The two mechanisms address different failure modes — over-filling vs. mis-evicting — and Prophet needs both to work.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">With EL_ACC = 0.25 and n = 2, classify a PC with profiled accuracy 0.30. What does Prophet do with its metadata?</div>
+      <details><summary>Show answer</summary><div class="ans">0.30 ≥ 0.25, so insertion is enabled (Eq. 1). For replacement (Eq. 2, n=2, bucket width 0.25): 0.25 ≤ 0.30 &lt; 0.50 → <b>priority level 0</b> — the lowest surviving level, meaning it's the first candidate for eviction among inserted entries, but it is still stored (unlike a PC below 0.25, which is discarded entirely).<span class="mis">Misconception: confusing "lowest priority level" with "discarded." Level 0 still gets a metadata entry — filtering (discard) only happens below EL_ACC, a separate, earlier decision.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">RPG2 achieves only 0.1% speedup on the evaluated SPEC CPU workloads but 9.11% on CRONO graph workloads. Using what you know about software indirect-access prefetching, explain the gap.</div>
+      <details><summary>Show answer</summary><div class="ans">RPG2 needs the prefetch kernel (the index computation, e.g. <code>b[i]</code>) to follow a regular stride so it can compute a fixed prefetch distance. CRONO's graph traversals are dominated by exactly this pattern. Many SPEC CPU workloads (the paper cites mcf specifically) compute the kernel index through multi-step arithmetic/logical operations with no stride at all — RPG2 has no mechanism for that case, so it can't insert useful prefetches there.<span class="mis">Misconception: that a prefetching scheme's benchmark-reported average generalizes across workload classes. RPG2 isn't "weak" in general — it's strong exactly where its structural assumption (strideable kernels) holds, and near-useless where it doesn't.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Prophet profiles input X, generating hints for Load A, B, E. Input Y then executes Load A, C, E. Using Eq. 4, what happens to the hint for Load E if input Y's observed accuracy is <i>higher</i> than input X's, at learning round l=1, L=5?</div>
+      <details><summary>Show answer</summary><div class="ans">Merged = o + (1/min(l+1,L)) × (n−o) = o + (1/2)(n−o), i.e. the estimate moves halfway from the old (X) value toward the new (Y) value. Since n &gt; o here, the merged accuracy increases — Prophet's next Analysis pass may then assign Load E a higher priority level or flip it past the EL_ACC insertion threshold if it was borderline.<span class="mis">Misconception: that the merge simply averages "the accuracy of Load E" as one fixed quantity. It's a per-PC, per-round exponential-style update — later rounds (larger l, up to cap L) move the estimate less per input, so early inputs have outsized influence unless overridden by many later observations.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">The paper reports that too-conservative resizing (small metadata table) can improve prefetching accuracy while hurting overall performance on workloads like omnetpp and mcf. How can "more accurate" prefetching still be worse for the program?</div>
+      <details><summary>Show answer</summary><div class="ans">A smaller table forces earlier eviction of correlations, so only the very highest-confidence entries survive — precisely those most likely to fire correctly, boosting accuracy. But it also means many potentially-useful correlations get evicted before they're reused, shrinking <b>coverage</b> (fraction of misses eliminated). If the coverage loss outweighs the accuracy gain, total demand misses — and runtime — get worse even though the accuracy metric improved.<span class="mis">Misconception: that accuracy alone measures prefetcher quality. Coverage and accuracy trade off against table size; Prophet's resizing targets the program's actual peak usage specifically to avoid needlessly sacrificing coverage for an accuracy number that doesn't by itself determine speed.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">Figure 8 shows 54.85% of addresses have exactly 1 Markov target, 20.88% have 2, and 9.71% have 3. Roughly what fraction of addresses would benefit at all from the Multi-path Victim Buffer, and why doesn't the single-target majority make MVB pointless?</div>
+      <details><summary>Show answer</summary><div class="ans">100% − 54.85% ≈ <b>45.15%</b> of addresses have more than one Markov target and so could benefit from MVB remembering an alternate. Even though the single-target case is the plurality, "almost half" is still a large share of dynamic accesses — and the paper's ablation shows MVB contributes real, workload-visible gains (e.g. +13.46% on soplex) on top of the insertion/replacement policies alone.<span class="mis">Misconception: that a majority category (54.85% single-target) implies the minority (multi-target) is negligible. Nearly half the addresses is not a rounding error — MVB's payoff is proportional to that ~45%, not to the majority case it doesn't need to help.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly is a "hint" in Prophet, physically?<span class="chev">▾</span></summary><div class="a">At most 3 bits per memory instruction: 1 bit for the insertion decision (Eq. 1) plus 2 bits for the replacement priority level (Eq. 2, n=2). These are injected either via a small dedicated hint buffer (128 entries, 0.19 KB) or as reserved bits/instruction prefixes on the memory instructions themselves. A separate, single CSR-manipulation instruction carries the one global resizing hint.</div></details>
+      <details><summary><span class="q">Q2</span>If Prophet just filters/prioritizes more accurately, where does the actual speedup come from?<span class="chev">▾</span></summary><div class="a">From coverage, mainly. Figure 12 shows Prophet reduces demand misses by 42.75% versus Triangel's 28.08%, while accuracy stays comparable between the two. That combination — more misses eliminated, without more wasted/wrong prefetches — is the paper's evidence that the gain is from smarter metadata table management, not from prefetching more aggressively.</div></details>
+      <details><summary><span class="q">Q3</span>Why use PMU counters instead of a full memory trace like other profile-guided schemes?<span class="chev">▾</span></summary><div class="a">Traces cost gigabytes to store and are expensive to collect and analyze; sampling a couple of PEBS events plus a PMU counter costs bytes and (per cited overhead studies) under ~2% runtime overhead. It also runs on hardware that already exists — no special trace-capture infrastructure required.</div></details>
+      <details><summary><span class="q">Q4</span>What happens to code paths Prophet never profiled?<span class="chev">▾</span></summary><div class="a">They keep running under the original runtime policy (e.g. Triangel's PatternConf/SRRIP/Set Dueller) — Prophet's Insertion/Replacement/Resizing components are only enabled where a hint exists, and disabled otherwise, so rarely-executed code isn't penalized by absent profiling data.</div></details>
+      <details><summary><span class="q">Q5</span>Doesn't relying on one profiling run make Prophet fragile to different inputs?<span class="chev">▾</span></summary><div class="a">That's the motivating risk behind the whole "Learning" step (Section 4.3). Prophet merges counters from every input it has been re-profiled on (Eq. 4–5), so a single optimized binary converges toward good hints across all encountered inputs — demonstrated converging within 4 learning rounds across gcc's 9 SPEC inputs.</div></details>
+      <details><summary><span class="q">Q6</span>Why is Prophet's DRAM traffic (18.67%) higher than Triangel's (10.33%) if it performs better?<span class="chev">▾</span></summary><div class="a">Higher coverage means more prefetch requests are issued and more of them are correct — each successful prefetch still moves data from DRAM, it just does so <i>before</i> the demand access needs it instead of on the critical path. The paper frames this directly: Prophet's extra performance over Triangel costs "only 5.35% additional memory traffic," a favorable trade given the speedup.</div></details>
+      <details><summary><span class="q">Q7</span>Why does Prophet do slightly worse than Triangel on gcc?<span class="chev">▾</span></summary><div class="a">The paper attributes this to gcc's particular sensitivity to cache pollution — Prophet's insertion policy is deliberately conservative (biased to avoid discarding potentially-useful metadata), which can let in more entries than Triangel's tighter runtime filter for this specific access pattern.</div></details>
+      <details><summary><span class="q">Q8</span>Is the Multi-path Victim Buffer's storage "free," given it's separate from the main table?<span class="chev">▾</span></summary><div class="a">No — 65,536 entries at 43 bits each is 344 KB, non-trivial. The paper justifies it by comparison: giving that same 344 KB directly to the LLC instead yields only a 2.74% gain, versus 4.95% when spent on MVB — MVB is the better use of that specific budget, not a free lunch.</div></details>
+      <details><summary><span class="q">Q9</span>Why can't software indirect-access prefetching (RPG2) just handle the same patterns as Prophet?<span class="chev">▾</span></summary><div class="a">RPG2 works by computing a fixed prefetch distance for a strided prefetch kernel and inserting a software prefetch instruction ahead of it. Pointer-chasing and multi-step index arithmetic (the paper's mcf example) have no fixed stride to compute a distance from — there's no kernel to attach a static prefetch instruction to. Prophet avoids this entirely by not using software prefetch instructions at all; it only steers the hardware temporal prefetcher's metadata table.</div></details>
+      <details><summary><span class="q">Q10</span>How does this connect to OS-managed memory tiering (DRAM/NVM, CXL)?<span class="chev">▾</span></summary><div class="a">Not the paper's framing, but a useful parallel: Prophet's insertion/replacement/resizing triad for Markov metadata entries mirrors the hot/cold classification + eviction + tier-capacity sizing that systems like HeMem or TPP perform for physical pages — both use cheap hardware-assisted sampling (PEBS here; PEBS-based access sampling there) instead of exhaustive tracking, and both face the same "short-term signal misjudges long-run value" failure mode that motivates Prophet's profile-guided fix.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Prophet</b><span>The paper's hardware-software co-designed framework: profile-guided hints steer an existing hardware temporal prefetcher's metadata table management.</span></div>
+      <div class="term-def"><b>Prefetching accuracy</b><span>Fraction of issued prefetches that were actually used (L2_Prefetch_Useful / L2_Prefetch_Issue). Prophet's central per-PC metric.</span></div>
+      <div class="term-def"><b>EL_ACC</b><span>Extremely-Low-Accuracy threshold; PCs below it are discarded outright by Prophet's insertion policy (Eq. 1).</span></div>
+      <div class="term-def"><b>Priority level</b><span>One of 2ⁿ buckets (n=2 → 4 levels) assigned to a PC's metadata by profiled accuracy, steering eviction order (Eq. 2).</span></div>
+      <div class="term-def"><b>Multi-path Victim Buffer (MVB)</b><span>Buffer that preserves evicted Markov targets for addresses with more than one plausible next-address.</span></div>
+      <div class="term-def"><b>CSR hint</b><span>A single Control-and-Status-Register write, injected at program start, carrying Prophet's application-level resizing decision.</span></div>
+      <div class="term-def"><b>Learning (merge)</b><span>Prophet's rule for combining counters from a new program input with previously seen ones (Eq. 4–5), enabling one binary to adapt across inputs.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Markov metadata / target</b><span>A stored correlation "address A → address B"; the unit of data the metadata table holds.</span></div>
+      <div class="term-def"><b>PatternConf / ReuseConf</b><span>Triangel's runtime confidence counters — short-term signals for whether a PC exhibits (and can fit) a temporal pattern.</span></div>
+      <div class="term-def"><b>Set Dueller</b><span>Triangel's cheap runtime resizing scheme: sample a few sets to estimate the best LLC/metadata split.</span></div>
+      <div class="term-def"><b>PEBS</b><span>Processor Event-Based Sampling — records the PC responsible for a sampled hardware event.</span></div>
+      <div class="term-def"><b>Coverage</b><span>Fraction of demand misses eliminated by prefetching.</span></div>
+      <div class="term-def"><b>Prefetch kernel</b><span>The (ideally strided) index computation, e.g. <code>b[i]</code>, that software indirect prefetchers key their inserted prefetches to.</span></div>
+      <div class="term-def"><b>SimPoint</b><span>Checkpoint-sampling technique used to select representative execution intervals for simulation.</span></div>
+      <div class="term-def"><b>CRONO</b><span>A multithreaded graph-algorithm benchmark suite used to test generalization beyond SPEC CPU.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What Prophet buys (vs. Triangel / RPG2)</div>
+      <div class="viz-kicker">geomean over evaluated SPEC CPU + CRONO workloads · higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Speedup vs. no TP<small>Prophet</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="34.58"><span>+34.58%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Speedup vs. no TP<small>Triangel</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="20.35"><span>+20.35%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Speedup vs. no TP<small>RPG2</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="0.1"><span>+0.1%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Miss coverage<small>Prophet</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="42.75"><span>−42.75% demand misses</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Miss coverage<small>Triangel</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="28.08"><span>−28.08% demand misses</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Energy overhead<small>vs. Triangel</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="1.6"><span>+1.6% (memory hierarchy)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ +45%</p>
+      <figcaption><b>The coverage gap is the tell:</b> Prophet eliminates far more demand misses than Triangel at comparable accuracy — the gain is from better metadata table decisions, not from prefetching more aggressively. Energy overhead over Triangel is negligible relative to the performance gain. (Paper §5.2, §5.11)</figcaption>
+    </figure>
+
+    <div class="subhead">Related works</div>
+    <div class="read-item reveal"><h4>Triangel: A High-Performance, Accurate, Timely On-Chip Temporal Prefetcher <span class="diff hard">hard</span></h4><div class="meta">Ainsworth &amp; Mukhanov · ISCA · 2024</div><p>The state-of-the-art baseline Prophet is built against and compared to throughout; its ablation study is what first exposed that PatternConf/ReuseConf buy little.</p></div>
+    <div class="read-item reveal"><h4>Temporal Prefetching Without the Off-Chip Metadata (Triage) <span class="diff med">medium</span></h4><div class="meta">Wu, Nathella, Pusdesris, Sunwoo, Jain, Lin · MICRO · 2019</div><p>Moved temporal-prefetcher metadata on-chip into the LLC for the first time — the origin of the "shared table" design Prophet also manages.</p></div>
+    <div class="read-item reveal"><h4>RPG2: Robust Profile-Guided Runtime Prefetch Generation <span class="diff med">medium</span></h4><div class="meta">Zhang, Sobotka, Park, Jamilan, Khan, Kasikci, Pokam, Litz, Devietti · ASPLOS · 2024</div><p>The software indirect-access prefetching baseline Prophet outperforms by 34.48% — strong on strided kernels (e.g. CRONO), weak on irregular SPEC CPU patterns.</p></div>
+    <div class="read-item reveal"><h4>Whisper: Profile-Guided Branch Misprediction Elimination <span class="diff hard">hard</span></h4><div class="meta">Khan, Ugur, Nathella, Sunwoo, Litz, Jiménez, Kasikci · MICRO · 2022</div><p>Source of the hint-instruction injection technique Prophet reuses for its hint-buffer mechanism.</p></div>
+    <div class="read-item reveal"><h4>Apt-Get: Profile-Guided Timely Software Prefetching <span class="diff med">medium</span></h4><div class="meta">Jamilan, Khan, Ayers, Kasikci, Litz · EuroSys · 2022</div><p>Another profile-guided software prefetching lineage member, sharing RPG2's basic stride-kernel limitation that Prophet's hardware-hint approach sidesteps.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="callout note"><span class="ic">📎</span><div>
+      <b>From the paper (arXiv:2506.15985v1, ISCA 2025):</b> all equations (1–5), the system configuration (Table 1), the storage totals (48 KB / 344 KB / 0.19 KB, §5.10), and every headline percentage (34.58% / 20.35% / 0.1% speedup; 14.23% / 34.48% margins; 42.75% / 28.08% coverage; 18.67% / 10.33% / 0.07% DRAM traffic; 1.6% energy overhead) are quoted or recomputed directly from the source text and match exactly where recomputed (Worked Examples ①–④).<br><br>
+      <b>My framing (not the paper's claim):</b> the "mood-based bouncer," "pantry shelves," "thermostat," and "training wheels" analogies (Tab 03); the OS-tiering parallel (Tab 02 callout, FAQ Q10); and the "reading +14.23% correctly" note (Worked Example ④) are annotations added to connect the paper to a broader systems/tiering audience, not statements made by the authors.
+    </div></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Li, Zhang, Gao, Fang, Lu, Ren, Xie, "Profile-Guided Temporal Prefetching" (ISCA 2025, arXiv:2506.15985v1)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 45;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- ACCURACY THRESHOLD EXPLORER ---- */
+  var currentELACC = 0.15;
+  var strip = document.getElementById('levelStrip');
+  function buildStrip(level, discarded){
+    if(!strip) return;
+    var labels = ['L0','L1','L2','L3'];
+    var html = '';
+    for(var i=0;i<4;i++){
+      var cls = (!discarded && i===level) ? 'vpr' : 'eq';
+      html += '<div class="way '+cls+'">'+labels[i]+'</div>';
+    }
+    strip.innerHTML = html;
+  }
+  function setAcc(pct){
+    var range = document.getElementById('accRange'); if(!range) return;
+    pct = Math.max(0, Math.min(100, pct));
+    range.value = pct;
+    document.getElementById('accRangeVal').textContent = pct + '%';
+    var acc = pct/100;
+    var discarded = acc < currentELACC;
+    var ins = document.getElementById('insDecision');
+    var prio = document.getElementById('prioLevel');
+    var verd = document.getElementById('accVerdict');
+    if(discarded){
+      ins.textContent = 'Discard';
+      prio.textContent = '—';
+      buildStrip(0, true);
+      verd.className = 'pverdict sub';
+      verd.textContent = 'Below EL_ACC (' + (currentELACC*100).toFixed(0) + '%) — Prophet\'s insertion policy discards every demand request from this PC (Eq. 1). No metadata entry is ever created.';
+    } else {
+      ins.textContent = 'Insert & train';
+      var level = Math.min(3, Math.floor(acc / 0.25));
+      prio.textContent = 'L' + level;
+      buildStrip(level, false);
+      verd.className = 'pverdict opt';
+      verd.textContent = 'Accuracy ' + pct + '% ≥ EL_ACC → inserted, priority level ' + level + ' of 0–3 (Eq. 2, n=2). Lower levels are evicted first when the table is full.';
+    }
+  }
+  var accRange = document.getElementById('accRange');
+  if(accRange){
+    accRange.addEventListener('input', function(){ setAcc(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-elacc]').forEach(function(b){
+      b.addEventListener('click', function(){ currentELACC = parseFloat(b.dataset.elacc); setAcc(parseInt(accRange.value,10)); });
+    });
+    setAcc(40);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
