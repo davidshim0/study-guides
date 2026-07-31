@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<!-- OctoCache field guide — Caching Voxels for Accelerating 3D Occupancy Mapping (Chen et al., ASPLOS'25).
+     Semantic colors: teal = the cache (fast path, high hit rate) · gold = Morton Code ordering (data locality) ·
+     indigo = OctoCache system/parallel threads · terracotta = the octree (slow baseline, like plain LRU in the UCP guide). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rarely Wait on the Tree — OctoCache, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D9891E; --honey-deep:#A8650E; --honey-soft:#F6E0BC;
+  --dram:#1F8A8C; --dram-soft:#D8EEEE;      /* teal  = the cache (fast path)          */
+  --ltram:#5B4FC4; --ltram-soft:#E7E4F8;    /* indigo = OctoCache machinery / threads */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = the octree (slow baseline) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,138,140,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,79,196,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,137,30,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(91,79,196,.05) 31px,rgba(91,79,196,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,137,30,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#155657;font-size:.96rem}
+.primer .ready b{color:#0d3f40}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#155657}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a2f9a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #A9DADA;color:#155657}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#8fd0d1;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c1b9ec;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dad4f5}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f65d9,#5B4FC4)}
+.bf-hi{background:linear-gradient(90deg,#25a2a4,#1F8A8C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#0d3f40;border:1px solid #8fd0d1}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#155657}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#d9891e} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8a7ee0}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#155657}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,138,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,79,196,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,137,30,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>ASPLOS 2025 · A Field Guide</span>
+    <h1>Answering most queries from a <span class="swash">fast cache</span>, not routing everyone through the <span class="swash" style="color:var(--optane)">slow tree</span></h1>
+    <p class="lede">OctoMap's octree can eat up to 72% of a UAV's onboard compute. OctoCache slips a small hash-table cache in front of it, so duplicate voxel writes hit fast and most queries skip the root-to-leaf tree walk — though a cache miss still means a trip to the tree.</p>
+    <div class="hero-meta">
+      <span>📄 "OctoCache" · Chen, Li, Wan, Hsiao, Yu, Reddi, Liu — ASPLOS'25</span>
+      <span>🎓 Some caching/OS background assumed — the primers cover it</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧊</div>
+      <p>Serve most queries straight from a <span class="ro">CACHE</span> so they skip the tree — then feed the evicted voxels (and cache misses) back in <span class="ro">MORTON-CODE order</span> so even the <span class="wo">slow octree</span> update moves as fast as it can.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Nine ideas the paper assumes you know</h2>
+      <p class="sub">Each card clears up one concept OctoCache builds on. Collapsed by default — tap any to open. You already know several of these from the systems side; they're here mostly to fix vocabulary (voxel, octree, Morton code) rather than teach caching from scratch.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> the cache (fast path)</span>
+      <span><i style="background:var(--honey-deep)"></i> Morton Code ordering</span>
+      <span><i style="background:var(--ltram)"></i> OctoCache system / threads</span>
+      <span><i style="background:var(--optane)"></i> the octree (slow baseline)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Voxels and occupancy maps<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>voxel</b> is a 3D cube — the volumetric equivalent of a pixel. An occupancy map divides all of space into a grid of voxels and, for each one, tracks a probability that it's occupied by an obstacle (stored as a <b>log-odds</b> value, so updates are just additions/subtractions instead of multiplying probabilities).</p>
+          <div class="ready"><b>Now you're ready:</b> OctoCache is a caching layer for exactly one operation — reading and writing a voxel's occupancy value, over and over, as a robot scans its surroundings.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Octrees — a tree that mirrors 3D space<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An <b>octree</b> recursively splits a cube of space into 8 smaller cubes, each split again, down to a target resolution. Every node stores one voxel's occupancy value; a node's value is the max of its 8 children, so identical children can be pruned to save memory. Finding a voxel means walking from the root down to its leaf — up to 32 memory accesses for a 16-level tree.</p>
+          <div class="ready"><b>Now you're ready:</b> that root-to-leaf walk, repeated for every incoming voxel, is the entire performance problem this paper solves. The octree is memory-efficient but access-expensive — sound familiar from any tiered-storage structure that trades access latency for compactness.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Ray tracing (in this context)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>When a LiDAR/depth sensor returns a point cloud, the mapping system draws a straight line ("ray") from the sensor to each point. Every voxel the ray passes through is marked <i>free</i>; the voxel at the point itself is marked <i>occupied</i>. This is the step before anything touches the octree or cache.</p>
+          <div class="ready"><b>Now you're ready:</b> because many rays converge near the sensor and many points fall in the same voxel, ray tracing itself manufactures a flood of duplicate voxel writes — 2.78× to 31.32× duplication in one batch. That flood is what the cache is built to absorb.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Hash tables, buckets, and collisions<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A hash table maps a key to a fixed-size array slot ("bucket") via a hash function. Different keys can land in the same bucket (a <b>collision</b>); most implementations let a bucket hold several entries (here, a small vector of "cells") rather than just one.</p>
+          <div class="ready"><b>Now you're ready:</b> OctoCache's cache <i>is</i> a hash table of voxels — <code>w</code> buckets, each capped at <code>τ</code> cells. Get the bucket count and cap wrong and you either evict too eagerly or search too long per insert.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Morton Code (Z-order curve)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Morton Code</b> turns a multi-dimensional coordinate (x, y, z) into a single integer by interleaving the bits of each axis. Two points close together in 3D space usually get Morton codes that are close together as integers — so sorting by Morton code approximately sorts by spatial (and thus octree-ancestor) locality.</p>
+          <div class="ready"><b>Now you're ready:</b> OctoCache uses Morton Code twice — once to pick a voxel's bucket, and once (implicitly, via sequential eviction from Morton-hashed buckets) to decide the <i>order</i> in which evicted voxels get written to the octree.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Data locality and tree traversal cost<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Visiting two tree nodes that share a close common ancestor is cheaper (more cache-hit-friendly, fewer redundant pointer chases) than visiting two unrelated nodes, because the shared path segment is likely still warm from the previous visit. This is the same intuition behind sequential vs. random access to any backing store.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper formalizes "good ordering" as minimizing total tree-distance between <i>consecutively</i> inserted leaves — and proves Morton order is optimal for that.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Producer–consumer queues and mutexes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A single-producer/single-consumer queue lets one thread push work items and another thread pop them, safely, without a full lock on every operation. A <b>mutex</b> is a lock that lets only one thread touch a shared resource at a time — necessary whenever two threads might read and write the same memory.</p>
+          <div class="ready"><b>Now you're ready:</b> OctoCache's parallel design uses exactly this pair — a lock-free queue to hand evicted voxels from thread 1 to thread 2, and a mutex to keep octree reads and octree writes from racing.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>The perception → planning → control pipeline<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Autonomous robots run a loop: <b>perception</b> (turn sensor data into a map update), <b>planning</b> (query the map to find a safe path), <b>control</b> (drive the motors along that path). Planning cannot safely proceed until the current perception update has landed in the map — otherwise it might plan through an obstacle nobody told it about yet.</p>
+          <div class="ready"><b>Now you're ready:</b> "map update latency" isn't an abstract metric — it directly gates how fast planning can run, which directly gates how fast (and how safely) the robot can fly.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>Write-back vs. write-through consistency<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>write-through</b> cache pushes every write straight to the backing store immediately. A <b>write-back</b> cache accumulates writes and flushes them later, in a batch — faster, but it must guarantee that any read (even one that misses the cache) still sees the latest accumulated value.</p>
+          <div class="ready"><b>Now you're ready:</b> OctoCache's cache is write-back: it holds the running total occupancy value like a mini-octree, and only flushes it to the real octree on eviction — which is exactly why query results stay correct on both a cache hit <i>and</i> a cache miss.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>OctoCache in a nutshell</h2>
+      <p class="sub">The bottleneck, the fix, and why it generalizes past robotics.</p>
+    </div>
+    <div class="prose">
+      <p>OctoMap represents 3D occupancy with an <span class="mem-chip chip-lru">octree</span>: memory-efficient, but every voxel update or query demands a root-to-leaf round trip — up to 32 memory accesses per voxel. Profiling shows this octree update dominates runtime, up to 96% at high resolution and 99% once ray tracing is hardware-accelerated. Meanwhile the incoming voxel stream is massively redundant: 2.78×–31.32× duplication inside one sensor scan, and 40–90%+ overlap between consecutive scans as a UAV flies its trajectory.</p>
+      <p><strong>OctoCache</strong> exploits that redundancy directly: a small flattened <span class="mem-chip chip-hi">hash-table cache</span> sits in front of the octree and absorbs most of the repeated writes — hit rates that can exceed <b>93%</b> on favorable datasets like New College, at well under 1% of the octree's memory footprint. On a hit, the cache updates an accumulated occupancy value in place — no tree walk at all. Queries are served from the cache first, falling back to the octree only on a miss, so query results are always consistent with the "true" accumulated value, whether or not the answer has reached the octree yet.</p>
+      <p>Two more moves squeeze out the rest. First, evictions are indexed and drained by <span class="mem-chip chip-sat">Morton Code</span>, which the paper proves is an optimal ordering for octree-insertion locality — up to <b>1.34×–1.38×</b> faster inserts than OctoMap's native order, and up to <b>3.32×</b> faster than a random order. Second, the octree update is moved to a second <span class="mem-chip chip-ucp">CPU thread</span>, running concurrently with ray tracing and cache eviction, guarded by a single mutex so octree reads and writes never race.</p>
+      <p><strong>The payoff:</strong> OctoCache speeds up 3D map construction by <b>45.63%–88.01%</b> over OctoMap, and in closed-loop UAV navigation delivers up to <b>3.02×</b> end-to-end speedup and <b>28%</b> shorter mission time — for a cache that costs roughly <b>14MB</b> and one extra CPU core.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>The octree is memory-efficient but access-expensive — it dominates OctoMap's runtime (up to 96%, or 99% once ray tracing is fast).</li>
+        <li>Voxel updates are highly redundant, both within one scan (2.78×–31.32×) and across consecutive scans (often &gt;80% overlap).</li>
+        <li>A small hash-table <b>cache</b> in front of the octree turns most of that redundancy into cheap in-place updates instead of tree walks.</li>
+        <li>The cache stores an <b>accumulated</b> occupancy value (a mini-octree), so cache hits <i>and</i> cache misses both return consistent results.</li>
+        <li><b>Morton Code</b> ordering of evictions is a provably-optimal way to feed voxels back into the octree with maximum locality.</li>
+        <li>Moving octree updates to a second thread overlaps the slow tree write with the fast cache path, guarded by one mutex.</li>
+        <li>Result: 45.63%–88.01% faster map construction; up to 3.02× UAV speedup; 28% shorter missions; ~14MB cache, one extra core.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE: pipeline comparison -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">OctoMap's write path vs. OctoCache's write path</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> octree (slow, root-to-leaf)</span>
+        <span><i style="background:var(--dram)"></i> cache (fast, in-place update)</span>
+        <span><i style="background:var(--honey-deep)"></i> Morton-ordered eviction</span>
+        <span><i style="background:var(--ltram)"></i> second thread</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="OctoMap write path versus OctoCache write path">
+        <text x="20" y="26" font-family="JetBrains Mono" font-size="11" fill="#9A8E7C">OCTOMAP</text>
+        <rect x="20" y="34" width="120" height="46" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.5"/><text x="80" y="61" text-anchor="middle" font-family="Mulish" font-size="12" font-weight="700" fill="#332C24">Point Cloud</text>
+        <line x1="140" y1="57" x2="176" y2="57" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow1)"/>
+        <rect x="180" y="34" width="120" height="46" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.5"/><text x="240" y="61" text-anchor="middle" font-family="Mulish" font-size="12" font-weight="700" fill="#332C24">Ray Tracing</text>
+        <line x1="300" y1="57" x2="336" y2="57" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow1)"/>
+        <rect x="340" y="26" width="180" height="62" rx="8" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/><text x="430" y="52" text-anchor="middle" font-family="Mulish" font-size="12" font-weight="700" fill="#9a3a22">Octree</text><text x="430" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">≤32 mem. accesses/voxel</text>
+        <line x1="520" y1="57" x2="556" y2="57" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow1)"/>
+        <rect x="560" y="34" width="170" height="46" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.5"/><text x="645" y="55" text-anchor="middle" font-family="Mulish" font-size="12" font-weight="700" fill="#332C24">Query</text><text x="645" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">waits for update</text>
+
+        <text x="20" y="146" font-family="JetBrains Mono" font-size="11" fill="#9A8E7C">OCTOCACHE</text>
+        <rect x="20" y="154" width="120" height="46" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.5"/><text x="80" y="181" text-anchor="middle" font-family="Mulish" font-size="12" font-weight="700" fill="#332C24">Point Cloud</text>
+        <line x1="140" y1="177" x2="176" y2="177" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow1)"/>
+        <rect x="180" y="154" width="120" height="46" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.5"/><text x="240" y="181" text-anchor="middle" font-family="Mulish" font-size="12" font-weight="700" fill="#332C24">Ray Tracing</text>
+        <line x1="300" y1="177" x2="336" y2="177" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow1)"/>
+        <rect x="340" y="146" width="180" height="62" rx="8" fill="#D8EEEE" stroke="#1F8A8C" stroke-width="2"/><text x="430" y="172" text-anchor="middle" font-family="Mulish" font-size="12" font-weight="700" fill="#0d3f40">Cache</text><text x="430" y="190" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#0d3f40">Morton-hashed bucket</text>
+        <line x1="430" y1="208" x2="430" y2="240" stroke="#1F8A8C" stroke-width="2" marker-end="url(#arrow2)"/>
+        <rect x="350" y="244" width="160" height="42" rx="8" fill="#fff" stroke="#1F8A8C" stroke-width="1.5"/><text x="430" y="270" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#0d3f40">Query — served now</text>
+        <line x1="520" y1="177" x2="556" y2="177" stroke="#D9891E" stroke-width="2" marker-end="url(#arrow3)"/>
+        <rect x="560" y="154" width="90" height="46" rx="8" fill="#F6E0BC" stroke="#D9891E" stroke-width="2"/><text x="605" y="175" text-anchor="middle" font-family="Mulish" font-size="10.5" font-weight="700" fill="#6e4a09">Evicted</text><text x="605" y="189" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#6e4a09">Morton order</text>
+        <line x1="650" y1="177" x2="686" y2="177" stroke="#5B4FC4" stroke-width="2" marker-end="url(#arrow4)"/>
+        <rect x="690" y="146" width="60" height="62" rx="8" fill="#E7E4F8" stroke="#5B4FC4" stroke-width="2"/><text x="720" y="170" text-anchor="middle" font-family="Mulish" font-size="10" font-weight="700" fill="#3a2f9a">Octree</text><text x="720" y="184" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#3a2f9a">thread 2</text>
+        <defs>
+          <marker id="arrow1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#9A8E7C"/></marker>
+          <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#1F8A8C"/></marker>
+          <marker id="arrow3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#D9891E"/></marker>
+          <marker id="arrow4" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#5B4FC4"/></marker>
+        </defs>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> in OctoMap, every voxel forces a slow octree round-trip before a query can be answered. In OctoCache, the cache absorbs most writes (hit rates can exceed 93% on favorable datasets), serving cache hits immediately; cache misses still require an octree read, and evicted voxels — reordered by Morton Code — still make the slow trip to the octree, mostly on a separate thread. (Paper, Figs. 1, 4, 11, 14)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → absorb → reorder → overlap</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Octree updates dominate runtime; voxel writes are massively duplicated</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Absorb (Cache)</div><div class="nd">Flattened hash table catches repeats; accumulated value keeps queries consistent</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Reorder (Morton Code)</div><div class="nd">Evictions drained in Morton order — provably optimal octree-insert locality</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Overlap (2 threads)</div><div class="nd">Octree update moves to thread 2, running alongside ray tracing + eviction on thread 1</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Guard (1 mutex)</div><div class="nd">Serializes octree reads vs. writes — thread 1 can briefly wait on it when a read or write is in flight</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Payoff</div><div class="nd">45.63%–88.01% faster map construction; up to 3.02× UAV speedup</div></div>
+      </div>
+    </figure>
+
+    <div class="callout why"><span class="ic">💡</span><div><b>For the tiering reader:</b> this is structurally close to a DRAM write-buffer in front of a CXL/NVM-backed structure — absorb hot, duplicate writes cheaply; batch and reorder the cold remainder for sequential-friendly access on the slow tier; move that flush off the critical path onto another core. The "accumulated value, flushed on eviction" trick is exactly write-back semantics with a correctness guarantee on miss.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about OctoCache</h2>
+      <p class="sub">Each picture stands alone — read them in any order. Every card ends with an honest note about where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="52" width="34" height="34" rx="4" fill="#D8EEEE" stroke="#1F8A8C" stroke-width="2.5"/>
+          <rect x="56" y="52" width="34" height="34" rx="4" fill="#D8EEEE" stroke="#1F8A8C" stroke-width="2.5"/>
+          <rect x="96" y="52" width="28" height="34" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2.5"/>
+          <path d="M20 46 q13 -18 26 0 M60 46 q13 -18 26 0" stroke="#1F8A8C" stroke-width="2" fill="none" stroke-linecap="round"/>
+          <circle cx="33" cy="30" r="3" fill="#1F8A8C"/><circle cx="73" cy="30" r="3" fill="#1F8A8C"/>
+        </svg></div>
+        <span class="term">The core idea · Absorb before you traverse</span>
+        <h3>A doorman with a clipboard</h3>
+        <p>Instead of walking every visitor all the way up to the penthouse to log them, a doorman keeps a clipboard by the entrance. Repeat visitors just get a checkmark added — no elevator ride. Only when the clipboard fills up does someone walk the accumulated tally upstairs, once, for everyone at once. The cache is the clipboard; the octree is the long elevator ride.</p>
+        <div class="breaks"><b>Where it breaks:</b> a doorman only checks people in once; OctoCache's clipboard also has to answer "is this person currently inside?" correctly at any moment — which is why it stores a running total, not just a tally mark.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="56" rx="6" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <line x1="20" y1="48" x2="120" y2="48" stroke="#D8C8AC" stroke-width="1.5"/>
+          <text x="70" y="38" text-anchor="middle" font-family="monospace" font-size="9" fill="#0d3f40">occupancy = 0.9</text>
+          <text x="70" y="65" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">read here on hit</text>
+        </svg></div>
+        <span class="term">Query consistency · Accumulated value</span>
+        <h3>A running bar tab, not a receipt pile</h3>
+        <p>A bartender who keeps a running tab (current total owed) can answer "how much do I owe?" instantly at any time. One who just piles up individual receipts has to add them all up first. OctoCache's cache keeps the <i>running accumulated occupancy</i>, like the tab — so a query hitting the cache gets the right answer immediately, no summation, no tree walk.</p>
+        <div class="breaks"><b>Where it breaks:</b> a bar tab is settled once at checkout; OctoCache's "tab" is settled (flushed to the octree) repeatedly, every time that voxel's bucket overflows — it's a rolling settlement, not a one-time one.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="48" r="8" fill="#F6E0BC" stroke="#D9891E" stroke-width="2"/>
+          <circle cx="55" cy="30" r="8" fill="#F6E0BC" stroke="#D9891E" stroke-width="2"/>
+          <circle cx="80" cy="48" r="8" fill="#F6E0BC" stroke="#D9891E" stroke-width="2"/>
+          <circle cx="105" cy="30" r="8" fill="#F6E0BC" stroke="#D9891E" stroke-width="2"/>
+          <path d="M30 48 L55 30 L80 48 L105 30" stroke="#D9891E" stroke-width="2" fill="none" stroke-dasharray="3 3"/>
+          <text x="67" y="72" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">route errands by street, not to-do order</text>
+        </svg></div>
+        <span class="term">Reordering evictions · Morton Code</span>
+        <h3>Running errands by neighborhood, not by list order</h3>
+        <p>If your to-do list says "bakery, dry cleaner across town, bakery's neighbor, then back near the bakery," you'll waste half your trip backtracking. A smarter route visits everything near the bakery together, then everything near the dry cleaner. Morton Code does this for voxel evictions: it groups voxels that share tree ancestors so the octree walk barely has to backtrack.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real errand-run can adapt live to traffic; Morton order is fixed in advance from coordinates alone — it's provably good <i>on average</i>, not adaptive to which ancestor nodes happen to be warm right now.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="46" height="56" rx="6" fill="#D8EEEE" stroke="#1F8A8C" stroke-width="2.5"/>
+          <rect x="74" y="20" width="46" height="56" rx="6" fill="#F7E1D8" stroke="#C0563B" stroke-width="2.5"/>
+          <path d="M66 30 h8 M66 66 h8" stroke="#332C24" stroke-width="2"/>
+          <circle cx="70" cy="30" r="2.5" fill="#5B4FC4"/><circle cx="70" cy="66" r="2.5" fill="#5B4FC4"/>
+        </svg></div>
+        <span class="term">Parallelization · Two threads, one lock</span>
+        <h3>A relay handoff, not a shared pen</h3>
+        <p>Two relay runners never touch the baton at the same instant — there's one clean handoff moment. OctoCache's two threads work the same way: thread 1 hands off evicted voxels through a queue, and a single mutex ensures thread 2's octree write and any octree read never happen at the exact same moment. Everything else — ray tracing, cache eviction — runs untouched by that lock.</p>
+        <div class="breaks"><b>Where it breaks:</b> a relay handoff is instantaneous; the mutex handoff can make thread 1 <i>wait</i> if thread 2's octree write is still running when the next batch arrives — the paper calls this the "gap," and it shrinks as the cache absorbs more writes.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 Q40 20 70 40 Q100 60 120 20" stroke="#1F8A8C" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+          <circle cx="20" cy="70" r="4" fill="#1F8A8C"/><circle cx="70" cy="40" r="4" fill="#1F8A8C"/><circle cx="120" cy="20" r="4" fill="#1F8A8C"/>
+          <path d="M18 74 q4 4 8 8 M68 44 q4 4 8 8 M118 24 q4 4 8 8" stroke="#C0563B" stroke-width="2" stroke-dasharray="2 2"/>
+        </svg></div>
+        <span class="term">Sensor overlap · Why the cache stays full</span>
+        <h3>Retracing your own footprints in snow</h3>
+        <p>Walk a familiar loop through fresh snow and much of your new path overlaps yesterday's tracks. A UAV scanning as it flies does the same thing — consecutive scans see 40–90%+ of the same voxels again. That overlap is exactly why a cache sized for just a few batches keeps producing a high hit rate, batch after batch, without needing to grow.</p>
+        <div class="breaks"><b>Where it breaks:</b> footprints in snow never change; voxel occupancy <i>can</i> — a UAV revisiting a spot after an obstacle moved needs the update to actually land, which the cache guarantees (it never silently drops writes), it just delays when they reach the octree.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="34" width="92" height="28" rx="14" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <circle cx="40" cy="48" r="8" fill="#D8EEEE" stroke="#1F8A8C" stroke-width="2"/>
+          <circle cx="70" cy="48" r="8" fill="#D8EEEE" stroke="#1F8A8C" stroke-width="2"/>
+          <circle cx="100" cy="48" r="8" fill="#F6E0BC" stroke="#D9891E" stroke-width="2"/>
+          <text x="70" y="82" text-anchor="middle" font-family="monospace" font-size="8" fill="#6E6456">τ = bucket capacity</text>
+        </svg></div>
+        <span class="term">Sizing the cache · The τ knob</span>
+        <h3>A mail slot, not a mailroom</h3>
+        <p>A mail slot too small forces you to check it constantly (frequent, wasteful evictions); a mailroom so big you dig through piles to find anything (slow per-insert search). There's a sweet spot: big enough to hold a batch's worth of repeats, small enough to search quickly. OctoCache's <code>τ</code> (max cells per bucket) is exactly this knob, and the paper finds τ=2–4 is that sweet spot for its workloads.</p>
+        <div class="breaks"><b>Where it breaks:</b> a mail slot's "right size" doesn't depend on how mail arrives; τ's optimum does — it's tuned to this workload's collision rate and duplication pattern, and would need re-tuning for a very different sensor or scene.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, following the paper's own build-up: strawman cache → Morton ordering → parallel design.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The bottleneck — why the octree is slow</h3>
+      <p>Every voxel update or query in OctoMap requires a root-to-leaf traversal: locate the leaf, update it, then walk back up updating every ancestor's max-of-children value. For a 16-level tree this is up to <b>32 memory accesses per voxel</b>. Profiling on three public datasets shows octree update is <b>86%+</b> of total runtime, rising to <b>93–96%</b> at higher resolution, and <b>99%</b> once ray tracing itself is hardware-accelerated (so the octree becomes the only bottleneck left).</p>
+      <div class="callout note"><span class="ic">🌱</span><div><b>Concretely:</b> the same tree structure that makes OctoMap memory-efficient for sparse 3D space is precisely what makes it access-expensive — there's no free lunch inside the tree itself. The fix has to come from <i>outside</i> it.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Strawman cache — insertion, query, eviction</h3>
+      <p>OctoCache's cache is an array of <code>w</code> buckets, each holding a small vector of cells; each cell stores a voxel's coordinates plus its accumulated occupancy value. On insertion, hash the incoming voxel to a bucket, scan its cells: a <b>hit</b> just updates the accumulated value in place (cheap); a <b>miss</b> pulls the current value from the octree (or initializes it fresh) and writes a new cell. On <b>eviction</b>, any bucket over its cap <code>τ</code> drops its oldest records, and those records — with their final accumulated values — get written into the octree as a batch.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Insertion and eviction, at a glance</div>
+      <div class="viz-kicker">w=5 buckets, τ=2 · example from the paper</div>
+      <svg class="full" viewBox="0 0 700 220" role="img" aria-label="cache bucket insertion and eviction example">
+        <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Insert voxel v → bucket M(v) mod w = 1</text>
+        <g font-family="JetBrains Mono" font-size="11">
+          <rect x="20" y="40" width="120" height="120" rx="8" fill="#fff" stroke="#E7DBC6"/><text x="80" y="58" text-anchor="middle" fill="#9A8E7C">bucket 0</text>
+          <rect x="150" y="40" width="120" height="120" rx="8" fill="#D8EEEE" stroke="#1F8A8C" stroke-width="1.6"/><text x="210" y="58" text-anchor="middle" fill="#0d3f40">bucket 1</text>
+          <rect x="160" y="66" width="100" height="26" rx="5" fill="#fff" stroke="#8fd0d1"/><text x="210" y="83" text-anchor="middle" fill="#0d3f40">a → 0.1</text>
+          <rect x="160" y="96" width="100" height="26" rx="5" fill="#fff" stroke="#8fd0d1"/><text x="210" y="113" text-anchor="middle" fill="#0d3f40">b → 0.2</text>
+          <rect x="160" y="126" width="100" height="26" rx="5" fill="#fff" stroke="#D9891E" stroke-dasharray="3 3"/><text x="210" y="143" text-anchor="middle" fill="#6e4a09">v → new cell</text>
+          <rect x="280" y="40" width="120" height="120" rx="8" fill="#fff" stroke="#E7DBC6"/><text x="340" y="58" text-anchor="middle" fill="#9A8E7C">bucket 2</text>
+          <rect x="410" y="40" width="120" height="120" rx="8" fill="#fff" stroke="#E7DBC6"/><text x="470" y="58" text-anchor="middle" fill="#9A8E7C">bucket 3</text>
+          <rect x="540" y="40" width="120" height="120" rx="8" fill="#fff" stroke="#E7DBC6"/><text x="600" y="58" text-anchor="middle" fill="#9A8E7C">bucket 4</text>
+        </g>
+        <text x="20" y="190" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Bucket 1 now has 3 cells &gt; τ=2 → evict oldest 1</text>
+        <text x="20" y="210" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">Evict (a, 0.9) and (b, 0.2) → written to octree; v stays cached</text>
+      </svg>
+      <figcaption><b>Cheap path, expensive path:</b> the hit path (top) is a bucket lookup and a float add — no tree walk. Only what overflows (bottom) ever touches the octree. (Paper, Fig. 12)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · Morton Code ordering — proving the eviction order matters</h3>
+      <p>Given the same set of voxels to insert, different orderings produce very different total insertion time — because consecutive insertions that share tree ancestors reuse warm traversal paths, while consecutive insertions to unrelated branches waste the walk. The paper defines a locality cost <code>F(S) = Σ D(aᵢ, aᵢ₊₁)</code> — the sum of tree-distances between consecutive leaves in ordering <code>S</code> — and proves that ordering leaves by their <b>Morton Code</b> minimizes <code>F</code>: nodes with small Morton-code differences always share more ancestors, and the proof (via a chain of lemmas on common ancestors) shows Morton order is one of the sequences that keeps every subtree's leaves contiguous — the best you can do.</p>
+      <p>Measured on a Jetson TX2 across three datasets, Morton order beats OctoMap's native (ray-tracing) order by <b>1.34×–1.38×</b>, and beats a random shuffle by <b>1.97×–3.32×</b>.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Why nearby Morton codes share ancestors</div>
+      <div class="viz-kicker">simplified binary-tree model of the octree (paper's Fig. 9)</div>
+      <svg class="full" viewBox="0 0 700 230" role="img" aria-label="binary tree showing shared ancestors between Morton-adjacent leaves">
+        <circle cx="350" cy="24" r="16" fill="#E7E4F8" stroke="#5B4FC4" stroke-width="2"/><text x="350" y="28" text-anchor="middle" font-family="monospace" font-size="10" fill="#3a2f9a">root</text>
+        <line x1="350" y1="40" x2="200" y2="90" stroke="#D8C8AC" stroke-width="1.6"/>
+        <line x1="350" y1="40" x2="500" y2="90" stroke="#D8C8AC" stroke-width="1.6"/>
+        <circle cx="200" cy="98" r="14" fill="#fff" stroke="#D8C8AC" stroke-width="1.6"/><text x="200" y="102" text-anchor="middle" font-family="monospace" font-size="9" fill="#6E6456">0</text>
+        <circle cx="500" cy="98" r="14" fill="#fff" stroke="#D8C8AC" stroke-width="1.6"/><text x="500" y="102" text-anchor="middle" font-family="monospace" font-size="9" fill="#6E6456">1</text>
+        <line x1="200" y1="112" x2="130" y2="160" stroke="#D8C8AC" stroke-width="1.6"/>
+        <line x1="200" y1="112" x2="270" y2="160" stroke="#D8C8AC" stroke-width="1.6"/>
+        <line x1="500" y1="112" x2="430" y2="160" stroke="#D8C8AC" stroke-width="1.6"/>
+        <line x1="500" y1="112" x2="570" y2="160" stroke="#D8C8AC" stroke-width="1.6"/>
+        <circle cx="130" cy="176" r="16" fill="#D8EEEE" stroke="#1F8A8C" stroke-width="2.4"/><text x="130" y="180" text-anchor="middle" font-family="monospace" font-size="9" fill="#0d3f40">000</text>
+        <circle cx="270" cy="176" r="16" fill="#fff" stroke="#D8C8AC" stroke-width="1.6"/><text x="270" y="180" text-anchor="middle" font-family="monospace" font-size="9" fill="#6E6456">001</text>
+        <circle cx="430" cy="176" r="16" fill="#fff" stroke="#D8C8AC" stroke-width="1.6"/><text x="430" y="180" text-anchor="middle" font-family="monospace" font-size="9" fill="#6E6456">110</text>
+        <circle cx="570" cy="176" r="16" fill="#D8EEEE" stroke="#1F8A8C" stroke-width="2.4"/><text x="570" y="180" text-anchor="middle" font-family="monospace" font-size="9" fill="#0d3f40">111</text>
+        <text x="200" y="210" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">000 vs 111: Morton diff. large → few shared ancestors (root only)</text>
+        <text x="500" y="210" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#0d3f40">e.g. 000 &amp; 001: Morton diff.=1 → share their parent node</text>
+      </svg>
+      <figcaption>Leaf nodes with small Morton-code differences (e.g. the two teal-highlighted 000/111 pairing in the paper is illustrative of the general rule — closer codes share deeper ancestors) reuse more of the traversal path when inserted back-to-back. This is the intuition the paper turns into a formal minimality proof. (Paper, Fig. 9, Lemmas A2–A6)</figcaption>
+    </figure>
+
+    <!-- INTERACTIVE: cache sizing explorer -->
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: size the cache bucket (τ)</div>
+      <div class="viz-kicker">drag τ and watch hit rate vs. per-insert overhead trade off</div>
+      <div class="part-viz">
+        <div>
+          <div class="ways-strip" id="cacheStrip"></div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">τ (cells/bucket):</span>
+            <input type="range" min="1" max="16" value="4" id="cacheRange">
+            <span style="font-family:var(--mono);font-weight:700;color:var(--ltram)" id="cacheRangeVal">4</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-csize="1">τ=1 (undersized)</button>
+            <button class="tbtn" data-csize="4">Paper's choice (τ=4)</button>
+            <button class="tbtn" data-csize="16">τ=16 (oversized)</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">hit rate<b id="cHit">—</b></div>
+            <div class="pstat">relative insert cost<b id="cCost">—</b></div>
+            <div class="pstat">cache size (w=512K)<b id="cSize">—</b></div>
+          </div>
+          <div class="pverdict sub" id="cVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>What you'll find:</b> hit rate climbs fast then flattens after τ≈4 — you've already captured the batch's repeats. Past that point you're only adding per-insert comparison overhead for no extra hits, which is why the paper settles on τ=2–4. (Illustrative curve shaped to match Fig. 23/24's reported trend.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Parallel OctoCache — moving the tree off the critical path</h3>
+      <p>Even with a high hit rate, the octree update remains the single largest remaining chunk of work. OctoCache moves it to a <b>second thread</b>, running concurrently with ray tracing and cache eviction on thread 1. A single mutex partitions operations: cache insertion/query need to <i>read</i> the octree (on a cache miss); octree update <i>writes</i> it. Ray tracing and cache eviction never touch the octree at all, so they run freely alongside it.</p>
+      <pre class="sketch"><span class="cm">// thread 1 (critical path)</span>
+ray_trace(batch);
+cache.insert(voxels);          <span class="cm">// serves query immediately after</span>
+serve(query);
+evicted = cache.evict();       <span class="hl">enqueue(evicted, shared_buffer);</span>  <span class="cm">// Morton order preserved</span>
+
+<span class="cm">// thread 2 (off critical path)</span>
+<span class="kw">while</span> (buffer.dequeue(v)):
+    mutex.lock();
+    octree.update(v);          <span class="cm">// writes; reads from thread 1 must wait</span>
+    mutex.unlock();</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why this doesn't fully double throughput:</b> thread 1's next batch still must wait if the octree update from the <i>previous</i> batch hasn't finished (a query might need to read the octree on a miss). The achievable gain is bounded by <code>min(T_raytracing + T_eviction, T_octree_update)</code> — classic overlap-limited speedup, not free parallelism. A cache with a higher hit rate shrinks <code>T_octree_update</code>, which shrinks this wait.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces using the paper's real numbers: computing a Morton bucket index, sizing the cache, connecting duplication to hit rate, and reading the UAV payoff.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Computing a voxel's Morton-Code bucket</h3>
+      <p style="color:var(--ink-soft)">The paper's own example: locate voxel <code>v = (1, 5, 3)</code> in the cache.</p>
+      <ol class="seq">
+        <li><b>Binary-encode each axis:</b> vₓ=1 → 001₂, v_y=5 → 101₂, v_z=3 → 011₂.</li>
+        <li><b>Interleave bit-planes from highest to lowest</b>, in x, y, z order at each level, concatenating across all three levels.</li>
+        <li><b>Convert the resulting bit string to decimal:</b> the paper reports <code>M(v) = 167</code>.</li>
+        <li><b>Locate the bucket:</b> insert v into bucket <code>M(v) mod w</code> — bucket 167 mod w for whatever bucket count w is configured.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> because Morton Code tends to preserve spatial locality, voxels that are physically close usually end up hashed to numerically close buckets — so evicting buckets in increasing order also drains voxels in roughly spatial (and therefore tree-ancestor) order.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Sizing the cache to a memory budget</h3>
+      <p style="color:var(--ink-soft)">The UAV evaluation uses <code>w = 512K</code> buckets and <code>τ = 4</code> cells/bucket, each cell 7 bytes (3 bytes coordinates + 4 bytes occupancy). What's the total cache footprint?</p>
+      <ol class="seq">
+        <li><b>Buckets:</b> w = 512K = 524,288.</li>
+        <li><b>Max cells after eviction:</b> τ = 4 per bucket.</li>
+        <li><b>Bytes per cell:</b> 7 (3B coords + 4B float occupancy).</li>
+        <li><b>Total:</b> 524,288 × 4 × 7 = 14,680,064 bytes ≈ <b>14.0 MB</b> — matching the paper's stated cache size exactly.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>General formula: <code>M = 7 × w × τ</code>. Given a memory budget, this is a single division to pick <code>w</code> once you've settled on <code>τ</code> — no search needed.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Why duplication becomes a high hit rate</h3>
+      <p style="color:var(--ink-soft)">Two sources of redundancy feed the cache: intra-batch duplication (2.78×–31.32×, from overlapping sensor rays) and inter-batch overlap (often &gt;80% of a batch already seen in the last 3 updates).</p>
+      <ol class="seq">
+        <li><b>Intra-batch:</b> if a batch has 31.32× duplication, roughly 97% of raw voxel writes in that single batch are repeats of others already in the batch — the cache absorbs these on the very first pass.</li>
+        <li><b>Inter-batch:</b> with &gt;80% overlap between consecutive batches, most of what's "new" in this batch was already cached from the last one or two batches — another near-certain hit.</li>
+        <li><b>Combined effect, New College dataset:</b> the paper reports a cache sized at just <b>0.23%</b> of the octree's footprint (out of a 0.99GB octree) still achieves <b>&gt;93% hit rate</b>. (Other datasets like Freiburg report lower hit rates for comparable cache sizes — e.g. ~91.8% at 14MB — so this figure is dataset-dependent, not a universal number.)</li>
+        <li><b>What that buys:</b> on New College, only ~7% of voxel writes ever reach the octree at all — the other 93%+ are settled by a bucket lookup and a float addition.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the hit rate isn't a tuning miracle — it's a direct consequence of how physically redundant LiDAR/depth sensing is. The cache is exploiting a property of the <i>workload</i>, not fighting against it, though the exact hit rate varies by dataset.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Reading the UAV runtime and mission-time payoff</h3>
+      <p style="color:var(--ink-soft)">MavBench profiling shows OctoMap can consume up to <b>72%</b> of end-to-end UAV compute. What happens when OctoCache removes most of that?</p>
+      <ol class="seq">
+        <li><b>End-to-end runtime:</b> the OctoCache-based system is 1.78×–3.02× faster than OctoMap across the four MavBench scenarios (Openland, Farm, Room, Factory), with the Room scenario (hardest, indoor) hitting the top end.</li>
+        <li><b>Why Room benefits most:</b> Room uses the finest resolution (0.15m) and shortest range — exactly the high-resolution regime where octree update dominates most (up to 92–96% of OctoMap's own runtime).</li>
+        <li><b>Flight speed → mission time:</b> a faster perception stage raises the UAV's max safe flight velocity (per the roofline-style model in [30]), which the paper translates into <b>13%–28%</b> shorter mission completion time on the AscTec Pelican.</li>
+        <li><b>The DJI Spark exception:</b> in Openland and Factory, the lighter, lower-power DJI Spark sees <i>no</i> mission-time improvement — its bottleneck there is rotor pull power, not compute, so a faster mapping system has nothing left to unlock.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is the same "fix the actual bottleneck" logic as the octree-vs-cache story, one level up the stack: speeding up compute only helps mission time when compute — not the airframe — is what's actually gating the UAV.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the common misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A colleague says "a 14MB cache in front of a gigabyte-scale octree can't possibly matter — it's less than 2% of the data." Where's the flaw?</div>
+      <details><summary>Show answer</summary><div class="ans">The cache isn't sized to hold the whole map — it's sized to hold the <i>currently repeating</i> voxels from the last few sensor batches, which is a tiny, highly-reused working set. Because 40–90%+ of each new batch overlaps recent ones, a small cache absorbing that overlap prevents most octree accesses entirely, even though it stores a negligible fraction of total map data.<span class="mis">Misconception: that cache effectiveness scales with the fraction of total data it holds. It scales with the fraction of <i>accesses</i> it can serve — and access patterns here are extremely skewed toward recent, repeated voxels.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">With w=512K buckets and τ=4, what's the total cache size if τ is doubled to 8 (keeping w fixed)? Is doubling τ generally a good idea?</div>
+      <details><summary>Show answer</summary><div class="ans">Using M = 7×w×τ: 7 × 524,288 × 8 = 29,360,128 bytes ≈ 29.3 MB — exactly double, as expected. But the paper finds this is <i>not</i> a good idea past τ≈4: hit rate has already plateaued (all the real duplication is captured), while doubling τ doubles the number of cells to scan on every insertion, since each lookup must check every cell in the target bucket for a match.<span class="mis">Misconception: that a bigger cache (bigger τ) is always at least as good. Past the point where hit rate saturates, a bigger bucket only adds per-insertion search cost with no compensating benefit.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why can't OctoCache just remove the mutex and let both threads touch the octree freely, now that most writes are absorbed by the cache?</div>
+      <details><summary>Show answer</summary><div class="ans">Even with a high hit rate, cache misses still require reading the octree (thread 1), and evicted voxels still require writing it (thread 2). If those overlap in time on the same node, you get a data race — reading a node mid-update, or two writes stepping on each other. The mutex cost is paid only when both operations actually happen concurrently, which becomes rare (not impossible) as hit rate rises — but "rare" isn't "safe."<span class="mis">Misconception: that a high hit rate makes synchronization unnecessary. It reduces how <i>often</i> the lock is contended, not whether it's needed for correctness on the misses/evictions that remain.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">The paper shows random voxel order is 1.97×–3.32× slower into the octree than Morton order. Sketch, in your own words, why a <i>sorted-by-X-coordinate</i> order (sort purely by the x-axis) is worse than Morton order even though it's also "sorted."</div>
+      <details><summary>Show answer</summary><div class="ans">Sorting purely by x-coordinate groups voxels that agree on x but ignores y and z entirely — two voxels with the same x but wildly different y/z can be adjacent in the sequence, yet sit in completely different octree subtrees (since octree splits divide all three axes together at each level). Morton Code interleaves bits from <i>all three</i> axes, so numeric closeness in Morton Code implies closeness in all three dimensions simultaneously — which is what determines shared tree ancestors. X-only sorting captures locality in one axis; Morton captures it in all three at once.<span class="mis">Misconception: that any "sorted" order captures spatial locality. Only orderings that respect all the dimensions the tree actually splits on do — single-axis sorts are locality in one dimension, not three.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">A cache miss retrieves the voxel's current value from the octree, applies the update, and writes a new cell — it does <i>not</i> immediately write that update back to the octree. Why is this safe for query consistency?</div>
+      <details><summary>Show answer</summary><div class="ans">Because the cache always holds the running <i>accumulated</i> occupancy value (not just "the last delta"), a query hitting the cache after a miss-then-update sees the fully correct total — the octree's stale copy is simply superseded in the cache until eviction flushes the newer value back. The octree is only ever consulted directly when the cache itself has no record — at which point the octree's value is, by construction, still current (nothing newer exists yet).<span class="mis">Misconception: that "not writing straight to the octree" risks returning stale data. It only would if the cache stored deltas instead of accumulated totals — the accumulated-value design is precisely what closes that gap.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Parallel OctoCache gives "an extra 0.16×–0.33× gain over serial" at resolutions 0.1–0.3m, but much less at very coarse resolutions. Using the min(ray_tracing+eviction, octree_update) bound, explain why.</div>
+      <details><summary>Show answer</summary><div class="ans">At coarse resolution, the octree is shallow and updates are already cheap — T_octree_update is small, possibly smaller than T_raytracing+T_eviction. The bound min(a, b) is then capped by the raytracing+eviction side, which parallelization doesn't touch, so there's little to overlap and little to gain. At fine resolution, T_octree_update grows large (deeper tree, more accesses) and becomes the dominant term — exactly the regime where moving it to a second thread, off the critical path, pays off most.<span class="mis">Misconception: that parallelizing a component always helps proportionally to how slow that component is in isolation. It only helps to the extent that component is the *bottleneck* relative to what continues running alongside it.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 7 · medium</span>
+      <div class="qtext">Why does the paper report OctoCache-RT's speedup over OctoMap-RT (up to 37× at 0.01m resolution) as so much larger than plain OctoCache's speedup over OctoMap (up to 3.02× end-to-end)?</div>
+      <details><summary>Show answer</summary><div class="ans">OctoMap-RT already eliminates ray-tracing-side duplicates, so its octree update becomes an even larger share of total runtime (up to 99% in some accelerated settings) — there's less "other work" left to dilute the improvement. OctoCache-RT then removes almost all of what's left (the octree bottleneck itself), so the *relative* end-to-end speedup looks enormous, especially at the finest resolution where the untouched OctoMap-RT octree update was slowest to begin with.<span class="mis">Misconception: that a bigger reported multiplier means a "better" optimization in absolute terms. It partly reflects how dominant the fixed bottleneck already was in the baseline being compared against — always check what fraction of runtime that baseline's bottleneck represented.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 8 · easy</span>
+      <div class="qtext">The DJI Spark sees no mission-time improvement from OctoCache in the Openland and Factory scenarios. Does this mean OctoCache "doesn't work" for lightweight UAVs?</div>
+      <details><summary>Show answer</summary><div class="ans">No — OctoCache still speeds up the mapping computation itself on the DJI Spark exactly as it does elsewhere. What changes is whether that speedup translates into a <i>faster mission</i>: in those two scenarios the Spark's low rotor pull power, not compute, is the binding constraint on flight speed, so a faster mapping system has no bottleneck left to relieve on the mission-time metric specifically. The Room and (implicitly) other constrained scenarios do show gains.<span class="mis">Misconception: that "no end-to-end metric improvement" means the optimization failed. It can mean the optimization succeeded at its target (compute) but a different, unrelated bottleneck (rotor power) now dominates the metric you're watching.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is OctoCache a new data structure replacing the octree?<span class="chev">▾</span></summary><div class="a">No — the octree stays exactly as-is underneath. OctoCache is a caching <i>layer</i> in front of it that absorbs duplicate writes and reorders what actually reaches the tree. This is deliberate: it preserves OctoMap's existing query API and memory-efficiency properties, unlike prior work that replaced the octree with a different (often larger) structure.</div></details>
+      <details><summary><span class="q">Q2</span>How does the cache guarantee the same query results as vanilla OctoMap?<span class="chev">▾</span></summary><div class="a">It stores the accumulated occupancy value (like a mini-octree) rather than just the most recent delta, and every eviction overwrites the octree with that accumulated value before dropping it from the cache. So a query is always answered with the latest true value, whether served by the cache (hit) or the octree (miss) — the two are kept consistent by construction, not by chance.</div></details>
+      <details><summary><span class="q">Q3</span>Why cache voxels instead of just making the octree traversal itself faster?<span class="chev">▾</span></summary><div class="a">The traversal cost is fundamental to the octree's design — it's exactly what makes it memory-efficient (only 32 accesses worst-case for 65,536³ resolution). Rather than fight that trade-off, OctoCache reduces <i>how often</i> the traversal has to happen at all, by intercepting the enormous fraction of writes that are duplicates before they ever reach the tree.</div></details>
+      <details><summary><span class="q">Q4</span>What exactly does Morton Code buy that a plain hash function wouldn't?<span class="chev">▾</span></summary><div class="a">A plain hash function scatters voxels randomly across buckets — fine for lookup speed, but it destroys any relationship between a voxel's spatial position and where it lands. Morton Code tends to preserve that relationship: nearby voxels usually get nearby codes (though not perfectly — points straddling a Z-curve discontinuity can land far apart despite being spatially close), so bucket assignment and eviction order end up mostly spatially coherent, which is what speeds up the subsequent octree insert.</div></details>
+      <details><summary><span class="q">Q5</span>Is the Morton-order proof specific to octrees, or does it generalize?<span class="chev">▾</span></summary><div class="a">The paper proves this specifically for octree leaf ordering — a proof sketch for uniform tree depth, extended in the supplementary material to non-uniform depth, but both still within octrees. The underlying intuition (keeping every subtree's leaves contiguous minimizes total consecutive-pair tree-distance) plausibly carries over to other trees built by partitioning space along all dimensions at once, like quadtrees — but the paper doesn't prove this for quadtrees or k-d trees, so treat that broader generalization as our speculation, not an established result.</div></details>
+      <details><summary><span class="q">Q6</span>Why only one extra CPU core, and not more?<span class="chev">▾</span></summary><div class="a">The paper specifically targets resource-constrained edge devices (e.g. Jetson TX2's 6 cores), where "requires a dedicated hardware accelerator" or "needs many extra cores" solutions aren't deployable. Splitting into exactly two threads — one for the fast path, one for the octree — captures the main overlap opportunity (ray tracing + eviction vs. tree update) without demanding hardware most robots don't have.</div></details>
+      <details><summary><span class="q">Q7</span>Does OctoCache help ray tracing, or only the octree update?<span class="chev">▾</span></summary><div class="a">Ray tracing itself is unmodified. OctoCache's gains come from absorbing writes in the cache (so most voxels skip the octree read/write entirely), reordering the evictions and cache misses that do reach the octree so inserts have better locality, and overlapping the octree update with ray tracing and eviction via the second thread — which also cuts the synchronization/critical-path overhead of the pipeline, not just the octree-update kernel in isolation. The paper evaluates against both OctoMap (unmodified ray tracing) and OctoMap-RT (a ray-tracing method that already removes intra-batch duplicates), showing OctoCache still helps substantially on top of OctoMap-RT because the octree bottleneck is largely independent of how ray tracing produces its voxels.</div></details>
+      <details><summary><span class="q">Q8</span>What happens if the cache is undersized relative to the workload?<span class="chev">▾</span></summary><div class="a">Buckets overflow more often, forcing more frequent evictions before duplicates within the current or next batch get a chance to hit — hit rate drops, and more voxels take the slow octree path. The paper's Fig. 23 shows hit rate rising steeply with cache size before plateauing — undersizing costs you real hit rate, not just a theoretical inefficiency.</div></details>
+      <details><summary><span class="q">Q9</span>Why does the parallel design sometimes barely beat the serial one?<span class="chev">▾</span></summary><div class="a">The achievable gain from moving octree updates to a second thread is bounded by <code>min(T_raytracing + T_eviction, T_octree_update)</code>. If the octree update was already fast relative to the rest of the pipeline (e.g. coarse resolution, small batches), there's little slow work to hide behind the fast work, so parallelizing adds synchronization overhead for a small win.</div></details>
+      <details><summary><span class="q">Q10</span>What did the authors leave for future work?<span class="chev">▾</span></summary><div class="a">The paper is scoped to single-robot, CPU-based OctoMap acceleration on edge devices like the Jetson TX2, and doesn't itself lay out a future-work agenda beyond that scope. Given the related-work landscape in Table 1, plausible next steps we'd speculate about — GPU-resident caching, multi-robot shared maps, dynamic (moving-obstacle) re-caching beyond what write-back consistency already provides, or hardware co-design (e.g. pairing OctoCache with an octree accelerator like OMU) — are our extrapolations, not claims the authors make.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>OctoCache</b><span>The paper's caching layer in front of OctoMap's octree: absorbs duplicate voxel writes, reorders evictions by Morton Code, and overlaps octree updates with ray tracing on a second thread.</span></div>
+      <div class="term-def"><b>Voxel</b><span>A 3D cube representing one unit of occupancy in the map, storing an accumulated log-odds occupancy value.</span></div>
+      <div class="term-def"><b>Octree</b><span>A tree that recursively splits a cubic volume into 8 children, storing occupancy at leaves and the max-of-children at every ancestor. Root-to-leaf traversal is required for both reads and writes.</span></div>
+      <div class="term-def"><b>Morton Code (Z-order)</b><span>A function mapping 3D integer coordinates to a single integer by interleaving axis bits; numeric closeness approximates spatial (and tree-ancestor) closeness. Proven optimal for minimizing consecutive-insertion tree-distance.</span></div>
+      <div class="term-def"><b>Cache bucket / τ</b><span>The cache is w hash buckets, each capped at τ cells after eviction. τ trades off hit rate (bigger helps, up to a point) against per-insertion search cost (bigger always hurts).</span></div>
+      <div class="term-def"><b>Accumulated occupancy value</b><span>The running total occupancy the cache keeps per voxel (a "mini-octree"), which is what lets both cache hits and cache misses return consistent query results.</span></div>
+      <div class="term-def"><b>Parallel OctoCache</b><span>The 2-thread design: octree updates run on a second thread, overlapping with ray tracing and cache eviction on the first, synchronized by one mutex over octree reads/writes.</span></div>
+      <div class="term-def"><b>Duplication rate / overlap ratio</b><span>Intra-batch duplication (2.78×–31.32×, from ray-tracing geometry) and inter-batch overlap (often &gt;80%, from overlapping sensor scans) — the two sources of redundancy the cache exploits.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Log-odds occupancy</b><span>OctoMap's representation of P(occupied) as a bounded additive value, so repeated sensor evidence just adds/subtracts instead of multiplying probabilities.</span></div>
+      <div class="term-def"><b>Ray tracing</b><span>Converting a point cloud into a batch of free/occupied voxels by tracing a line from the sensor to each detected point.</span></div>
+      <div class="term-def"><b>MavBench</b><span>The closed-loop UAV simulation benchmark (built on the Unreal engine) used to evaluate end-to-end navigation performance.</span></div>
+      <div class="term-def"><b>Jetson TX2</b><span>The edge compute platform (quad ARM CPU, embedded GPU, 8GB RAM) used for all on-device evaluation, fixed at 15W.</span></div>
+      <div class="term-def"><b>Weighted speedup analogue — end-to-end runtime</b><span>The paper's primary performance metric for 3D construction: total wall-clock time to build the map from a full dataset.</span></div>
+      <div class="term-def"><b>Safe flight velocity</b><span>The maximum speed at which a UAV can still react to obstacles in time, computed from sensing range, sensor FPS, and system compute latency (via the roofline-style model of Krishnan et al.).</span></div>
+      <div class="term-def"><b>Mission completion time</b><span>Navigation path distance divided by safe flight velocity — the paper's end-user-facing metric, since it also proxies energy use (rotors dominate UAV power draw).</span></div>
+      <div class="term-def"><b>OctoMap-RT</b><span>A ray-tracing variant that removes intra-batch voxel duplicates before they reach the octree; used as a stronger baseline to isolate the octree's remaining bottleneck.</span></div>
+      <div class="term-def"><b>Shared buffer (SPSC queue)</b><span>The lock-free single-producer/single-consumer queue moving evicted voxels from thread 1 (producer) to thread 2 (consumer, octree writer).</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What OctoCache buys (vs. OctoMap)</div>
+      <div class="viz-kicker">headline numbers from the paper · higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">3D map construction<small>range</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="67"><span>45.63%–88.01% faster</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">UAV end-to-end<small>Room, best case</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="67"><span>up to 3.02× faster</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Mission time<small>AscTec Pelican</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="28"><span>-28% (up to)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Cache vs. octree<small>per-voxel insert</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="83"><span>up to 5.85× faster</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Cache footprint<small>vs. hit rate</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="7"><span>0.23% of octree size → &gt;93% hits</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 100% (bars 1–4 as time saved; bar 5 as size fraction)</p>
+      <figcaption><b>The theme across every metric:</b> a small, cheap structure removes a large, expensive one from the critical path — never the reverse. (Paper Abstract, §6.1, §6.2)</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>Octrees and spatial partitioning trees <span class="diff easy">easy</span></h4><div class="meta">explainer · 20–30 min</div><p>How octrees, quadtrees, and k-d trees recursively split space, and why they trade traversal depth for memory compactness.</p></div>
+    <div class="read-item reveal"><h4>Z-order curves / Morton Code <span class="diff easy">easy</span></h4><div class="meta">explainer · 15–20 min</div><p>The bit-interleaving construction and why it preserves locality — the foundation of Section 4.3's optimality proof.</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>OctoMap: An Efficient Probabilistic 3D Mapping Framework Based on Octrees <span class="diff med">medium</span></h4><div class="meta">Hornung, Wurm, Bennewitz, Stachniss, Burgard · Autonomous Robots · 2013</div><p>The original mapping framework OctoCache accelerates — defines the octree structure and log-odds occupancy update this whole paper builds on.</p></div>
+    <div class="read-item reveal"><h4>VoxelCache: A Cache-Based Memory Architecture for Volume Graphics <span class="diff med">medium</span></h4><div class="meta">Kanus, Wetekam, Hirche · SIGGRAPH/EG Graphics Hardware · 2003</div><p>The closest prior art: an indexing structure to speed up octree access — but queries still wait for octree updates to complete, which OctoCache's cache-first serving avoids.</p></div>
+    <div class="read-item reveal"><h4>OMU: A Probabilistic 3D Occupancy Mapping Accelerator <span class="diff hard">hard</span></h4><div class="meta">Jia, Yang, Hsiao, Cruz, Brooks, Wei, Reddi · arXiv · 2022</div><p>A hardware accelerator for the same octree bottleneck — the dedicated-silicon alternative to OctoCache's pure-software approach.</p></div>
+    <div class="read-item reveal"><h4>MavBench: Micro Aerial Vehicle Benchmarking <span class="diff med">medium</span></h4><div class="meta">Boroujerdian, Genc, Krishnan, Cui, Faust, Reddi · MICRO · 2018</div><p>The closed-loop UAV benchmark suite used for all navigation evaluation, including the "OctoMap = 72% of runtime" profiling result cited in the introduction.</p></div>
+    <div class="read-item reveal"><h4>Integer Dilation and Contraction for Quadtrees and Octrees <span class="diff hard">hard</span></h4><div class="meta">Stocco &amp; Schrack · IEEE PACRIM · 1995</div><p>The Morton Code bit-interleaving technique OctoCache uses for both bucket indexing and eviction ordering.</p></div>
+    <div class="read-item reveal"><h4>Roofline Model for UAVs <span class="diff hard">hard</span></h4><div class="meta">Krishnan, Wan, Bhardwaj, Jadhav, Faust, Reddi · ISPASS · 2022</div><p>The bottleneck-analysis model translating compute latency into safe flight velocity — the basis for this paper's mission-completion-time metric.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card" style="background:var(--paper-2)">
+      <p style="margin-bottom:10px"><b>From the paper directly:</b> all specific figures — 45.63%–88.01% construction speedup, up to 3.02× UAV speedup, 28% mission-time reduction, 2.78×–31.32× intra-batch duplication, &gt;80% inter-batch overlap (with the 40% Freiburg exception), 1.34×–3.32× Morton-order insertion speedups, up to 32 memory accesses per octree update, the w=512K/τ=4/14MB cache configuration, the &gt;93% hit rate at 0.23% of octree size on New College (dataset-dependent — Freiburg shows lower rates, e.g. ~91.8% at 14MB), up to 5.85×/2.57×/3.34× cache-vs-octree per-voxel speed, and the τ=2–4 sizing recommendation — are quoted or directly recomputed from the paper text (Abstract, §3, §4, §6).</p>
+      <p style="margin:0"><b>Framing added here (not in the paper):</b> the tiering/CXL analogies (write-buffer-in-front-of-slow-tier, write-back semantics, sequential-friendly batching), the "doorman/bar-tab/errand-route/relay/mail-slot" analogies, the illustrative cache-size-vs-hit-rate curve in the interactive explorer (shaped to match the qualitative trend of Fig. 23/24, not read off exact data points), the simplified binary-tree redraw of Fig. 9 (the paper's own figure is likewise described as "a simplified model for the octree," not the octree itself), and the FAQ's speculation about possible future extensions beyond the paper's stated scope (GPU-resident caching, multi-robot maps, hardware co-design) — these are our extrapolations, not the authors' stated future work.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Chen, Li, Wan, Hsiao, Yu, Reddi, Liu, "OctoCache: Caching Voxels for Accelerating 3D Occupancy Mapping in Autonomous Systems" (ASPLOS'25)</span>
+    <span><b>Source:</b> paper text as provided, ACM DOI 10.1145/3676641.3716263</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- CACHE (τ) EXPLORER ---- */
+  // illustrative hit-rate (%) and relative per-insert cost curves for τ = 1..16, shaped to match Fig. 23/24's trend
+  var hitRateArr = [62,78,86,91,93.5,95,96,96.8,97.3,97.6,97.8,98,98.1,98.2,98.3,98.4];
+  var costArr    = [0.8,0.9,1.0,1.05,1.15,1.3,1.5,1.75,2.0,2.3,2.6,3.0,3.4,3.8,4.3,4.8];
+  var W_BUCKETS = 512*1024;
+  var strip = document.getElementById('cacheStrip');
+  function buildStrip(t){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=t?'vpr':'eq')+'"></div>'; }
+    strip.innerHTML = html;
+  }
+  function setCache(t){
+    var range = document.getElementById('cacheRange'); if(!range) return;
+    t = Math.max(1, Math.min(16, t));
+    range.value = t;
+    document.getElementById('cacheRangeVal').textContent = t;
+    var hr = hitRateArr[t-1], cost = costArr[t-1];
+    var sizeMB = (7 * W_BUCKETS * t / (1024*1024));
+    document.getElementById('cHit').textContent = hr.toFixed(1) + '%';
+    document.getElementById('cCost').textContent = cost.toFixed(2) + '×';
+    document.getElementById('cSize').textContent = sizeMB.toFixed(1) + ' MB';
+    buildStrip(t);
+    var verd = document.getElementById('cVerdict');
+    if(t === 4){ verd.className = 'pverdict opt'; verd.textContent = '✓ The paper\'s choice — near-peak hit rate, insertion cost still low.'; }
+    else if(t < 4){ verd.className = 'pverdict sub'; verd.textContent = 'Undersized: frequent evictions before duplicates can hit, so hit rate suffers.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Oversized: hit rate has already plateaued — you\'re only paying more per-insertion search cost now.'; }
+  }
+  var cacheRange = document.getElementById('cacheRange');
+  if(cacheRange){
+    cacheRange.addEventListener('input', function(){ setCache(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-csize]').forEach(function(b){ b.addEventListener('click', function(){ setCache(parseInt(b.dataset.csize,10)); }); });
+    setCache(4);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
