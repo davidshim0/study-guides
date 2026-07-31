@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<!-- Citadel field guide — Rethinking Memory Allocation to Safeguard Against Inter-Domain Rowhammer Exploits (Saxena, Wang, Daglis, MICRO'25).
+     Format: "friendly field guide" house style. Semantic colors:
+     teal = protected/isolated domain data · terracotta = guard rows / attacker adjacency · indigo = Citadel's allocator machinery (chunks/zones/GRT) · honey = the core security rule / headline numbers. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Building the Citadel — A Field Guide to Rowhammer-Safe Memory Allocation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F7F3EC; --paper-2:#EFE6D5; --card:#FFFDF9;
+  --ink:#2B2620; --ink-soft:#6B6155; --ink-faint:#948A79;
+  --line:#E2D5BC; --line-strong:#D1BE9C;
+  --honey:#D9922E; --honey-deep:#AD6C10; --honey-soft:#F7E1B8;
+  --dram:#1E7A6B; --dram-soft:#D8EEE7;      /* teal  = protected / isolated domain      */
+  --ltram:#4C4FA6; --ltram-soft:#E3E3F5;    /* indigo = Citadel allocator machinery      */
+  --optane:#AE3F29; --optane-soft:#F2DCD1;  /* terracotta = guard rows / attacker adjacency */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,122,107,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(76,79,166,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,146,46,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#221d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(76,79,166,.05) 31px,rgba(76,79,166,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #EFD6A0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,146,46,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:19ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.14rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(247,243,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:64ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD6A0;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#164940;font-size:.96rem}
+.primer .ready b{color:#0f3a33}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#164940}
+.chip-sat{background:var(--honey-soft);color:#6b4308}
+.chip-ucp{background:var(--ltram-soft);color:#37397f}
+.chip-lru{background:var(--optane-soft);color:#8a3120}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD6A0;color:#6b4308}
+.callout.why{background:var(--dram-soft);border:1px solid #B4DFD3;color:#164940}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #DDAC98;color:#8a3120}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#98cfc1;background:var(--dram-soft)}
+.node.n-ucp{border-color:#b7b9e6;background:var(--ltram-soft)}
+.node.n-lru{border-color:#dfae99;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dadbef}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:170px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6265b8,#4C4FA6)}
+.bf-hi{background:linear-gradient(90deg,#348e7d,#1E7A6C)}
+.bf-lru{background:linear-gradient(90deg,#c1553c,#AE3F29)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#164940}
+.ptag.medium{background:var(--honey-soft);color:#6b4308}
+.ptag.hard{background:var(--optane-soft);color:#8a3120}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#241f1a;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#D9922E} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8489e0}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#164940}
+.diff.med{background:var(--honey-soft);color:#6b4308}
+.diff.hard{background:var(--optane-soft);color:#8a3120}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#161310; --paper-2:#1F1B16; --card:#211D17;
+  --ink:#EBE3D4; --ink-soft:#B5AA97; --ink-faint:#897E6B;
+  --line:#38322A; --line-strong:#4A4234;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,122,107,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(76,79,166,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,146,46,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(22,19,16,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#201404}
+:root[data-theme="dark"] .tab-btn.active .n{color:#201404;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#161310' : '#F7F3EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>MICRO 2025 · A Field Guide</span>
+    <h1>Giving every domain its own moat, without drowning the castle in guard rows</h1>
+    <p class="lede">Rowhammer breaks the assumption every allocator relies on: that unrelated data placed side by side in DRAM stays unrelated. <strong>Citadel</strong> is a memory allocator that puts physical distance — not permissions — between things that don't trust each other, at a cost small enough to actually ship.</p>
+    <div class="hero-meta">
+      <span>📄 Saxena, Wang, Daglis · Georgia Tech</span>
+      <span>🎓 Assumes you know buddy allocators &amp; NUMA-ish page management</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🏰</div>
+      <p>Two untrusting domains are safe only if they are <span class="ro">colocated in the exact same DRAM row</span> or <span class="wo">separated by ≥N<sub>G</sub> guard rows</span> — everything else in Citadel exists to make that affordable.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>What the paper assumes you already know</h2>
+      <p class="sub">You already know buddy allocators, NUMA nodes, and the Linux mm stack cold — these primers skip that and focus on the Rowhammer-specific and Citadel-specific machinery layered on top of it.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD6A0;margin-top:8px">
+      <h3 style="color:#6b4308">🔑 Quick glossary — acronyms you'll hit immediately</h3>
+      <div class="gloss" style="margin-top:10px">
+        <div class="term-def"><b>RH</b><span>Rowhammer — repeated activation of a DRAM row flips bits in physically nearby rows.</span></div>
+        <div class="term-def"><b>N<sub>G</sub></b><span>Number of guard rows required on each side of a row to stop RH crossing a boundary (paper assumes 2 in its main evaluation).</span></div>
+        <div class="term-def"><b>GRT</b><span>Global Row Table — Citadel's lookup table from logical row-ID to physical DRAM row location(s).</span></div>
+        <div class="term-def"><b>PT / PTHammer</b><span>Page Table (page); PTHammer flips bits in page tables via RH to escalate privilege.</span></div>
+        <div class="term-def"><b>PPR</b><span>Post-Package Repair — DRAM's internal mechanism for swapping out rows found to be faulty.</span></div>
+        <div class="term-def"><b>PFN</b><span>Page Frame Number — the physical page identifier the kernel uses internally.</span></div>
+        <div class="term-def"><b>TRR / PRAC</b><span>Target Row Refresh / Per-Row Activation Counters — in-DRAM hardware RH mitigations, both shown to be imperfect or costly.</span></div>
+        <div class="term-def"><b>cgroup</b><span>Linux control group — Citadel's prototype uses one cgroup ≈ one security domain.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:20px">
+      <span><i style="background:var(--dram)"></i> protected domain data</span>
+      <span><i style="background:var(--optane)"></i> guard row / attacker adjacency</span>
+      <span><i style="background:var(--ltram)"></i> Citadel's allocator machinery</span>
+      <span><i style="background:var(--honey)"></i> headline number / core rule</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Rowhammer, in one sentence<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Hammering (rapidly, repeatedly activating) one DRAM row disturbs its physical neighbors enough to flip bits in them — no exploit of a software bug required, just electrical interference between adjacent hardware cells. It's been reproducible on every major DRAM vendor and node since 2014, and a 2022 study found <em>all</em> tested DDR4 chips vulnerable despite in-DRAM defenses.</p>
+          <div class="ready"><b>Now you're ready:</b> Citadel's entire design exists to control <i>physical adjacency</i> in DRAM — everything else follows from that one constraint.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>The global row — the OS/hardware bridge<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A 4KB OS page is striped across many DRAM banks for parallelism (Fig. 2 of the paper), but every bank-fragment of that page shares the same row-ID. A <b>global row</b> is the set of same-row-ID fragments across all banks — effectively "row X, everywhere." In this paper's server config, one global row is <b>1MB</b> (128 banks × 8KB rows).</p>
+          <div class="ready"><b>Now you're ready:</b> Citadel reserves and isolates memory in units of global rows, not physical addresses — this is the whole trick that lets a software allocator control DRAM-level adjacency.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Guard rows<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A guard row is a global row deliberately left <b>unmapped</b> — never assigned to any process — so that RH-induced bit flips land in empty space instead of another domain's data. The number needed per side, N<sub>G</sub>, is a security parameter: the paper notes that at least two guard rows are typically needed because of attack patterns like Half-Double, assumes N<sub>G</sub>=2 in its main evaluation, and separately studies N<sub>G</sub>=4 as a more conservative setting.</p>
+          <div class="ready"><b>Now you're ready:</b> guard rows are pure overhead — capacity you pay for and never use. The whole design problem is amortizing that cost.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Two prior approaches, two failure modes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>ZebRAM</b> stripes memory into alternating guard/data rows everywhere — simple, but a flat <b>50% capacity loss</b> (worse against advanced attack patterns). <b>Siloz</b> instead reserves whole DRAM <i>subarrays</i> (hundreds of physically-isolated rows) per domain — no guard rows needed, but each domain's reservation is GB-scale, so small domains waste almost all of theirs. The paper calls that waste <b>memory stranding</b>.</p>
+          <div class="ready"><b>Now you're ready:</b> Citadel's whole pitch is landing between these two failure modes — pay for guard rows only where needed, and reserve chunks small enough that stranding stays low.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Security domains and zones<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>security domain</b> is anything that must be protected from RH originating outside it — typically one process, but also each page table page, or a programmer-chosen sub-region. A domain's memory may not be contiguous; each contiguous piece is a <b>zone</b>. Citadel's per-page-allocation rule: every page carries a domain-ID and can only be served from that domain's zones.</p>
+          <div class="ready"><b>Now you're ready:</b> this is finer-grained than Siloz's "domain = VM" and more general than ZebRAM's "everything is isolated identically" — Citadel wants domains of <i>any</i> size, from a 4KB page table to a multi-GB process.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>The zero-distance security insight<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>RH's threat model is about a row disturbing its <i>neighbors</i> — it says nothing about a row disturbing itself. So two domains sharing the exact same global row (distance 0) cannot RH each other by definition, even with zero guard rows between them.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the loophole Citadel's "zonelet" primitive exploits later to protect millions of tiny domains cheaply — see primer 9.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Why not just isolate whole DRAM banks?<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Modern memory controllers deliberately stripe each page's cache lines across many banks (Fig. 2) to exploit bank-level parallelism — a single page never lives in one bank. Isolating by bank would mean either breaking that striping (killing single-thread performance) or being incompatible with how real memory controllers already work. Citadel instead isolates by <i>row-ID</i>, which is orthogonal to bank striping.</p>
+          <div class="ready"><b>Now you're ready:</b> Citadel's isolation unit (the global row) was chosen specifically to be compatible with performance features the memory controller already does for you.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>The buddy allocator's role<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>You already know the buddy allocator serves power-of-2 page runs from per-order free lists. Citadel doesn't replace this abstraction — it overrides six entry points (<code>rmqueue()</code>, <code>__free_one_page()</code>, etc.) so that "which physical page do I hand back" is additionally constrained by domain and row-ID, not just order and NUMA node.</p>
+          <div class="ready"><b>Now you're ready:</b> Citadel is a drop-in allocator-policy change, not a new memory model — same kernel APIs (<code>alloc_pages()</code>, <code>free_page()</code>), different physical-placement logic underneath.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>Loss vs. stranding — the two overhead currencies<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Capacity loss</b> = memory permanently sacrificed as guard rows, never usable by anyone. <b>Stranding</b> = memory reserved for one domain but not currently used by it, and therefore unusable by anyone else. A scheme that minimizes one tends to maximize the other (ZebRAM: all loss, no stranding; Siloz: no loss, lots of stranding) — Citadel's every design decision is tuning this one knob.</p>
+          <div class="ready"><b>Now you're ready:</b> when you see a number in this guide, ask whether it's loss or stranding — the paper always reports both separately, because the fix for each is different.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">10</span>Complex DRAM addressing (skim on first pass)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Real DRAM chips sometimes internally remap rows — mirroring, inversion, and scrambling — meaning a single logical row-ID can occupy up to four different physical locations across ranks. Citadel handles this with a lookup table (the GRT) rather than assuming addresses are identity-mapped; you can safely treat the main design (§4–5) as if mapping were simple and come back to this later.</p>
+          <div class="ready"><b>Now you're ready:</b> everything in tabs 2–5 assumes simple addressing; the FAQ and Reference tabs cover what changes under complex addressing.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Citadel in a nutshell</h2>
+      <p class="sub">Why "isolate everything the same way" fails, and the two-level fix.</p>
+    </div>
+    <div class="prose">
+      <p>Software-based Rowhammer defense boils down to one move: physically separate domains that don't trust each other in DRAM, so an attacker hammering their own rows can't reach anyone else's data. The hard part is <i>at what granularity</i>. Isolate at row granularity (<span class="mem-chip chip-lru">ZebRAM</span>) and you pay a flat <b>50%</b> capacity tax in guard rows everywhere, even for domains that never needed that much separation. Isolate at DRAM-subarray granularity (<span class="mem-chip chip-hi">Siloz</span>) and guard rows nearly disappear, but every domain's minimum reservation balloons to hundreds of MB — with 1K-row subarrays that's just <b>128</b> subarray groups per bank, capping you at a couple hundred domains; this paper's own evaluation instead approximates Siloz with 512-row subarrays, yielding <b>256</b> domains on a 128K-row system — and either way, small domains strand almost all of their reserved subarray (<b>31%</b> of memory, on average, in this paper's evaluation).</p>
+      <p><strong>Citadel</strong>'s insight is that most systems have a bimodal footprint distribution: a handful of large processes hold most of the memory, while hundreds of background daemons and thousands of page-table pages each need only KBs–MBs (Fig. 1b). One reservation size can't serve both well. So Citadel uses <b>two</b> reservation primitives at once: a coarse, guard-row-amortizing <span class="mem-chip chip-ucp">reservation chunk</span> (16 contiguous global rows by default) for normal-sized domains, and a fine-grained <span class="mem-chip chip-ucp">zonelet</span> (one data row + N<sub>G</sub> guard rows) for tiny domains, exploiting the fact that domains sharing a data row can't hammer each other at all.</p>
+      <p><strong>The payoff:</strong> on a 128GB, 128K-row server, Citadel supports thousands — even up to 10.48 million if all memory were devoted to zonelets alone — of arbitrarily-sized domains, at just <b>7.2%</b> average memory overhead (1.5% loss + 5.7% stranding), with essentially <b>no performance loss</b> (actually a <b>4.1%</b> average speedup). ZebRAM and Siloz each fail outright on several of the paper's 11 workload mixes; where they do work, they cost 4–6× more memory.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD6A0">
+      <h3 style="color:#6b4308">🏰 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6b4308">
+        <li>The security rule is physical: colocate in the same global row (distance 0), or separate by ≥N<sub>G</sub> guard rows. Nothing else matters.</li>
+        <li><b>Chunk</b> = coarse reservation unit (16 global rows) that amortizes guard-row cost over many rows.</li>
+        <li><b>Zonelet</b> = fine-grained unit (1 data + N<sub>G</sub> guard rows) for KB–MB domains, exploiting same-row colocation.</li>
+        <li><b>Zone expansion</b> greedily grows a domain's existing zone into adjacent free chunks instead of paying for a fresh guard row.</li>
+        <li>Chunk size = 16 rows is the measured sweet spot: bounds guard-row loss to 12.5% worst case while keeping stranding low.</li>
+        <li>Result: 7.2% avg overhead (up to 16%), 9.8×/4.5× lower than ZebRAM/Siloz, 100% of workload mixes supported (vs. 36%/55%), no perf loss.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Where each scheme spends its memory</div>
+      <div class="viz-kicker">128GB total capacity · app data vs. guard-row loss vs. stranding</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> usable application data</span>
+        <span><i style="background:var(--optane)"></i> guard-row capacity loss</span>
+        <span><i style="background:var(--ltram)"></i> stranded (reserved, unused)</span>
+      </div>
+      <svg class="full" viewBox="0 0 700 220" role="img" aria-label="Memory composition of ZebRAM, Siloz, and Citadel">
+        <g font-family="JetBrains Mono" font-size="12" fill="#6E6456">
+          <text x="70" y="34">ZebRAM</text>
+          <text x="70" y="104">Siloz</text>
+          <text x="70" y="174">Citadel</text>
+        </g>
+        <rect x="70" y="14" width="300" height="30" rx="4" fill="#1E7A6C"/>
+        <rect x="370" y="14" width="300" height="30" rx="4" fill="#AE3F29"/>
+        <text x="220" y="34" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">app data · 50%</text>
+        <text x="520" y="34" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">guard-row loss · 50%</text>
+
+        <rect x="70" y="84" width="414" height="30" rx="4" fill="#1E7A6C"/>
+        <rect x="484" y="84" width="186" height="30" rx="4" fill="#4C4FA6"/>
+        <text x="277" y="104" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">app data · 69%</text>
+        <text x="577" y="104" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">stranded · 31%</text>
+
+        <rect x="70" y="154" width="557" height="30" rx="4" fill="#1E7A6C"/>
+        <rect x="627" y="154" width="9" height="30" fill="#AE3F29"/>
+        <rect x="636" y="154" width="34" height="30" rx="4" fill="#4C4FA6"/>
+        <text x="349" y="174" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">app data · 92.8%</text>
+        <text x="653" y="204" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">loss 1.5% + strand 5.7%</text>
+      </svg>
+      <figcaption><b>Read it as a budget:</b> ZebRAM and Siloz each blow their entire overhead budget on one failure mode. Citadel keeps both slim simultaneously — 1.5% loss (amortized by 16-row chunks + zone expansion) and 5.7% stranding (kept low by zonelets for small domains), for 7.2% total. (Paper §1, §8.1, Fig. 9.)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">domain → zone → two-level reservation → enforcement</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">One reservation size can't serve both GB processes and KB page tables cheaply</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Domain / Zone</div><div class="nd">Each process (+ page table, + sub-region) gets a domain-ID; its memory lives in one or more zones</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Chunk (coarse)</div><div class="nd">16 global rows, N<sub>G</sub>=2 guard rows amortized over 16 → 12.5% worst-case loss</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Zonelet (fine)</div><div class="nd">1 data row + N<sub>G</sub> guard rows; small domains share a data row safely (zero distance)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Zone expansion</div><div class="nd">Grow into an adjacent free chunk instead of paying for new guard rows</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Enforce</div><div class="nd">Buddy allocator overrides serve only from the requester's domain's zones</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about Citadel</h2>
+      <p class="sub">Each stands alone — read in any order. Every card names where the picture stops being literally true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="80" height="50" fill="#E3E3F5" stroke="#4C4FA6" stroke-width="2.5"/>
+          <rect x="12" y="20" width="10" height="66" fill="#F2DCD1" stroke="#AE3F29" stroke-width="2"/>
+          <rect x="118" y="20" width="10" height="66" fill="#F2DCD1" stroke="#AE3F29" stroke-width="2"/>
+          <path d="M30 30 l40 -14 l40 14" fill="none" stroke="#4C4FA6" stroke-width="2.5"/>
+        </svg></div>
+        <span class="term">The core rule · Guard rows as a moat</span>
+        <h3>A castle's moat</h3>
+        <p>A moat only has to be wide enough that no attacker's ladder reaches the wall — dig it wider than that and you've just wasted land you could've built on. Guard rows are the moat: N<sub>G</sub> rows wide is exactly enough to stop RH's blast radius, and every row wider is pure capacity thrown away. ZebRAM builds a moat around <i>every single room</i>; Citadel builds one moat around a whole neighborhood of rooms (a chunk) instead.</p>
+        <div class="breaks"><b>Where it breaks:</b> a moat is static; Citadel's guard rows move as domains grow/shrink (zone expansion/splitting), which a real moat can't do.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="24" width="100" height="48" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <line x1="53" y1="24" x2="53" y2="72" stroke="#D8C8AC" stroke-width="1.5"/>
+          <line x1="86" y1="24" x2="86" y2="72" stroke="#D8C8AC" stroke-width="1.5"/>
+          <rect x="24" y="30" width="25" height="18" fill="#D8EEE7" stroke="#1E7A6C" stroke-width="2"/>
+          <rect x="90" y="46" width="26" height="22" fill="#E3E3F5" stroke="#4C4FA6" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Reservation granularity · Chunks vs. stranding</span>
+        <h3>Renting by the floor vs. by the office</h3>
+        <p>A landlord who only leases entire floors gets simple bookkeeping, but a two-person startup leasing a floor uses 5% of it — the rest sits stranded, unrentable to anyone else. Lease by the individual office instead, and you need a security deposit (a "guard wall") for <i>each</i> office, which adds up fast if offices are small. Siloz leases floors (subarrays); ZebRAM leases with a deposit per office (guard row per data row); Citadel leases in 16-row "suites," a size chosen so the deposit-per-suite is cheap but suites rarely sit half-empty for long.</p>
+        <div class="breaks"><b>Where it breaks:</b> real office leases don't automatically merge when a tenant expands into the office next door — Citadel's zone expansion does exactly that, for free.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="20" width="30" height="56" rx="3" fill="#F2DCD1" stroke="#AE3F29" stroke-width="2"/>
+          <rect x="55" y="20" width="30" height="56" rx="3" fill="#D8EEE7" stroke="#1E7A6C" stroke-width="2"/>
+          <rect x="92" y="20" width="30" height="56" rx="3" fill="#D8EEE7" stroke="#1E7A6C" stroke-width="2"/>
+          <text x="33" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#8a3120">curtain</text>
+          <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#164940">shared</text>
+        </svg></div>
+        <span class="term">Zero-distance rule · Zonelets</span>
+        <h3>Roommates with no wall at all</h3>
+        <p>Two strangers sharing a dorm room can't "hammer" each other by being loud in their own room and disturbing the room itself — disturbance only travels to <i>neighboring</i> rooms. So the cheapest possible isolation for two tiny, distrustful tenants is: no wall between them, just make sure the rooms on either side of <i>this shared room</i> are empty. That's a zonelet — many small domains packed into one data row, protected only at the row's edges.</p>
+        <div class="breaks"><b>Where it breaks:</b> real roommates can still interfere with each other in the room (theft, noise) — Citadel's guarantee is specifically about RH bit flips, not general isolation; other side channels are out of scope (§2.3).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="34" width="40" height="30" fill="#D8EEE7" stroke="#1E7A6C" stroke-width="2.5"/>
+          <rect x="60" y="34" width="40" height="30" fill="none" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3"/>
+          <path d="M64 49 h30" stroke="#4C4FA6" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#4C4FA6"/></marker></defs>
+        </svg></div>
+        <span class="term">Amortizing guard rows · Zone expansion</span>
+        <h3>Knocking through to the office next door</h3>
+        <p>If you already rent an office and the one next door becomes free, knocking through the shared wall to expand is cheaper than renting a brand-new office across the building (which needs its own new deposit/guard wall). Citadel always tries this first: grow an existing zone into an adjacent free chunk, so the N<sub>G</sub> guard rows already paid for the first chunk cover the whole enlarged zone too.</p>
+        <div class="breaks"><b>Where it breaks:</b> real office expansion is permanent; Citadel can also <i>shrink</i> and split a zone back into pieces when a domain frees memory, which physical renovation can't easily undo.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="34" fill="none" stroke="#4C4FA6" stroke-width="2.5"/>
+          <path d="M50 40 q20 -16 40 0" stroke="#4C4FA6" stroke-width="2" fill="none"/>
+          <circle cx="55" cy="52" r="4" fill="#AE3F29"/><circle cx="85" cy="52" r="4" fill="#AE3F29"/>
+          <path d="M70 66 v14" stroke="#9A8E7C" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Complex DRAM addressing · The GRT</span>
+        <h3>A city with renumbered streets</h3>
+        <p>If a city occasionally renumbers a whole city block (mirroring/inversion) or reshuffles house numbers within it (scrambling), you can't assume "house #12" is in the same physical spot everywhere — you need a directory that maps the logical address you care about to wherever it actually lives today. The Global Row Table is exactly that civic directory, built once at boot from the DIMM's known remapping scheme.</p>
+        <div class="breaks"><b>Where it breaks:</b> a city directory is looked up occasionally; the GRT is consulted on every single page (de)allocation, though the paper notes this is cheap and off any hot path.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="18" width="92" height="20" rx="4" fill="#F2DCD1" stroke="#AE3F29" stroke-width="2"/>
+          <rect x="24" y="42" width="92" height="20" rx="4" fill="#D8EEE7" stroke="#1E7A6C" stroke-width="2"/>
+          <rect x="24" y="66" width="92" height="20" rx="4" fill="#E3E3F5" stroke="#4C4FA6" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Loss vs. stranding · The universal trade-off</span>
+        <h3>A thermostat with only two settings</h3>
+        <p>Set your reservation chunk size very small and you pay a deposit (guard row) constantly — high loss, low stranding, like ZebRAM. Set it very large and you rarely pay a deposit but often rent far more space than you use — low loss, high stranding, like Siloz. There's no setting that eliminates both; Citadel's 16-row default is simply the point on that dial the paper measured as cheapest overall.</p>
+        <div class="breaks"><b>Where it breaks:</b> a thermostat has one dial; Citadel effectively has two (chunk size <i>and</i> the zonelet switch threshold), tuned somewhat independently.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full mechanism</div>
+      <h2>How Citadel actually works</h2>
+      <p class="sub">From the physical row rule to the kernel code path that enforces it.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The physical rule, precisely</h3>
+      <p>Citadel's one assumption: RH effects reach rows at a distance of <b>1 to N<sub>G</sub></b> from an activated row, and no further. From that, its enforcement rule is: isolate domains either by <b>colocating them in the same global row</b> (distance 0 — safe by definition), or by separating them with <b>≥N<sub>G</sub> unmapped guard rows</b>. Every zone in the system starts with N<sub>G</sub> guard rows before any of its data rows — so two zones are always separated by at least N<sub>G</sub> unmapped rows, regardless of what sits between them.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Domains, zones, and chunks laid out in DRAM</div>
+      <div class="viz-kicker">redrawn schematic following the paper's Fig. 3 · N<sub>G</sub>=1, chunk size = 3 rows, for clarity</div>
+      <svg class="full" viewBox="0 0 700 330" role="img" aria-label="Domains A and B laid out across four chunks of global rows, with guard rows shown">
+        <g font-family="JetBrains Mono" font-size="11" fill="#6E6456" text-anchor="end">
+          <text x="132" y="52">R0</text><text x="132" y="74">R1</text><text x="132" y="96">R2</text>
+          <text x="132" y="118">R3</text><text x="132" y="140">R4</text><text x="132" y="162">R5</text>
+          <text x="132" y="184">R6</text><text x="132" y="206">R7</text><text x="132" y="228">R8</text>
+          <text x="132" y="250">R9</text><text x="132" y="272">R10</text><text x="132" y="294">R11</text>
+        </g>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle">
+          <text x="182" y="34">B0</text><text x="272" y="34">B1</text><text x="362" y="34">B2</text><text x="452" y="34">B3</text>
+        </g>
+        <!-- row bands: C0 guard,A,A | C1 guard,B,B | C2 B,B,B | C3 guard,A,A -->
+        <g stroke="#D8C8AC" stroke-width="1">
+        </g>
+        <!-- R0 guard -->
+        <rect x="142" y="42" width="360" height="18" fill="#F2DCD1"/>
+        <rect x="142" y="64" width="360" height="18" fill="#D8EEE7"/>
+        <rect x="142" y="86" width="360" height="18" fill="#D8EEE7"/>
+        <rect x="142" y="108" width="360" height="18" fill="#F2DCD1"/>
+        <rect x="142" y="130" width="360" height="18" fill="#E3E3F5"/>
+        <rect x="142" y="152" width="360" height="18" fill="#E3E3F5"/>
+        <rect x="142" y="174" width="360" height="18" fill="#E3E3F5"/>
+        <rect x="142" y="196" width="360" height="18" fill="#E3E3F5"/>
+        <rect x="142" y="218" width="360" height="18" fill="#E3E3F5"/>
+        <rect x="142" y="240" width="360" height="18" fill="#F2DCD1"/>
+        <rect x="142" y="262" width="360" height="18" fill="#D8EEE7"/>
+        <rect x="142" y="284" width="360" height="18" fill="#D8EEE7"/>
+        <line x1="232" y1="42" x2="232" y2="302" stroke="#FBF6EC" stroke-width="1" opacity=".6"/>
+        <line x1="322" y1="42" x2="322" y2="302" stroke="#FBF6EC" stroke-width="1" opacity=".6"/>
+        <line x1="412" y1="42" x2="412" y2="302" stroke="#FBF6EC" stroke-width="1" opacity=".6"/>
+        <!-- chunk brackets -->
+        <g font-family="JetBrains Mono" font-size="10" fill="#6E6456">
+          <text x="322" y="316" text-anchor="middle">C0 (A)</text>
+        </g>
+        <text x="500" y="20" font-family="JetBrains Mono" font-size="10" fill="#6E6456">chunks →</text>
+        <!-- zone brackets on right -->
+        <g stroke="#1E7A6C" stroke-width="2" fill="none">
+          <path d="M520 42 h14 v40 h-14"/>
+        </g>
+        <text x="545" y="66" font-family="Fraunces" font-size="12" font-weight="600" fill="#1E7A6C">Domain A · zone 0</text>
+        <g stroke="#4C4FA6" stroke-width="2" fill="none">
+          <path d="M520 108 h14 v176 h-14"/>
+        </g>
+        <text x="545" y="118" font-family="Fraunces" font-size="12" font-weight="600" fill="#4C4FA6">Domain B · zone 0</text>
+        <text x="545" y="134" font-family="JetBrains Mono" font-size="10" fill="#4C4FA6">(2 contiguous chunks —</text>
+        <text x="545" y="148" font-family="JetBrains Mono" font-size="10" fill="#4C4FA6">one guard row for both)</text>
+        <g stroke="#1E7A6C" stroke-width="2" fill="none">
+          <path d="M520 240 h14 v62 h-14"/>
+        </g>
+        <text x="545" y="256" font-family="Fraunces" font-size="12" font-weight="600" fill="#1E7A6C">Domain A · zone 1</text>
+        <text x="545" y="272" font-family="JetBrains Mono" font-size="10" fill="#6E6456">(new zone — its own</text>
+        <text x="545" y="286" font-family="JetBrains Mono" font-size="10" fill="#6E6456">guard row)</text>
+      </svg>
+      <figcaption><b>Read the rows top to bottom:</b> R0 and R3 are guard rows (terracotta) — required at the <i>start</i> of a zone. R6, part of Domain B's zone, needs no guard row of its own because it's the second chunk of an <i>already-isolated</i> zone. Domain A's second zone (R9–R11) pays for a fresh guard row because it isn't contiguous with A's first zone. This is exactly why zone expansion (analogy: knocking through to the office next door) is worth pursuing before creating a new zone. (Redrawn from paper Fig. 3's description, §4.3.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Chunk size: the guard-row-loss vs. domain-count trade-off</h3>
+      <p>Every zone's first chunk pays N<sub>G</sub> guard rows regardless of chunk size, so worst-case capacity loss is simply <code>N<sub>G</sub> / chunk_size</code>. Smaller chunks mean more, smaller reservations — more supported domains, but a bigger fraction of each reservation is guard row.</p>
+      <table class="tbl">
+        <thead><tr><th>Chunk size (rows)</th><th>Worst-case loss (N<sub>G</sub>=2)</th><th>Max domains (128K rows)</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">4</td><td class="mono">50%</td><td class="mono">32,768</td></tr>
+          <tr><td class="mono">8</td><td class="mono">25%</td><td class="mono">16,384</td></tr>
+          <tr class="best"><td class="mono">16 (chosen)</td><td class="mono">12.5%</td><td class="mono">8,192</td></tr>
+          <tr><td class="mono">32</td><td class="mono">6.25%</td><td class="mono">4,096</td></tr>
+          <tr><td class="mono">64</td><td class="mono">3.125%</td><td class="mono">2,048</td></tr>
+        </tbody>
+      </table>
+      <div class="callout note"><span class="ic">📎</span><div>These are <i>worst-case</i>, unamortized numbers. Measured average loss stays under 2% even at chunk size 8, because zone expansion (§3 below) usually avoids paying for a fresh guard row at all.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Allocation flow: zone reuse before zone expansion before new zone</h3>
+      <p>On every allocation request, Citadel tries the cheapest option first:</p>
+      <pre class="sketch"><span class="kw">if</span> domain's footprint &lt; switch_threshold (12MB):
+    serve from a <span class="hl">zonelet</span>                      <span class="cm"># 1 data row + N_G guard rows</span>
+<span class="kw">else</span>:
+    <span class="kw">if</span> existing zone has free space:  serve from it        <span class="cm"># cheapest: 1</span>
+    <span class="kw">elif</span> an adjacent chunk is free:   expand the zone        <span class="cm"># cheapest: 2</span>
+    <span class="kw">else</span>:                            reserve a new chunk,
+                                    starting a <span class="hl">new zone</span>          <span class="cm"># pays N_G guard rows again</span></pre>
+      <p>To make future expansion likely to succeed, Citadel checks the chunks adjacent to a candidate location before committing a new zone there, favoring spots with free neighboring chunks it can later grow into. Deallocation runs the same logic backwards: shrink a zone by dropping an empty trailing chunk, or split it in two if a hole opens in the middle, using only bitvector operations (no data movement).</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The allocation decision, end to end</div>
+      <div class="viz-kicker">§5.7, Fig. 6 of the paper</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Alloc request</div><div class="nd">arrives with a domain-ID (from cgroup)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Below switch threshold?</div><div class="nd">footprint &lt; 12MB → use zonelets</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Space in current zone?</div><div class="nd">scan chunk's free-page bitvector</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓ if not</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Can expand?</div><div class="nd">check chunk-bitvector for a free neighbor chunk</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">New zone</div><div class="nd">reserve a chunk, pay N<sub>G</sub> guard rows, favoring a spot with free neighbor chunks</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Allocate page</div><div class="nd">GRT resolves the target PFN; return it via <code>alloc_page()</code></div></div>
+      </div>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Zonelets: protecting millions of tiny domains</h3>
+      <p>A dedicated 16-row chunk for a domain that uses one row is 93% wasted (14 unused data rows + 2 guard rows, out of 16). Below the switch threshold, Citadel instead stripes an available chunk into alternating guard/data rows — a <b>zonelet</b> per data row — so each chunk of size <i>c</i> yields ⌊c/(N<sub>G</sub>+1)⌋ zonelets. Zonelets have high <i>relative</i> loss (67% with N<sub>G</sub>=2) but the domains using them are collectively a tiny fraction of total memory (Fig. 1b), so the <i>absolute</i> impact stays small — with zonelets alone, Citadel can protect up to 10.48 million 4KB-scale domains.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why this matters if you work on tiered/CXL memory:</b> "stranding" as a named cost is the same concept Berger et al. use for CXL memory-pool fragmentation (cited as ref. [6] in this paper) — a domain/tenant reserving a pool slice it doesn't fully use. Citadel's two-tier chunk/zonelet split is structurally the same fix pattern as giving small tenants a shared, finely-sliced pool while large tenants get dedicated coarse-grained slices.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Complex DRAM addressing (the GRT)</h3>
+      <p>Under mirroring/inversion, a logical global row occupies up to 4 physical locations; under scrambling, row-ID bits within each 8-row group get hashed. Citadel's fix is a 256KB <b>Global Row Table</b>, populated once at boot from the known DIMM mapping, that translates a logical row-ID to its physical location(s) — looked up only at (de)allocation time, never on the hot access path. The practical cost: the natural chunk-size ceiling drops to 32MB (bounded by the 8-row groups that scrambling can't cross), and worst-case guard-row loss rises to 25% at N<sub>G</sub>=2, since a chunk may now need guarding from up to 4 physical neighbors instead of 2.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations straight from the paper's own parameters, done by hand.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Why 16 rows, and not 4 or 64?</h3>
+      <p style="color:var(--ink-soft)">Guard-row loss = N<sub>G</sub> / chunk_size. With N<sub>G</sub>=2, what does that give you at the extremes the paper mentions?</p>
+      <ol class="seq">
+        <li><b>4-row chunks:</b> 2/4 = <b>50% worst-case loss</b> — the paper explicitly flags this as the reason very small chunks are unusable.</li>
+        <li><b>8-row chunks:</b> 2/8 = <b>25%</b> — still steep.</li>
+        <li><b>16-row chunks:</b> 2/16 = <b>12.5%</b> — the chosen default, and the point where loss stops dominating.</li>
+        <li><b>32-row chunks:</b> 2/32 = <b>6.25%</b> (paper rounds to "6%") — lower loss, but chunks this large start stranding more for small-to-medium domains.</li>
+        <li><b>Domain count constraint:</b> to exceed "over a thousand domains" from 128K global rows, chunk size must stay under 128 rows — 16 clears that with wide margin (8,192 max domains) while still balancing loss.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🏰</span><div><b>Insight:</b> 16 isn't a magic number — it's the crossover point in a monotonic loss-vs-stranding trade-off, picked by measuring both sides (§8.4.2) rather than derived analytically.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Zonelet loss, and why it's still cheap overall</h3>
+      <p style="color:var(--ink-soft)">A zonelet is 1 data row + N<sub>G</sub> guard rows. What's its loss at N<sub>G</sub>=2 versus the N<sub>G</sub>=4 the paper studies as a more conservative setting?</p>
+      <ol class="seq">
+        <li><b>N<sub>G</sub>=2:</b> total rows = 1 + 2 = 3; loss = 2/3 = <b>66.7%</b>, which the paper rounds to "67%."</li>
+        <li><b>N<sub>G</sub>=4:</b> total rows = 1 + 4 = 5; loss = 4/5 = <b>80%</b> — even steeper.</li>
+        <li><b>But zonelets are only used below the 12MB switch threshold</b> — background processes and page-table pages, which Fig. 1b shows are a small slice of total system memory (most memory sits in a few large processes, which use chunks, not zonelets).</li>
+        <li><b>So a 67–80% loss rate applies to a small base</b>, keeping its contribution to the <i>system-wide</i> 7.2% average modest — this is the same amortization-by-scale logic as primer 9's "high demand ≠ high system cost."</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is the same reasoning as batching cold, tiny objects in a slab allocator: paying high relative overhead on a small aggregate footprint beats paying even modest overhead across the whole system uniformly.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Static metadata for a 128GB server</h3>
+      <p style="color:var(--ink-soft)">Table 1's formula: chunk metadata = 544 bytes/chunk (a 512-byte free-page bitvector + ~32 bytes of flags/pointers). With 128GB capacity, 1MB global rows, and 16-row chunks:</p>
+      <ol class="seq">
+        <li><b>Number of chunks:</b> C = 2<sup>37</sup> / 2<sup>20</sup> / 16 = 2<sup>17</sup> / 16 = <b>8,192 chunks</b>.</li>
+        <li><b>Chunk metadata total:</b> 8,192 × 544 B = <b>4,456,448 bytes</b> ≈ 4.25 MB.</li>
+        <li><b>Chunk occupancy bitvector:</b> 8,192 / 8 = <b>1,024 bytes</b> (1 bit per chunk, allocated/free).</li>
+        <li><b>Plus ~68 B misc</b> (locks, domain list, stats) → total ≈ 4,457,540 bytes ≈ <b>4.25 MB</b>, matching the paper's reported <b>4.26 MB</b> static overhead (the GRT's 256KB only applies under complex addressing, and is excluded here).</li>
+        <li><b>As a fraction of 128GB:</b> 4.25MB / 131,072MB ≈ <b>0.003%</b> — Citadel's bookkeeping is essentially free next to the loss/stranding budget.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🏰</span><div><b>Insight:</b> almost the entire 7.2% overhead is loss/stranding from the security design, not implementation bookkeeping — the allocator itself is nearly weightless.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Scaling to 57,000 domains (mix9)</h3>
+      <p style="color:var(--ink-soft)">Mix9 emulates ~56,300 page-table domains plus 512 background processes — about 57K domains total. Per-domain dynamic metadata is 56 bytes; per-zone is 48 bytes. Roughly how much dynamic metadata should that cost?</p>
+      <ol class="seq">
+        <li><b>Domain metadata:</b> 57,000 × 56 B ≈ <b>3.19 MB</b>.</li>
+        <li><b>Zone metadata</b> (assume ~1 zone/domain for mostly-small, single-chunk-or-zonelet domains): 57,000 × 48 B ≈ <b>2.74 MB</b>.</li>
+        <li><b>Back-of-envelope total:</b> ≈ 5.9 MB — some domains fragment into more than one zone (shrink/split), which accounts for the paper's slightly higher measured peak.</li>
+        <li><b>Paper's reported max:</b> <b>7.5 MB</b>, for a system managing 57K domains — the same order of magnitude, confirming metadata scales roughly linearly with domain count, not with total memory.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is exactly the scaling property that matters if you were designing per-tenant metadata for a CXL-pooled or tiered-memory system: cost tracks the number of isolation units, not the pool's total capacity.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one names the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Using loss = N<sub>G</sub>/chunk_size with N<sub>G</sub>=2, what's the worst-case guard-row loss for a 64-row chunk?</div>
+      <details><summary>Show answer</summary><div class="ans">2/64 = <b>3.125%</b>. Notice the trend: doubling chunk size always halves worst-case loss — but Fig. 12b shows stranding rises as chunk size grows, so this isn't a free lunch.<span class="mis">Misconception: that bigger chunks are strictly better because loss keeps shrinking. Loss and stranding move in opposite directions with chunk size — you're choosing a point on a trade-off curve, not approaching an optimum.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">A system has 131,072 global rows. If Citadel used 8-row chunks instead of 16, how many domains could it support at most, and what's the worst-case loss trade-off for that choice?</div>
+      <details><summary>Show answer</summary><div class="ans">Max domains = 131,072 / 8 = <b>16,384</b> (double the 16-row case). Worst-case loss = 2/8 = <b>25%</b> (double the 16-row case's 12.5%). You get roughly 2× the domain ceiling at roughly 2× the theoretical loss — though the paper measures actual average loss under 2% at chunk=8 thanks to zone expansion, so the real-world cost is much smaller than the worst case suggests.<span class="mis">Misconception: that "worst-case loss" is what you'll actually pay. Zone expansion means most zones never pay a second guard row, so measured loss tracks far below the theoretical ceiling.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 3 · hard</span>
+      <div class="qtext">Recompute zonelet loss for N<sub>G</sub>=4 (the more conservative guard-row count the paper separately studies). Is a zonelet still worth using at that N<sub>G</sub>?</div>
+      <details><summary>Show answer</summary><div class="ans">Total rows per zonelet = 1 data + 4 guard = 5; loss = 4/5 = <b>80%</b>. It's still "worth it" in the sense that it's the only option for domains small enough to need row-level isolation — the alternative (a full 16-row chunk for a &lt;1MB domain) would strand even more of the chunk. But 80% loss on the (small) zonelet population pushes total system overhead up — the paper measures overall overhead rising to ~9% at N<sub>G</sub>=4 across all its chunk sizes, not just zonelets.<span class="mis">Misconception: that a single overhead number (loss %) tells you whether a mechanism is "good." What matters is loss × (fraction of total memory using that mechanism) — a high rate on a small base can still be the cheapest available option.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 4 · medium</span>
+      <div class="qtext">A domain has been allocated a full 16-row chunk (N<sub>G</sub>=2, so 14 usable data rows) but currently only uses 2 rows of actual data. What fraction of the whole chunk is stranded?</div>
+      <details><summary>Show answer</summary><div class="ans">Unused-but-reserved rows = 14 − 2 = 12. Stranding as a fraction of the whole 16-row chunk = 12/16 = <b>75%</b>. (If you instead measure stranding only against the 14 usable data rows, it's 12/14 ≈ 86% — the paper measures relative to total memory capacity, so use the 16-row denominator.)<span class="mis">Misconception: that stranding only matters for "wrong-sized" domains. Even a domain that will eventually grow into its whole chunk is, in the meantime, stranding real memory other domains can't use — Citadel's zone-shrink/split logic exists specifically to recover this while it's happening.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 5 · hard</span>
+      <div class="qtext">A workload mix reserves 20GB spread across 500 medium-sized domains using 16MB chunks. Each domain's last (partially-filled) chunk averages 50% empty of its 14MB usable data space. Estimate total stranded memory, in GB, and as a fraction of the 20GB reserved.</div>
+      <details><summary>Show answer</summary><div class="ans">Per domain: 50% of 14MB usable data ≈ 7MB stranded in the trailing chunk. Across 500 domains: 500 × 7MB = 3,500MB ≈ <b>3.4 GB</b> stranded. As a fraction of the 20GB reserved: 3.4/20 ≈ <b>17%</b> — notably higher than the paper's measured system-wide averages, because this scenario assumes <i>every</i> domain has a half-empty trailing chunk (a worst-case, not a measured average).<span class="mis">Misconception: that per-domain stranding examples generalize directly to system-wide averages. Real workload mixes have domains at all stages of filling their chunks — some nearly full, some just-created — which is why measured averages (5.7% system-wide) are far below this single-domain worst case.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 6 · medium</span>
+      <div class="qtext">Doubling N<sub>G</sub> from 2 to 4 doubles worst-case guard-row loss at any fixed chunk size, yet the paper's measured average overhead only rises from 7.2% to about 9%, not 14.4%. Why the gap?</div>
+      <details><summary>Show answer</summary><div class="ans">Two reasons. First, zone expansion means most zones' guard-row cost is amortized over many chunks, not paid per-chunk — so the theoretical per-chunk worst case rarely materializes at scale. Second, the paper notes that higher N<sub>G</sub> sometimes <i>reduces</i> stranding, because chunks with fewer usable data rows fill up (and free up) faster, giving more opportunities to shrink/split zones. The two overhead currencies (loss up, stranding sometimes down) partially offset.<span class="mis">Misconception: that a single-parameter change (N<sub>G</sub>) scales linearly through the whole system. Citadel's optimizations (expansion, shrink/split) sit between the raw parameter and the measured outcome, and they don't respond linearly.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">Domain A occupies rows 4–5 of a chunk whose row 3 is a guard row. Domain B wants to start a new zone in row 6, immediately after A's chunk. Does row 6 need its own guard row separating it from A, or can B's zone simply begin there?</div>
+      <details><summary>Show answer</summary><div class="ans">B's zone <b>must</b> begin with its own N<sub>G</sub> guard rows, because A and B are different (untrusting) domains — the zero-distance exception only applies to data from the <i>same</i> domain sharing a row, or to rows already separated by guard rows. Placing B directly adjacent to A's data row without a guard row would violate Citadel's core isolation rule and defeat the whole design.<span class="mis">Misconception: that "adjacent chunk" and "adjacent domain-data" are the same question, or that guard rows are only needed between chunks, not between domains. The rule is about domain trust boundaries, not chunk boundaries — chunk boundaries just happen to be where Citadel is willing to place a domain boundary.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 8 · easy</span>
+      <div class="qtext">Citadel is a pure software change to the Linux kernel's memory allocator. Why doesn't it need any new DRAM hardware to provide real security guarantees?</div>
+      <details><summary>Show answer</summary><div class="ans">Because RH's root cause is physical row adjacency, and physical row placement is exactly what the OS's memory allocator already controls — which physical page backs which allocation. Given a known (or reverse-engineered) DRAM address mapping, the allocator can simply refuse to ever place two untrusting domains' data within N<sub>G</sub> rows of each other. No new counters, refresh logic, or DRAM circuitry are required — only correct bookkeeping of where things are.<span class="mis">Misconception: that stopping a hardware-level attack requires a hardware-level fix. Rowhammer's disturbance is physical, but the choice of <i>which data lives where physically</i> is a software decision the allocator was already making — just not with security in mind.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly does Citadel guarantee?<span class="chev">▾</span></summary><div class="a">That no Rowhammer-induced bit flip caused by activity in one security domain can land in another domain's data — by construction, because any two domains are either in the exact same global row (safe by the RH threat model) or separated by ≥N<sub>G</sub> unmapped guard rows. It does not protect against microarchitectural self-hammering (e.g., a domain evicting its own cache lines) or non-RH side channels.</div></details>
+      <details><summary><span class="q">Q2</span>How is this different from just running everything in separate VMs or containers?<span class="chev">▾</span></summary><div class="a">VM/container isolation is a virtual-memory and permissions concept — it says nothing about where the underlying physical pages land in DRAM. Two containers can be logically isolated yet have their physical pages sitting in adjacent DRAM rows, fully exposed to RH. Citadel adds the missing physical-placement guarantee underneath whatever logical isolation you already have.</div></details>
+      <details><summary><span class="q">Q3</span>Why can domains sharing the same row skip guard rows entirely?<span class="chev">▾</span></summary><div class="a">Rowhammer's disturbance model is about a hammered row disturbing its <i>neighbors</i> — there's no mechanism by which a row disturbs itself. So two domains' data living in the same row are at "distance 0," which is inherently safe under the paper's threat model. This is the loophole zonelets exploit to protect many tiny domains cheaply.</div></details>
+      <details><summary><span class="q">Q4</span>How many domains can Citadel actually support?<span class="chev">▾</span></summary><div class="a">Thousands of full-sized (chunk-based) domains — 8,192 max at the default 16-row chunk size on a 128K-row system — or, if all memory were instead devoted to zonelets, up to 10.48 million KB–MB-scale domains like individual page tables. That 10.48M figure is the ceiling if zonelets alone consume the whole system, not an amount added on top of the 8,192 chunk-based domains; in practice a real system splits memory between both mechanisms.</div></details>
+      <details><summary><span class="q">Q5</span>What is memory "stranding," and where does the term come from?<span class="chev">▾</span></summary><div class="a">Stranding is memory reserved for one domain but currently unused by it, and therefore unavailable to anyone else — distinct from guard-row "loss," which is memory nobody can ever use. The paper borrows the term from CXL memory-pool literature (Berger et al., cited as ref. [6]), where the same phenomenon shows up when a tenant's pool allocation exceeds its actual usage.</div></details>
+      <details><summary><span class="q">Q6</span>Does Citadel slow anything down?<span class="chev">▾</span></summary><div class="a">In the paper's measurements, no — allocation/deallocation logic consumes under 1% of runtime, and across 40 workloads performance differed by at most +15%/−13%, averaging a <b>4.1% speedup</b> over the stock buddy allocator (the authors note they couldn't fully pin down the cause, but observed it consistently across servers).</div></details>
+      <details><summary><span class="q">Q7</span>Why does Citadel need to know the DRAM address mapping?<span class="chev">▾</span></summary><div class="a">Because "isolate by physical row" only works if you actually know which physical DRAM row a given OS page maps to. All software-based RH domain-isolation schemes (ZebRAM, Siloz, Citadel) share this dependency; the mapping is typically obtained from published DIMM specs or DRAM-testing infrastructure (FPGA-based testers, RH profilers), not derived at runtime.</div></details>
+      <details><summary><span class="q">Q8</span>What happens under "complex" DRAM addressing (mirroring, scrambling)?<span class="chev">▾</span></summary><div class="a">A logical global row can map to up to 4 physical locations, and a chunk can have up to 4 physical neighbors instead of 2 — meaning zone expansion succeeds less often, and worst-case guard-row loss can rise toward 25%. Citadel remains applicable (via the Global Row Table) but with higher overhead than the simple-mapping case evaluated in the main results.</div></details>
+      <details><summary><span class="q">Q9</span>Does Citadel support huge pages?<span class="chev">▾</span></summary><div class="a">2MB huge pages are naturally supported, since they map to consecutive global rows within an 8-row group that even complex addressing preserves. 1GB pages are not supported in the prototype under complex addressing (would need a costly, contrived scheme); the authors suggest a hybrid design using Siloz-style subarray isolation for a TB-scale system's 1GB-page portion instead.</div></details>
+      <details><summary><span class="q">Q10</span>What about shared memory between processes?<span class="chev">▾</span></summary><div class="a">Shared memory is disabled by default in the prototype — the paper notes that sharing is commonly disabled in RH-isolation designs because it would otherwise imply cross-domain physical access, and disabling it eliminates many attacks outright. The authors measured under 0.1% of pages with refcount &gt; 1 in their workloads, so the missing feature has negligible impact on their results — extending Citadel to place shared pages in zonelets is described as a modest, feasible extension.</div></details>
+      <details><summary><span class="q">Q11</span>How does Citadel compare to hardware RH defenses (TRR, PRAC)?<span class="chev">▾</span></summary><div class="a">Hardware defenses like TRR have been repeatedly circumvented (e.g., TRRespass), and JEDEC's newer PRAC framework adds ~9% DRAM area and turns every activation into a read-modify-write, hurting performance — and still isn't universally deployed or guaranteed secure. Citadel is a complementary, software-only layer deployable today, on existing hardware, independent of what mitigations (if any) the DRAM itself implements.</div></details>
+      <details><summary><span class="q">Q12</span>What's left for future work?<span class="chev">▾</span></summary><div class="a">The authors flag: fully implementing per-page-table-page domains (currently emulated in the evaluation), a flexible API letting a single process request multiple domains for sub-region protection, RH-safe shared memory support, and more robust automated tools for reverse-engineering DRAM address mappings — especially for DDR5, where inducing RH bit flips (needed by current profilers) is harder.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; provenance</h2>
+      <p class="sub">Every term in one place, then which numbers came from the paper vs. this guide's framing.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Security domain</b><span>A memory footprint that must be protected from RH originating outside it — typically a process, but also individual page-table pages or programmer-chosen sub-regions.</span></div>
+      <div class="term-def"><b>Zone</b><span>One contiguous physical-memory region belonging to a domain; a domain may own several non-contiguous zones.</span></div>
+      <div class="term-def"><b>Reservation chunk</b><span>Citadel's coarse memory-reservation primitive — a configurable run of contiguous global rows (16 by default), amortizing guard-row cost.</span></div>
+      <div class="term-def"><b>Zonelet</b><span>Citadel's fine-grained primitive — one data row plus N<sub>G</sub> guard rows — for KB–MB domains, exploiting same-row colocation safety.</span></div>
+      <div class="term-def"><b>Global row</b><span>The set of physical DRAM rows sharing the same row-ID across all banks in a NUMA domain; the OS/hardware bridge unit Citadel reserves and isolates in.</span></div>
+      <div class="term-def"><b>Guard row (N<sub>G</sub>)</b><span>An unmapped global row left empty to absorb RH disturbance; N<sub>G</sub> = how many are needed per boundary (paper assumes 2 in its main evaluation, and separately studies 4).</span></div>
+      <div class="term-def"><b>Capacity loss</b><span>Memory permanently sacrificed to guard rows — never usable by any domain.</span></div>
+      <div class="term-def"><b>Memory stranding</b><span>Memory reserved for a domain but not currently used by it, and thus unavailable to others; term borrowed from CXL memory-pool literature.</span></div>
+      <div class="term-def"><b>Zone expansion</b><span>Growing an existing zone into an adjacent free chunk instead of creating a new (guard-row-paying) zone.</span></div>
+      <div class="term-def"><b>Global Row Table (GRT)</b><span>A boot-time-populated lookup table mapping logical row-IDs to physical DRAM locations, needed under complex (mirrored/scrambled) addressing.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Buddy allocator</b><span>Linux's default physical-page allocator, serving power-of-2 page runs from per-order free lists; Citadel overrides its core entry points.</span></div>
+      <div class="term-def"><b>Switch threshold</b><span>Per-domain footprint (12MB default) below which allocations use zonelets, above which they use zones/chunks.</span></div>
+      <div class="term-def"><b>ZebRAM</b><span>Prior work isolating every data row with an adjacent guard row — simple, but 50%+ capacity loss.</span></div>
+      <div class="term-def"><b>Siloz</b><span>Prior work reserving whole DRAM subarrays per domain — no guard-row loss, but GB-scale minimum reservations and heavy stranding.</span></div>
+      <div class="term-def"><b>PTHammer</b><span>An RH exploit flipping bits in page tables to escalate privilege — the reason each page-table page needs its own domain.</span></div>
+      <div class="term-def"><b>Half-Double</b><span>An RH attack pattern reaching two rows away, motivating N<sub>G</sub>≥2 and studies recommending N<sub>G</sub>=4.</span></div>
+      <div class="term-def"><b>PRAC</b><span>JEDEC's Per-Row Activation Counter hardware framework — principled but costly (~9% DRAM area) in-DRAM RH mitigation.</span></div>
+      <div class="term-def"><b>Row-ID striping</b><span>Memory controllers spread a page's cache lines across many banks sharing one row-ID, for bank-level parallelism — the reason Citadel isolates by row-ID, not bank.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What Citadel buys, vs. prior isolation schemes</div>
+      <div class="viz-kicker">memory overhead (%) · lower is better · 11-workload-mix average, buddy allocator baseline</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">ZebRAM<small>capacity loss</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="50"><span>50% loss</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Siloz<small>stranding</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="31"><span>31% stranded</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Citadel<small>avg. total</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="7.2"><span>7.2% (1.5 loss + 5.7 strand)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Citadel<small>worst case</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="16"><span>16% (mix-dependent max)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 60%</p>
+      <figcaption><b>Coverage, not just cost:</b> ZebRAM supported only 4 of 11 workload mixes before failing on capacity; Siloz supported 6 of 11 before failing on stranding. Citadel supported all 11, at 9.8× lower overhead than ZebRAM and 4.5× lower than Siloz on the mixes they could both handle. (Paper §8.1, Fig. 9.)</figcaption>
+    </figure>
+
+    <div class="subhead">Related work, briefly</div>
+    <div class="read-item reveal"><h4>ZebRAM <span class="diff med">medium</span></h4><div class="meta">Konoth et al. · USENIX OSDI · 2018</div><p>Row-level guard-row striping — Citadel's fine-grained-loss reference point.</p></div>
+    <div class="read-item reveal"><h4>Siloz <span class="diff med">medium</span></h4><div class="meta">Loughlin et al. · ACM SOSP · 2023</div><p>Subarray-level VM isolation — Citadel's coarse-grained-stranding reference point.</p></div>
+    <div class="read-item reveal"><h4>Half-Double: Next-Row-Over Assisted Rowhammer <span class="diff hard">hard</span></h4><div class="meta">Kogler et al. · USENIX Security · 2022</div><p>The attack pattern motivating N<sub>G</sub>≥2 (and the case for N<sub>G</sub>=4) throughout this paper's sensitivity studies.</p></div>
+    <div class="read-item reveal"><h4>PTHammer <span class="diff hard">hard</span></h4><div class="meta">Zhang et al. · IEEE/ACM MICRO · 2020</div><p>The privilege-escalation exploit that requires isolating every page-table page as its own domain — the driver of Citadel's zonelet design.</p></div>
+    <div class="read-item reveal"><h4>Design Tradeoffs in CXL-Based Memory Pools <span class="diff med">medium</span></h4><div class="meta">Berger et al. · IEEE Micro · 2023</div><p>Source of the "memory stranding" terminology this paper adopts — directly relevant if you already think in terms of CXL pool fragmentation.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card">
+      <h3>From the paper</h3>
+      <p style="color:var(--ink-soft);margin-bottom:14px">All specific figures — 7.2% average overhead (1.5% loss + 5.7% stranding), up to 16% worst case, 9.8×/4.5× lower overhead than ZebRAM/Siloz, 11/11 vs. 4/11 vs. 6/11 mix coverage, 4.1% average speedup, &lt;1% allocation-path runtime, 128GB/128K-row/128-bank system config, 16-row default chunk size, N<sub>G</sub>=2 default, 12MB switch threshold, 4.26MB static metadata, up to 7.5MB dynamic metadata at 57K domains, 10.48 million max zonelet-based domains, mix10's 6%/9% overhead and 70k pages/sec allocation churn — are stated directly in the paper (§1, §4.4, §5.2, §7, §8.1–8.4).</p>
+      <h3>This guide's framing</h3>
+      <p style="color:var(--ink-soft);margin-bottom:0">The redrawn Fig. 3 schematic, the memory-composition bar chart, all analogies, the "loss vs. stranding thermostat" framing, the tiered/CXL-memory connections (stranding terminology, per-tenant metadata scaling), and every worked-example derivation (chunk metadata arithmetic, zonelet loss recomputation, mix9 dynamic-metadata estimate) are this guide's own additions built to make the paper's numbers concrete — not verbatim paper content.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Saxena, Wang, Daglis, "Citadel: Rethinking Memory Allocation to Safeguard Against Inter-Domain Rowhammer Exploits" (MICRO '25)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 60;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  var strip = document.getElementById('waysStrip');
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){});
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
