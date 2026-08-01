@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<!-- RayN field guide — Ray Tracing Acceleration with Near-memory Computing (Saed, Nair & Aamodt, MICRO'25).
+     Built in the "friendly field guide" format. Semantic colors:
+     teal = near-memory RT unit (the low-latency fix) · honey = TLAS / GPU-side work (already saturates from caching)
+     indigo = RayN machinery (partitioning, memory controllers) · terracotta = baseline GPU-only architecture (the pointer-chasing problem). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sending the Ray Hunt Home — RayN, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D9A23F; --honey-deep:#A66E12; --honey-soft:#F7E8C8;
+  --dram:#1E8C7B; --dram-soft:#DAF0EA;      /* teal   = near-memory RT unit (the fix)          */
+  --ltram:#5D5FC7; --ltram-soft:#E7E7F8;    /* indigo = RayN machinery (partition/controller)  */
+  --optane:#C1523A; --optane-soft:#F7E0D5;  /* terracotta = baseline GPU-only (the bottleneck) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,140,123,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(93,95,199,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,162,63,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(93,95,199,.05) 31px,rgba(93,95,199,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,162,63,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,140,123,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(93,95,199,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,162,63,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>MICRO 2025 · A Field Guide</span>
+    <h1>Send the ray to the <span class="swash">tree</span>, not the tree to the <span class="swash" style="color:var(--optane)">ray</span></h1>
+    <p class="lede">BVH traversal is a pointer-chasing scavenger hunt through a tree that can be gigabytes wide, and it misses cache often enough that a hop routinely leaves the GPU, crosses the cache and interconnect, and comes home slower than the ray itself. This is the plain-English story of <strong>RayN</strong>, which parks a tiny ray-tracing unit right inside the memory stack.</p>
+    <div class="hero-meta">
+      <span>📄 "RayN: Ray Tracing Acceleration with Near-memory Computing" · Saed, Nair &amp; Aamodt</span>
+      <span>🎓 GPU and memory-systems basics assumed — the primers cover them</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">📡</div>
+      <p>Put the hardware that walks the tree <span class="ro">NEXT TO the tree</span>, and only ship it the <span class="wo">32-byte ray</span> — not the gigabyte-scale tree.<br><em style="font-size:.9rem">Latency is the bottleneck; move compute, not data.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then eight primers</h2>
+      <p class="sub">Acronyms first, so nothing below is opaque. Then eight collapsible primers — read in order the first time, or jump to whatever's unfamiliar.</p>
+    </div>
+
+    <div class="card" style="background:var(--ltram-soft);border-color:#bcbfe8">
+      <h3 style="color:#3a409a">🔤 Quick glossary</h3>
+      <div class="gloss" style="margin-top:10px">
+        <div class="term-def"><b>BVH</b><span>Bounding Volume Hierarchy — the tree used to skip most of the scene's geometry per ray.</span></div>
+        <div class="term-def"><b>AS / AABB</b><span>Acceleration Structure (the BVH); Axis-Aligned Bounding Box, the "box" each tree node bounds.</span></div>
+        <div class="term-def"><b>TLAS / BLAS</b><span>Top-/Bottom-Level Acceleration Structure — the two-level BVH split used by Vulkan/DirectX.</span></div>
+        <div class="term-def"><b>RT unit</b><span>Dedicated hardware block in a GPU that performs BVH traversal and intersection tests.</span></div>
+        <div class="term-def"><b>SM / SIMT / warp</b><span>Streaming Multiprocessor (a GPU core); Single-Instruction-Multiple-Thread execution; a group of 32 threads run together.</span></div>
+        <div class="term-def"><b>HBM / TSV</b><span>High Bandwidth Memory (3D-stacked DRAM); Through-Silicon Via, the vertical wire connecting its layers.</span></div>
+        <div class="term-def"><b>PIM / near-memory computing</b><span>Processing-in/near-Memory — placing compute logic inside or beside the memory chip itself.</span></div>
+        <div class="term-def"><b>JEDEC</b><span>The standards body whose HBM spec fixes memory pins/timing/protocol across vendors.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> near-memory RT unit (the fix)</span>
+      <span><i style="background:var(--honey-deep)"></i> TLAS / GPU-side work</span>
+      <span><i style="background:var(--ltram)"></i> RayN's machinery</span>
+      <span><i style="background:var(--optane)"></i> baseline GPU-only architecture</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Ray tracing, in one paragraph<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A ray is shot from the camera through each pixel. To shade that pixel, the renderer must find the <b>closest geometry</b> the ray hits. Extra "secondary" rays (reflections, shadows, global illumination) get traced from that hit point too — this is what makes ray tracing look realistic, and what makes it expensive: finding "closest-hit geometry" is the bottleneck.</p>
+          <div class="ready"><b>Now you're ready:</b> RayN accelerates exactly this closest-hit search, not the shading math around it.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>The BVH tree and why you need one<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Looping over every triangle in a scene per ray is hopeless at millions of triangles. A <b>BVH</b> tree groups geometry into nested boxes (<b>AABB</b>s): internal nodes bound their children, leaf nodes hold actual geometry. A ray tests the root box first — if it misses, the whole subtree is skipped for free.</p>
+          <div class="ready"><b>Now you're ready:</b> "BVH traversal" = walking this tree, testing boxes, until you reach the geometry a ray actually hits.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Why traversal is memory-intensive: pointer chasing<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Different rays take different paths down the tree — they <b>diverge</b>. Each step follows a pointer to a child node whose address you don't know until you've read the parent, so accesses can't be prefetched far in advance. In the paper's workloads, average L1 and L2 cache miss rates are <b>39%</b> and <b>45%</b> — the tree mostly doesn't fit in cache once games hit millions of geometries.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the "villain" of the whole paper — a chain of dependent, unpredictable, high-latency loads.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>TLAS vs BLAS — the industry's two-level split<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Vulkan/DirectX already split a scene's BVH into a <b>TLAS</b> (Top-Level AS, one per scene, whose leaves point to objects) and multiple <b>BLAS</b>es (Bottom-Level AS, one per object, whose leaves hold real geometry). This lets an unchanged object's BLAS be reused frame-to-frame without rebuilding.</p>
+          <div class="ready"><b>Now you're ready:</b> RayN reuses this split as its unit of work-placement, then refines it further — TLAS plus the top levels of each BLAS ("BLAS Breaking") stay GPU-side, and only the bottom BLAS partitions go near memory.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>GPU RT units, warps, and the ray pipeline<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A GPU groups 32 threads into a <b>warp</b> executed together (<b>SIMT</b>). Each <b>Streaming Multiprocessor (SM)</b> has a dedicated <b>RT unit</b> that a warp's threads offload BVH traversal to: it holds a ray buffer, schedules memory fetches, and runs box/triangle intersection tests as node data arrives.</p>
+          <div class="ready"><b>Now you're ready:</b> because rays diverge, most of a warp's 32 lanes sit idle inside the RT unit — measured SIMT efficiency there is just <b>13%</b>. That underuse is exactly what RayN exploits by consolidating RT units near memory instead.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>3D-stacked memory and the logic layer<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>HBM</b> stacks several DRAM dies on top of a <b>logic layer</b>, connected vertically by <b>TSV</b>s. That logic layer is silicon too — it can hold more than plumbing. Since it sits right beneath the memory, anything placed there reaches data without crossing the GPU's cache, interconnect, or memory channel.</p>
+          <div class="ready"><b>Now you're ready:</b> RayN's whole architecture is "put an RT unit in that logic layer."</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Near-memory computing / PIM, the general idea<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Near-memory computing (PIM)</b> places compute logic close to or inside memory to cut the cost of moving data. It has been explored for graph processing (partition a big graph evenly across near-memory cores) and, commercially, for ML (Samsung/SK Hynix accelerator-in-memory parts, UPMEM's near-bank RISC cores).</p>
+          <div class="ready"><b>Now you're ready:</b> RayN argues graph-style PIM designs don't transfer directly to ray tracing — they lack intersection-test hardware and a way to load-balance an unpredictable, camera-dependent workload.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>JEDEC, memory controllers, and structural hazards<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>JEDEC</b>'s HBM standard places the memory controller <i>in the host GPU</i>, not in the stack. Add a second controller in the logic layer and both could try to drive the same physical memory at once — a <b>structural hazard</b>. Simple fixes (like UPMEM's) lock whole banks/channels for near-memory use, blocking the host — unworkable here because the GPU shader and the near-memory RT unit both need to read the <i>same</i> BVH tree concurrently.</p>
+          <div class="ready"><b>Now you're ready:</b> resolving this hazard, cleanly, is the subject of RayN's three memory-controller designs.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>RayN in a nutshell</h2>
+      <p class="sub">The problem, the fix, and the numbers that back it up.</p>
+    </div>
+    <div class="prose">
+      <p>Ray tracing is <b>latency-bound, not bandwidth-bound</b>: halving BVH memory latency yields a <b>1.9×</b> speedup, while doubling bandwidth yields only <b>1.2×</b> (Fig. 1). BVH traversal misses L1/L2 cache often enough (average 39%/45% miss rates) that a large share of node fetches pay the full round trip through the GPU's cache hierarchy, interconnect, and memory channel — even though the payload it's chasing (a 64–128 B node) is small and the round trip itself, not the data volume, is what hurts.</p>
+      <p><strong>RayN's fix:</strong> place a dedicated <span class="mem-chip chip-hi">near-memory RT unit</span> inside the logic layer of each HBM stack, right next to the BVH data. The <b>TLAS</b> — traversed by every ray, coherent, and cache-friendly — stays on the <span class="mem-chip chip-sat">GPU RT unit</span>. The <b>BLAS</b>es — where rays diverge and cache hit rates collapse — are offloaded to the near-memory unit, which reaches memory <b>49.2%</b> faster because it skips the cache/interconnect/channel hierarchy entirely.</p>
+      <p>Making this concurrent-safe requires new <span class="mem-chip chip-ucp">memory-controller machinery</span>: HBM's JEDEC standard puts the controller in the host GPU, so a second controller in the logic layer risks colliding with it. RayN studies three designs — JEDEC-compatible (partition channels, duplicate the tree), Unified (remove the GPU controller entirely), and Hybrid (keep both, coordinated) — and a load-aware way to split the BVH tree ("BLAS Breaking") across memory modules so no single near-memory RT unit is overwhelmed.</p>
+      <p><strong>The payoff:</strong> <b>3.0×</b> average speedup over a GPU without near-memory support, <b>70%</b> lower energy, for just <b>0.78%</b> logic-layer area — with the GPU's own RT-unit memory transactions cut by <b>78%</b>.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Ray tracing is <b>latency-bound</b> (1.9× from 2× latency) far more than bandwidth-bound (1.2× from 2× bandwidth) — Fig. 1.</li>
+        <li>RayN reuses the industry's existing <b>TLAS/GPU · BLAS/near-memory</b> split, refined by "BLAS Breaking" to also keep top BLAS levels on the GPU.</li>
+        <li>HBM's JEDEC controller lives in the GPU, so a second near-memory controller can collide with it — three designs (JEDEC-compatible, Unified, Hybrid) trade standard-compliance for performance.</li>
+        <li>BVH partitions are placed to balance <b>estimated</b> load (root-node volume × partition depth), since true load depends on the not-yet-known camera view.</li>
+        <li>GPU RT units are barely used (13% SIMT efficiency) — RayN can shrink 30 GPU RT units down to 4 near-memory ones and still win.</li>
+        <li>Result: <b>3.0×</b> speedup (up to higher on high-geometry scenes), <b>70%</b> energy reduction, <b>0.78–1.10%</b> logic-layer area.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Where the latency actually goes</div>
+      <div class="viz-kicker">RT-unit memory access latency, relative to the unmodified baseline (Fig. 12)</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> baseline GPU RT unit</span>
+        <span><i style="background:var(--honey-deep)"></i> treelet prefetching (prior work)</span>
+        <span><i style="background:var(--ltram)"></i> RayN's GPU-side RT unit (TLAS only)</span>
+        <span><i style="background:var(--dram)"></i> RayN's near-memory RT unit (BLAS)</span>
+      </div>
+      <svg class="full" viewBox="0 0 700 300" role="img" aria-label="Relative memory latency of ray tracing units across four configurations">
+        <line x1="70" y1="40" x2="70" y2="250" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="250" x2="650" y2="250" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end">
+          <text x="62" y="253">0</text><text x="62" y="200">25</text><text x="62" y="150">50</text><text x="62" y="100">75</text><text x="62" y="50">100</text>
+        </g>
+        <text x="20" y="145" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 20,145)">relative latency (baseline = 100)</text>
+        <rect x="110" y="50" width="90" height="200" rx="5" fill="#C1523A"/>
+        <text x="155" y="270" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">baseline</text>
+        <text x="155" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#9a3a22">100</text>
+        <rect x="250" y="89" width="90" height="161" rx="5" fill="#A66E12"/>
+        <text x="295" y="270" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">treelet</text>
+        <text x="295" y="81" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#6e4a09">80.5 (−19.5%)</text>
+        <rect x="390" y="117" width="90" height="133" rx="5" fill="#5D5FC7"/>
+        <text x="435" y="270" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">RayN GPU-side</text>
+        <text x="435" y="109" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#3a409a">66.5 (−33.5%)</text>
+        <rect x="530" y="148" width="90" height="102" rx="5" fill="#1E8C7B"/>
+        <text x="575" y="270" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">near-memory</text>
+        <text x="575" y="140" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#1f5b51">50.8 (−49.2%)</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> treelet prefetching (the closest prior work) trims latency 19.5% by predicting reuse; RayN cuts the <i>GPU's own</i> RT-unit latency 33.5% just by removing BLAS traffic from its queues; the near-memory RT unit itself sees 49.2% less latency because it never leaves the stack. Bar heights are relative latencies computed from the paper's stated percentage reductions (Fig. 12; §6.1).</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → insight → mechanism → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">BVH traversal is pointer-chasing, memory-latency bound (1.9× from 2× latency, Fig. 1)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Insight</div><div class="nd">Logic layer of HBM sits right beneath the data — an RT unit placed there skips cache/interconnect/channel</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Split the work</div><div class="nd">TLAS (coherent) stays on GPU RT unit; BLAS (divergent) offloads to near-memory RT unit via BLAS Breaking</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Resolve the hazard</div><div class="nd">JEDEC-compatible / Unified / Hybrid memory controllers keep GPU and near-memory access safe and concurrent</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Place the partitions</div><div class="nd">Estimate load (volume × depth) per BLAS partition; place greedily to balance memory modules</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">3.0× speedup, 70% less energy, 0.78% area — nothing changes for the programmer beyond one API call</div></div>
+      </div>
+    </figure>
+
+    <div class="callout why"><span class="ic">💡</span><div><b>For the tiering-minded reader:</b> RayN is an <i>offload-to-data</i> answer to a latency problem, where OS-managed tiering (TPP, HeMem, Memtis, Pond) is a <i>migrate-data-to-compute</i> answer to a related tension. Both exploit the same physical fact — compute placed closer to memory sees lower latency — but RayN fixes it with fixed-function hardware inside the device, while CXL-style tiering fixes it by moving hot pages toward the compute, under OS/hypervisor control. This is a parallel we're drawing for intuition, not a comparison the paper itself makes: RayN's controller-placement debate (JEDEC-compatible vs. Unified vs. Hybrid) is really about avoiding a structural hazard between two controllers sharing one physical memory, which only loosely echoes CXL.mem's host-managed vs. device-managed split — treat it as a suggestive analogy, not an equivalence.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about RayN</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with an honest note about where the picture breaks.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="50" width="46" height="34" rx="4" fill="#DAF0EA" stroke="#1E8C7B" stroke-width="2.5"/>
+          <rect x="80" y="20" width="46" height="34" rx="4" fill="#F7E0D5" stroke="#C1523A" stroke-width="2.5"/>
+          <path d="M60 62 q10 -20 20 -20" stroke="#332C24" stroke-width="2" fill="none" stroke-dasharray="3 3"/>
+          <circle cx="37" cy="67" r="3" fill="#1E8C7B"/><circle cx="103" cy="37" r="3" fill="#C1523A"/>
+          <text x="37" y="45" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">pantry</text>
+          <text x="103" y="14" text-anchor="middle" font-family="monospace" font-size="7" fill="#9a3a22">kitchen</text>
+        </svg></div>
+        <span class="term">The core idea · Compute-to-data</span>
+        <h3>A cook stationed in the pantry</h3>
+        <p>Instead of a runner sprinting to the pantry for each ingredient and back to the far-off kitchen, station a small cook <i>inside</i> the pantry. Send only the order slip (the 32-byte ray); the cook prepares the dish there and passes back the result. The pantry (HBM stack) never has to travel — the near-memory RT unit does the fetching where the ingredients (BVH nodes) already live.</p>
+        <div class="breaks"><b>Where it breaks:</b> a pantry cook still needs proper equipment (intersection-test hardware) — a general-purpose near-memory core without that gear is like a cook with no stove, which is exactly why prior PIM-for-graphs designs don't transfer directly.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="24" r="10" fill="#F7E8C8" stroke="#A66E12" stroke-width="2.5"/>
+          <path d="M60 32 l-24 24 M80 32 l24 24" stroke="#A66E12" stroke-width="2.5"/>
+          <circle cx="36" cy="60" r="9" fill="#DAF0EA" stroke="#1E8C7B" stroke-width="2"/>
+          <circle cx="104" cy="60" r="9" fill="#F7E0D5" stroke="#C1523A" stroke-width="2"/>
+          <path d="M30 68 l-6 16 M42 68 l6 16 M98 68 l-6 16 M110 68 l6 16" stroke="#332C24" stroke-width="1.6"/>
+        </svg></div>
+        <span class="term">Splitting the work · TLAS / BLAS</span>
+        <h3>A library's front desk and its back stacks</h3>
+        <p>Every visitor passes the busy front desk (TLAS) — it's small, shared, and stays warm in the librarian's memory (GPU cache). But once a visitor needs a specific collection's shelf (a BLAS), the search fans out unpredictably into the sprawling stacks. RayN keeps the front desk staffed by the librarian (GPU RT unit) and hires a dedicated shelver inside each stack room (near-memory RT unit) for the divergent part.</p>
+        <div class="breaks"><b>Where it breaks:</b> real library shelves don't get physically rebuilt each visit; a BLAS does, when its object moves or deforms — new "shelves" have to be re-partitioned and placed.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="30" width="34" height="40" rx="4" fill="#fff" stroke="#5D5FC7" stroke-width="2"/>
+          <rect x="53" y="30" width="34" height="40" rx="4" fill="#E7E7F8" stroke="#5D5FC7" stroke-width="2"/>
+          <rect x="92" y="30" width="34" height="40" rx="4" fill="#5D5FC7" stroke="#5D5FC7" stroke-width="2"/>
+          <text x="31" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#332C24">J</text>
+          <text x="70" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">H</text>
+          <text x="109" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#fff">U</text>
+        </svg></div>
+        <span class="term">The controller trilemma</span>
+        <h3>Two chefs sharing one stove</h3>
+        <p><b>JEDEC-compatible (J):</b> each chef gets their own stove, on a fixed rota — safe, but each only ever gets half the burners. <b>Hybrid (H):</b> the head chef keeps their stove but a sous-chef in back interleaves both orders on the fly — nearly full use of the stove, no protocol torn up. <b>Unified (U):</b> hire one new chef to run the whole kitchen from scratch — most flexible, but now the original chef's specialized technique (the GPU's own request reordering) is gone.</p>
+        <div class="breaks"><b>Where it breaks:</b> real kitchens don't need a written industry standard (JEDEC) to keep two chefs from colliding — hardware does, which is why "J" needs address-space partitioning and BVH duplication that a kitchen analogy can't capture.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 80 h100" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="30" y="55" width="18" height="25" fill="#1E8C7B"/>
+          <rect x="55" y="35" width="18" height="45" fill="#D9A23F"/>
+          <rect x="80" y="60" width="18" height="20" fill="#C1523A"/>
+          <rect x="105" y="20" width="18" height="60" fill="#5D5FC7"/>
+          <path d="M20 30 q30 -10 40 5" stroke="#332C24" stroke-width="1.6" stroke-dasharray="3 3" fill="none"/>
+          <text x="35" y="26" font-family="monospace" font-size="7" fill="#6E6456">forecast?</text>
+        </svg></div>
+        <span class="term">Load estimation · Equation 1</span>
+        <h3>Routing trucks before you know traffic</h3>
+        <p>A dispatcher sizes each delivery route by the package's size and destination depth, without knowing the day's actual traffic — a reasonable proxy, not a guarantee. RayN estimates a BVH partition's load as <code>root-node volume × partition depth</code>, a stand-in for "how many rays will reach here and how far will they dig," because the camera position isn't known until render time.</p>
+        <div class="breaks"><b>Where it breaks:</b> the correlation with real intersection counts is <i>weak</i> (Fig. 10) — like a forecast that's directionally useful but often wrong for a specific day; the paper reports a residual load imbalance (max/min intersection ratio averaging 3.14, not the ideal 1.0).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="30" r="10" fill="#F7E0D5" stroke="#C1523A" stroke-width="2"/>
+          <circle cx="60" cy="30" r="10" fill="#F7E0D5" stroke="#C1523A" stroke-width="2" opacity="0.4"/>
+          <circle cx="90" cy="30" r="10" fill="#F7E0D5" stroke="#C1523A" stroke-width="2" opacity="0.4"/>
+          <circle cx="120" cy="30" r="10" fill="#F7E0D5" stroke="#C1523A" stroke-width="2" opacity="0.4"/>
+          <circle cx="60" cy="70" r="14" fill="#DAF0EA" stroke="#1E8C7B" stroke-width="2.5"/>
+          <text x="60" y="75" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">1 busy</text>
+        </svg></div>
+        <span class="term">Consolidation · Fewer, busier units</span>
+        <h3>Retiring idle security guards</h3>
+        <p>Thirty guards stand watch, but because visitors trickle in unevenly (divergent rays), each guard is actively checking someone only 13% of the time. Replace them with four guards who are kept genuinely busy by routing all the traffic through them. RayN removes one GPU RT unit per SM (30 total) and adds just one per memory module (4 total) — fewer units, each doing real work instead of waiting.</p>
+        <div class="breaks"><b>Where it breaks:</b> real guards can be reassigned instantly; here the "reassignment" (routing BVH traffic to the near-memory unit) still costs a ray-store-and-fetch round trip, so consolidation only pays off because that round trip is now cheap.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="56" rx="6" fill="none" stroke="#5D5FC7" stroke-width="2" stroke-dasharray="4 3"/>
+          <circle cx="45" cy="48" r="10" fill="#DAF0EA" stroke="#1E8C7B" stroke-width="2"/>
+          <text x="45" y="18" text-anchor="middle" font-family="monospace" font-size="7" fill="#6E6456">0.35 W</text>
+          <path d="M75 48 h10 M95 40 v16" stroke="#332C24" stroke-width="1.6"/>
+          <path d="M105 30 q10 18 0 36" stroke="#A66E12" stroke-width="2" fill="none"/>
+        </svg></div>
+        <span class="term">Feasibility · Area &amp; heat</span>
+        <h3>A single space heater in a data hall</h3>
+        <p>A 3D memory stack already has to shed heat through a narrow footprint, so adding compute there is a real worry. But RayN's near-memory RT unit only adds about 0.35 W — closer to one small space heater in a data hall than a new furnace. Prior work has shown a stack with 17 W in its logic layer stays coolable with an ordinary fan, so 0.35 W is comfortably within budget.</p>
+        <div class="breaks"><b>Where it breaks:</b> a space heater's heat is uniform; silicon hotspots are localized, so the real engineering check is thermal density at the RT unit's exact footprint, not just total watts — the paper cites feasibility rather than re-deriving it.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How RayN actually works</h2>
+      <p class="sub">Section by section, with the paper's key structures redrawn as diagrams you can read at a glance.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The pipeline, before RayN touches it</h3>
+      <p>A ray tracing kernel starts on the GPU's execution units, which compute each thread's ray origin/direction, then calls a single <code>TraceRay</code> instruction that offloads BVH traversal to the <span class="mem-chip chip-sat">GPU RT unit</span>. The RT unit holds many rays' state at once (Ray Buffer), fetches the next node each ray needs (Memory Scheduler), and runs three kinds of intersection tests as nodes arrive: ray-box (internal nodes), ray-triangle (leaf nodes), and transform (nodes pointing into another AS). A fetch that misses cache pays the full latency of L1/L2, interconnect, and memory channel — and in these workloads that happens often, with average L1/L2 miss rates of 39%/45%.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Where RayN inserts itself</div>
+      <div class="viz-kicker">baseline path (top) vs. RayN's near-memory path (bottom)</div>
+      <svg class="full" viewBox="0 0 720 260" role="img" aria-label="Baseline GPU RT unit path versus RayN near-memory RT unit path">
+        <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Baseline: a missed BVH fetch makes the full round trip</text>
+        <g font-family="JetBrains Mono" font-size="10.5" fill="#332C24">
+          <rect x="20" y="38" width="110" height="40" rx="7" fill="#F7E0D5" stroke="#C1523A" stroke-width="1.5"/><text x="75" y="62" text-anchor="middle">GPU RT unit</text>
+          <rect x="160" y="38" width="90" height="40" rx="7" fill="#fff" stroke="#D8C8AC"/><text x="205" y="62" text-anchor="middle">L1 / L2</text>
+          <rect x="280" y="38" width="110" height="40" rx="7" fill="#fff" stroke="#D8C8AC"/><text x="335" y="62" text-anchor="middle">Interconnect</text>
+          <rect x="420" y="38" width="130" height="40" rx="7" fill="#fff" stroke="#D8C8AC"/><text x="485" y="62" text-anchor="middle">GPU mem ctrl.</text>
+          <rect x="580" y="38" width="110" height="40" rx="7" fill="#F7E0D5" stroke="#C1523A" stroke-width="1.5"/><text x="635" y="62" text-anchor="middle">HBM stack</text>
+        </g>
+        <g stroke="#9A8E7C" stroke-width="1.6" marker-end="url(#arrow)"><line x1="130" y1="58" x2="158" y2="58"/><line x1="250" y1="58" x2="278" y2="58"/><line x1="390" y1="58" x2="418" y2="58"/><line x1="550" y1="58" x2="578" y2="58"/></g>
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#9A8E7C"/></marker></defs>
+
+        <text x="20" y="120" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">RayN: BLAS traversal never leaves the stack</text>
+        <g font-family="JetBrains Mono" font-size="10.5" fill="#332C24">
+          <rect x="20" y="132" width="110" height="40" rx="7" fill="#E7E7F8" stroke="#5D5FC7" stroke-width="1.5"/><text x="75" y="156" text-anchor="middle">GPU RT unit</text>
+          <text x="75" y="184" text-anchor="middle" font-size="9" fill="#6E6456">(TLAS only)</text>
+        </g>
+        <g stroke="#9A8E7C" stroke-width="1.6" stroke-dasharray="3 3" marker-end="url(#arrow)"><line x1="130" y1="150" x2="335" y2="150"/></g>
+        <text x="230" y="142" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">ray, 32 B</text>
+        <rect x="340" y="115" width="340" height="90" rx="10" fill="#DAF0EA" stroke="#1E8C7B" stroke-width="2"/>
+        <text x="510" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">HBM logic layer</text>
+        <rect x="360" y="145" width="140" height="45" rx="7" fill="#fff" stroke="#1E8C7B"/><text x="430" y="171" text-anchor="middle" font-family="JetBrains Mono" font-size="10">near-mem RT unit</text>
+        <rect x="520" y="145" width="140" height="45" rx="7" fill="#fff" stroke="#1E8C7B"/><text x="590" y="171" text-anchor="middle" font-family="JetBrains Mono" font-size="10">memory layers</text>
+        <g stroke="#1E8C7B" stroke-width="1.6" marker-end="url(#arrow)"><line x1="500" y1="167" x2="518" y2="167"/></g>
+        <path d="M430 190 q0 30 -300 30" stroke="#1E8C7B" stroke-width="1.6" stroke-dasharray="3 3" fill="none" marker-end="url(#arrow)"/>
+        <text x="200" y="235" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">closest-hit result returns to GPU</text>
+      </svg>
+      <figcaption><b>The saving is structural, not just "faster wires":</b> the near-memory RT unit's fetches never touch L1/L2, the interconnect, or a host memory controller — which is exactly the 49.2% latency reduction measured in Fig. 12. (Redrawn from Figs. 4 &amp; 5.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · The near-memory RT unit itself</h3>
+      <p>Structurally it mirrors the GPU RT unit: a <b>Ray Buffer</b> (register file) holds in-flight traversals; a <b>Memory Scheduler</b> reads each traversal's stack, fetches the next node, and coalesces requests to the logic-layer controller; an <b>Operation Unit Scheduler</b> hands arriving nodes to one of the ray-box / ray-triangle / transform units; a <b>Completed Rays Queue</b> tracks which traversals have finished (read either by polling, by a dedicated "done" pin, or implicitly via a blocking read, depending on which memory-controller design is used).</p>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Three memory-controller designs</h3>
+      <p>HBM's JEDEC standard puts the controller on the GPU. Adding a second one on the logic layer risks both controllers driving the same memory at once, so RayN studies three ways to avoid that structural hazard.</p>
+    </div>
+    <table class="tbl">
+      <thead><tr><th>Feature</th><th>JEDEC-compatible</th><th>Unified</th><th class="mono">Hybrid</th></tr></thead>
+      <tbody>
+        <tr><td>Follows HBM standard</td><td class="mono">Yes</td><td class="mono">No</td><td class="mono">No</td></tr>
+        <tr><td>BVH duplication needed</td><td class="mono">Yes</td><td class="mono">No</td><td class="mono">No</td></tr>
+        <tr><td>GPU polling required</td><td class="mono">Yes</td><td class="mono">No</td><td class="mono">No</td></tr>
+        <tr><td>Memory-level parallelism</td><td class="mono">Low</td><td class="mono">High</td><td class="mono">High</td></tr>
+        <tr class="best"><td>Thermal impact</td><td class="mono">Low</td><td class="mono">High</td><td class="mono">Low</td></tr>
+        <tr><td>Changes GPU mem. stream</td><td class="mono">No</td><td class="mono">Yes</td><td class="mono">No</td></tr>
+      </tbody>
+    </table>
+    <div class="callout note"><span class="ic">📎</span><div>Measured speedups: JEDEC-compatible ≈ <b>2.0×</b> over treelet prefetching (channel-splitting halves available bandwidth); Unified and Hybrid ≈ <b>2.2×</b> and perform almost identically — Hybrid gets there without discarding the GPU's own request-reordering logic. Even so, the paper uses <b>Unified architecture and BLAS Breaking</b> as its main configuration for the rest of the evaluation.</div></div>
+
+    <div class="prose">
+      <h3>4 · BVH partitioning: FULL BLAS vs. BLAS Breaking</h3>
+      <p>Each BLAS could simply be one partition (<b>FULL BLAS</b>): TLAS on the GPU, whole BLASes near memory. But BLAS top levels are less divergent than their leaves — there's real value in keeping them on the GPU too. <b>BLAS Breaking</b> peels the top <i>N</i> levels off every BLAS into the top partition (still GPU-side), leaving smaller, more numerous bottom partitions for near-memory RT units.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">BLAS Breaking, visually</div>
+      <div class="viz-kicker">green = top partition (GPU) · yellow/red = bottom partitions (near-memory, different stacks)</div>
+      <svg class="full" viewBox="0 0 500 220" role="img" aria-label="BVH tree split into a green top partition and yellow/red bottom partitions">
+        <circle cx="250" cy="30" r="16" fill="#DAF0EA" stroke="#1E8C7B" stroke-width="2.5"/><text x="250" y="34" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">TLAS</text>
+        <line x1="250" y1="46" x2="150" y2="80" stroke="#9A8E7C" stroke-width="1.6"/>
+        <line x1="250" y1="46" x2="350" y2="80" stroke="#9A8E7C" stroke-width="1.6"/>
+        <circle cx="150" cy="90" r="15" fill="#DAF0EA" stroke="#1E8C7B" stroke-width="2.5"/><text x="150" y="94" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">BLAS-A top</text>
+        <circle cx="350" cy="90" r="15" fill="#DAF0EA" stroke="#1E8C7B" stroke-width="2.5"/><text x="350" y="94" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">BLAS-B top</text>
+        <line x1="150" y1="105" x2="100" y2="150" stroke="#9A8E7C" stroke-width="1.6"/>
+        <line x1="150" y1="105" x2="200" y2="150" stroke="#9A8E7C" stroke-width="1.6"/>
+        <line x1="350" y1="105" x2="300" y2="150" stroke="#9A8E7C" stroke-width="1.6"/>
+        <line x1="350" y1="105" x2="400" y2="150" stroke="#9A8E7C" stroke-width="1.6"/>
+        <circle cx="100" cy="165" r="20" fill="#F7E8C8" stroke="#A66E12" stroke-width="2.5"/><text x="100" y="169" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">bottom 1</text>
+        <circle cx="200" cy="165" r="20" fill="#F7E0D5" stroke="#C1523A" stroke-width="2.5"/><text x="200" y="169" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">bottom 2</text>
+        <circle cx="300" cy="165" r="20" fill="#F7E8C8" stroke="#A66E12" stroke-width="2.5"/><text x="300" y="169" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">bottom 3</text>
+        <circle cx="400" cy="165" r="20" fill="#F7E0D5" stroke="#C1523A" stroke-width="2.5"/><text x="400" y="169" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">bottom 4</text>
+        <text x="250" y="205" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">stored in different HBM modules to spread the load</text>
+      </svg>
+      <figcaption>The top partition (TLAS + top BLAS levels) stays on the GPU RT unit; each colored bottom partition is written to whichever memory module currently has the least estimated load. (Redrawn from Fig. 8.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · Estimating and placing load</h3>
+      <p>The true load of a partition (its intersection-test count) is unknowable at BVH-build time — it depends on a camera position that doesn't exist yet. RayN approximates it as:</p>
+      <pre class="sketch"><span class="hl">load ≈ Volume(root_node) × depth(partition)</span>   <span class="cm"># rays reaching it × nodes each ray must cross</span></pre>
+      <p>Every new partition is placed into whichever memory module currently holds the <i>least</i> total estimated load — a simple greedy bin-packing, re-run only for partitions that actually changed in a dynamic scene (unchanged BLASes keep their memory location to avoid needless data movement).</p>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Known weakness:</b> the estimate correlates only weakly with real intersection counts (Fig. 10) because camera information is genuinely unavailable ahead of time. BLAS Breaking still improves the max/min-load ratio across modules on average, but degrades it on a few scenes (PARTY, SPRNG, LANDS) where the heuristic guesses wrong.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>6 · API and driver changes — the whole integration cost</h3>
+      <p>Vulkan currently separates <code>CreateAccelerationStructure</code> (allocate) from <code>BuildAccelerationStructure</code> (build), but partition sizes aren't known until geometry is in hand. RayN's <b>only API change</b> is merging these into one call. The partitioning logic itself slots into existing top-down or bottom-up BVH-construction algorithms as an extra bookkeeping pass, adding a measured <b>1.1%</b> construction-time overhead.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations taken all the way through, using the paper's own measurements.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Why "latency-bound" isn't just a slogan</h3>
+      <p style="color:var(--ink-soft)">Figure 1 reports: doubling memory latency's improvement gives 1.9× speedup; doubling bandwidth gives 1.2×. What does that gap actually tell us?</p>
+      <ol class="seq">
+        <li><b>If ray tracing were bandwidth-bound</b>, doubling bandwidth should buy close to a 2× speedup (data arrives twice as fast, work finishes near-proportionally sooner).</li>
+        <li><b>It buys only 1.2×</b> — most of the wall-clock time isn't spent waiting on data <i>volume</i>, it's spent waiting on data <i>round trips</i>.</li>
+        <li><b>Halving latency instead buys 1.9×</b> — almost matching the theoretical best case for a purely latency-bound program.</li>
+        <li><b>Conclusion:</b> a system that only widened HBM's channels would leave most of the performance on the table; a system that shortens the round trip (RayN's approach) attacks the real bottleneck.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this single figure is the paper's entire justification for choosing near-memory <i>compute</i> over, say, simply buying faster/wider HBM.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② The area cost of the near-memory RT unit, exactly</h3>
+      <p style="color:var(--ink-soft)">Table 5 gives per-unit areas (scaled to 12 nm) for 32 operation units of each type. Does the claimed 0.78% area overhead actually add up?</p>
+      <ol class="seq">
+        <li><b>Ray-box intersection:</b> 0.0043 mm² × 32 = <b>0.1372 mm²</b>.</li>
+        <li><b>Ray-triangle intersection:</b> 0.0119 mm² × 32 = <b>0.3804 mm²</b>.</li>
+        <li><b>Control logic:</b> 0.0065 mm² × 32 = <b>0.208 mm²</b>. Register file (4 KB): <b>0.0009 mm²</b>.</li>
+        <li><b>Sum (Near-Memory BLAS config, no Transform units):</b> 0.1372 + 0.3804 + 0.208 + 0.0009 ≈ <b>0.7265 mm²</b>.</li>
+        <li><b>As a fraction of a 91.99 mm² HBM2 die:</b> 0.7265 / 91.99 ≈ <b>0.79%</b> — matching the paper's stated 0.78%.</li>
+        <li><b>Add Transform units</b> (0.0090 mm² × 32 = 0.2912 mm², needed once GPU RT units are removed entirely): total ≈ 1.0177 mm² → 1.0177 / 91.99 ≈ <b>1.11%</b>, matching the paper's 1.10% for BLAS Breaking + TLAS.</div></li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The arithmetic checks out — and shows exactly what the extra 0.3 percentage points buys: the ability to remove every GPU RT unit and traverse the whole tree near memory, not just the BLASes.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Why moving the ray beats moving the tree</h3>
+      <p style="color:var(--ink-soft)">A ray is 32 B; a BVH node is 64–128 B; but a single traversal touches a BVH <i>depth</i> nodes deep (depth up to 25 in these scenes). Why does offloading still win?</p>
+      <ol class="seq">
+        <li><b>Baseline:</b> the GPU RT unit fetches every node <i>on the path</i> to the memory — potentially dozens of round trips per ray, each 64–128 B, across the full cache/interconnect/channel hierarchy.</li>
+        <li><b>RayN:</b> the GPU sends <i>one</i> 32 B ray to the near-memory unit and waits for <i>one</i> result — every intermediate node fetch during that BLAS traversal happens entirely inside the stack, off the GPU's memory channel.</li>
+        <li><b>Measured effect:</b> GPU RT unit memory transactions drop <b>78%</b> on average (Fig. 13) — the two transaction types that dominate what remains are the ray store and the final result load (some TLAS-related traffic can still occur, since the TLAS can also be served out of the GPU's caches rather than being entirely absent from its memory activity).</li>
+        <li><b>Scenes with the deepest, largest trees (PARK, ROBOT, FOX)</b> save the most bandwidth this way, and correspondingly show the largest speedups.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the win isn't "smaller messages," it's <i>fewer round trips across the expensive hierarchy</i> — consistent with example ① above.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Finding the sweet spot in BLAS Breaking's depth</h3>
+      <p style="color:var(--ink-soft)">Breaking by 0,1,2,3,4,5 levels changes speedup by −14.3%, −0.3%, (best), −10.9%, −28.8%, −45.3% relative to the 2-level optimum. What's the trade-off?</p>
+      <ol class="seq">
+        <li><b>0 levels (FULL BLAS):</b> whole BLASes offloaded — no top-level GPU-side reuse, so performance is 14.3% below optimal.</li>
+        <li><b>1 level:</b> almost matches 2 levels (−0.3%) — a little top-level coherence captured cheaply.</li>
+        <li><b>2 levels:</b> the measured optimum — enough top-level coherence, without excessive fragmentation.</li>
+        <li><b>3–5 levels:</b> performance drops sharply (−10.9%, −28.8%, −45.3%) as partitions get smaller and more numerous, driving up the number of ray-store-and-fetch round trips between GPU and near-memory RT units.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is a direct trade-off between <i>data reuse</i> (favors more levels on the GPU) and <i>offload overhead</i> (favors fewer, bigger near-memory partitions) — more partitioning is not free, exactly the shape of a diminishing-then-negative returns curve.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Doubling HBM bandwidth only buys 1.2× speedup on this workload. Would doubling bandwidth again (4× total) get you close to 4× speedup?</div>
+      <details><summary>Show answer</summary><div class="ans">No. Because ray tracing is latency-bound, not bandwidth-bound, adding bandwidth runs into fast diminishing returns — the bottleneck is round-trip latency per pointer-chase, which more bandwidth doesn't shorten.<span class="mis">Misconception: that "more bandwidth" and "more speed" scale together. They only do so when bandwidth, not latency, is the binding constraint — Fig. 1 shows it isn't here.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Why can't RayN just reuse an existing near-memory graph-processing design (e.g., partitioning a graph evenly across near-memory cores) for BVH traversal?</div>
+      <details><summary>Show answer</summary><div class="ans">Two reasons given in the paper: (1) graph-PIM cores lack the specialized ray-box/ray-triangle intersection hardware, which would otherwise take hundreds of cycles on general compute; (2) graph partitioning assumes node count is a good proxy for load, but BVH partition load depends on an unknown, camera-dependent ray distribution — a harder, more dynamic load-balancing problem.<span class="mis">Misconception: that "near-memory computing" is a single interchangeable technique. The near-memory *placement* idea transfers; the *operation units* and the *load model* do not.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Traversing both TLAS and BLAS on the near-memory RT unit (BB+T) degrades performance by 8% versus keeping TLAS on the GPU. Why doesn't "offload everything" win?</div>
+      <details><summary>Show answer</summary><div class="ans">Every ray touches the TLAS, so it stays warm in the GPU's own cache — traversing it there is nearly free and highly coherent across a warp. Moving the TLAS to a single memory module forces every ray through that one module's near-memory RT unit, creating a bottleneck, and also increases total nodes processed near-memory by 74%, without gaining anything since the GPU cache was already handling it well.<span class="mis">Misconception: that near-memory compute is strictly better wherever it's used. It only wins where the baseline was already latency-bound and cache-unfriendly — the TLAS is neither.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Increasing BLAS Breaking beyond 2 levels makes performance worse, even though it improves load balance further. Explain the trade-off.</div>
+      <details><summary>Show answer</summary><div class="ans">More levels create more, smaller bottom partitions, which does spread load more evenly — but each partition boundary is a place where a ray must be written to the near-memory RT unit and its result fetched back, i.e., a round trip. Past 2 levels, the added round-trip overhead (and the shrinking pool of top-level, reusable coherence on the GPU) outweighs the load-balance gains, producing net slowdowns of 10.9% to 45.3%.<span class="mis">Misconception: that finer partitioning always improves a partitioned system. Here it trades one cost (load imbalance) for a bigger one (offload round trips) past a fairly shallow optimum.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">JEDEC-compatible RayN gets only 2.0× speedup over treelet prefetching, while Unified/Hybrid get 2.2×, despite JEDEC-compatible following the official HBM standard. What's the cost of compliance here?</div>
+      <details><summary>Show answer</summary><div class="ans">To avoid a structural hazard without changing the HBM protocol, JEDEC-compatible statically splits memory channels between the GPU and the near-memory RT unit — so each side only ever gets access to half the channels' bandwidth and parallelism, regardless of how the load actually splits at runtime. Unified and Hybrid instead let both streams share full channel access (via a unified or coordinated controller), recovering that lost memory-level parallelism.<span class="mis">Misconception: that following a hardware standard is free. Here, standards-compliance costs real memory-level parallelism, which the paper quantifies directly.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">In the worst-case load-imbalance test — all partitions forced into one memory module — RayN's average speedup drops by 1.3× (worst case 1.7× in ROBOT), yet ROBOT still beats the baseline by 3.2×. Why does RayN still win even when load balancing completely fails?</div>
+      <details><summary>Show answer</summary><div class="ans">Load imbalance only affects how work is *distributed* across near-memory RT units, not whether near-memory access is *individually* faster than a GPU round trip. Even a single overloaded near-memory RT unit still fetches each BVH node with 49.2% less latency than the GPU RT unit would — it's simply doing all of that fast work serially instead of in parallel across four units. The core latency advantage survives; only the additional benefit of parallelism is lost.<span class="mis">Misconception: that load balancing is the source of RayN's speedup. It's a multiplier on top of the real source — per-access latency reduction — not the mechanism itself.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly does RayN move near memory?<span class="chev">▾</span></summary><div class="a">Not the whole ray tracing pipeline — just BVH traversal for the divergent, cache-unfriendly bottom levels of the tree (BLAS partitions past the BLAS-Breaking boundary). Ray generation and shading stay on the GPU; TLAS traversal and the top of each BLAS also stay on the GPU RT unit.</div></details>
+      <details><summary><span class="q">Q2</span>Why is ray tracing latency-bound rather than bandwidth-bound?<span class="chev">▾</span></summary><div class="a">BVH traversal is pointer chasing: each node read depends on the previous one, so accesses can't be issued far ahead of time or overlapped freely. That makes the number and length of round trips the bottleneck, not the total bytes moved — measured directly in Fig. 1 (1.9× from 2× latency vs. 1.2× from 2× bandwidth).</div></details>
+      <details><summary><span class="q">Q3</span>Why can't the near-memory controller just be added alongside HBM's existing one?<span class="chev">▾</span></summary><div class="a">HBM's JEDEC standard already places a controller on the host GPU. A second, independent controller in the logic layer could issue conflicting commands to the same physical memory — a structural hazard. RayN's three designs (JEDEC-compatible, Unified, Hybrid) are three different ways to prevent that collision.</div></details>
+      <details><summary><span class="q">Q4</span>Why does JEDEC-compatible need to duplicate the BVH tree?<span class="chev">▾</span></summary><div class="a">Because it partitions physical channels between the GPU and the logic-layer controller, the GPU and the near-memory RT unit can no longer both reach the same physical memory — so each needs its own copy of the tree in its own set of channels. This costs 127 MB to 1721 MB extra memory depending on scene size.</div></details>
+      <details><summary><span class="q">Q5</span>How does RayN decide where to place each BVH partition?<span class="chev">▾</span></summary><div class="a">It estimates each partition's future load as root-node volume × partition depth (a proxy for "rays reaching it" × "nodes each ray crosses"), then places every partition into whichever memory module currently holds the least total estimated load — a simple greedy heuristic, since the true, camera-dependent load is unknowable ahead of time.</div></details>
+      <details><summary><span class="q">Q6</span>Can the GPU RT units be removed entirely?<span class="chev">▾</span></summary><div class="a">Yes, in the BLAS Breaking + TLAS configuration, where near-memory RT units also handle TLAS traversal — at the cost of needing Transform units near memory too (raising area from 0.78% to 1.10%) and a measured 8% performance hit versus keeping TLAS on the GPU, since the TLAS was already cache-friendly there.</div></details>
+      <details><summary><span class="q">Q7</span>Does RayN handle scenes where the camera or objects move?<span class="chev">▾</span></summary><div class="a">Yes — the partitioning and placement algorithm supports dynamic scenes. Unchanged objects' partitions are reused in place (no data movement); only newly built or deformed partitions are (re)placed by the load-balancing heuristic. Measured across four frames of a moving-camera scene, speedup ranged from 1.8× to 2.9× depending on how much BVH traversal that frame actually required.</div></details>
+      <details><summary><span class="q">Q8</span>Is the area/power overhead actually negligible?<span class="chev">▾</span></summary><div class="a">The near-memory RT unit adds about 0.78–1.10% of a comparable HBM2 die's area and roughly 0.35 W of power — well within the ~17 W logic-layer budget shown elsewhere to be coolable with an ordinary fan. Memory controller overhead is negligible for the JEDEC-compatible and Hybrid designs, whose logic-layer controllers stay simple and in-order; the Unified design instead needs a full, complex controller in the logic layer, which the paper notes has a higher thermal impact.</div></details>
+      <details><summary><span class="q">Q9</span>How does RayN compare to treelet prefetching, the closest prior work?<span class="chev">▾</span></summary><div class="a">Treelet prefetching predicts which BVH subtree a ray will need next and prefetches it — but 44% of its prefetches go unused because prediction is hard on divergent rays. RayN sidesteps prediction altogether by moving the traversal compute to where the data already sits, and outperforms treelet prefetching by roughly 2.0–2.2× depending on the controller design.</div></details>
+      <details><summary><span class="q">Q10</span>What did the authors leave for future work?<span class="chev">▾</span></summary><div class="a">The paper itself doesn't spell out an explicit future-work list. Two plausible extrapolations, not claims the paper makes: better (camera-aware or adaptive) load estimation, given that the current heuristic correlates only weakly with real intersection counts (Fig. 10); and applying similar partitioning ideas to non-dedicated near-memory GPU cores instead of fixed-function RT units.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>RayN</b><span>The paper's mechanism: near-memory RT units in the HBM logic layer, offloading BLAS traversal from the GPU.</span></div>
+      <div class="term-def"><b>BVH / AS / AABB</b><span>Bounding Volume Hierarchy — the tree acceleration structure; AABB is the axis-aligned box each node bounds.</span></div>
+      <div class="term-def"><b>TLAS / BLAS</b><span>Top-/Bottom-Level Acceleration Structure — the industry's two-level BVH split, reused by RayN's partitioning boundary.</span></div>
+      <div class="term-def"><b>RT unit</b><span>Dedicated GPU (or, in RayN, near-memory) hardware performing BVH traversal and intersection tests.</span></div>
+      <div class="term-def"><b>BLAS Breaking</b><span>Peeling the top N levels off each BLAS into the GPU-side "top partition," leaving smaller near-memory "bottom partitions."</span></div>
+      <div class="term-def"><b>JEDEC-compatible / Unified / Hybrid</b><span>RayN's three memory-controller designs, trading HBM-standard compliance for memory-level parallelism.</span></div>
+      <div class="term-def"><b>Load estimate (Eq. 1)</b><span>root-node volume × partition depth — the pre-render proxy used to place BVH partitions across memory modules.</span></div>
+      <div class="term-def"><b>Treelet prefetching</b><span>Prior work that predicts and prefetches BVH subtrees; RayN's main point of comparison.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>HBM / TSV</b><span>High Bandwidth Memory (3D-stacked DRAM) and the Through-Silicon Vias connecting its layers to the logic layer.</span></div>
+      <div class="term-def"><b>Near-memory computing / PIM</b><span>Placing compute inside or beside memory to cut data-movement cost; the general technique RayN specializes for ray tracing.</span></div>
+      <div class="term-def"><b>SM / warp / SIMT</b><span>GPU Streaming Multiprocessor; a group of 32 threads executed together; the execution model behind them.</span></div>
+      <div class="term-def"><b>Cache miss rates</b><span>Average L1/L2 miss rates of 39%/45% observed for BVH traversal in these workloads (plain miss rates, not MPKI).</span></div>
+      <div class="term-def"><b>Structural hazard</b><span>Two memory controllers contending for the same physical memory address — the core problem the three controller designs solve.</span></div>
+      <div class="term-def"><b>Weighted speedup metric</b><span>RayN reports average and per-scene speedup normalized to a GPU without near-memory support, on the LumiBench suite.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What RayN buys (vs. baseline GPU)</div>
+      <div class="viz-kicker">averages across LumiBench scenes with &gt;500K geometries · higher is better except where noted</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Speedup<small>average</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="17.6"><span>3.0× avg over baseline</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Latency cut<small>near-mem RT unit</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="19.7"><span>−49.2% memory latency</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Energy<small>average</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="17.5"><span>−70% energy use</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">GPU transactions<small>RT-unit traffic</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="19.5"><span>−78% memory transactions</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Area overhead<small>vs. HBM2 die</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="1.1"><span>0.78–1.10% area</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Treelet baseline<small>weaker prior work</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="4.9"><span>−19.5% latency only</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: bars sized to their own metric, not directly comparable to each other</p>
+      <figcaption><b>The through-line:</b> every gain traces back to the same 49.2% latency cut at the near-memory RT unit — throughput, energy, and bandwidth savings are downstream of removing round trips, not of any independent optimization. (Paper §6.)</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>BVH construction and traversal basics <span class="diff easy">easy</span></h4><div class="meta">explainer · 30–45 min</div><p>How bounding volume hierarchies are built and walked. Foundational for every section of this paper.</p></div>
+    <div class="read-item reveal"><h4>HBM and 3D-stacked DRAM <span class="diff easy">easy</span></h4><div class="meta">explainer · 20–30 min</div><p>TSVs, logic layers, and why 3D stacking enables near-memory compute in the first place.</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Treelet Prefetching For Ray Tracing <span class="diff med">medium</span></h4><div class="meta">Chou, Nowicki, Aamodt · MICRO · 2023</div><p>The closest prior work — predicts and prefetches BVH subtrees rather than moving compute to memory; RayN's main baseline.</p></div>
+    <div class="read-item reveal"><h4>Vulkan-Sim: A GPU Architecture Simulator for Ray Tracing <span class="diff hard">hard</span></h4><div class="meta">Saed, Chou, Liu, Nowicki, Aamodt · MICRO · 2022</div><p>The simulation infrastructure RayN builds on, including the baseline RT unit architecture redrawn in this guide.</p></div>
+    <div class="read-item reveal"><h4>Ramulator: A Fast and Extensible DRAM Simulator <span class="diff med">medium</span></h4><div class="meta">Kim, Yang, Mutlu · IEEE CAL · 2015</div><p>The DRAM/memory-controller simulator RayN integrates with Vulkan-Sim to model its three controller designs.</p></div>
+    <div class="read-item reveal"><h4>SGRT: A Mobile GPU Architecture for Real-Time Ray Tracing <span class="diff med">medium</span></h4><div class="meta">Lee et al. · HPG · 2013</div><p>Source of the operation-unit area estimates RayN scales to 12 nm for its area analysis.</p></div>
+    <div class="read-item reveal"><h4>A Scalable Processing-in-Memory Accelerator for Parallel Graph Processing <span class="diff hard">hard</span></h4><div class="meta">Ahn, Hong, Yoo, Mutlu, Choi · ISCA · 2015</div><p>Representative near-memory graph-PIM work RayN contrasts itself against — even load partitioning, but no intersection hardware or camera-aware load model.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card">
+      <p style="margin-bottom:10px"><b>From the paper (§1–§6, Figs. 1–18, Tables 1–5):</b> the latency-vs-bandwidth sensitivity (1.9× vs. 1.2×); the 39%/45% L1/L2 miss rates; the three memory-controller designs and their Table 1 trade-offs; BLAS Breaking's level-sensitivity results (−0.3% to −45.3%); the 49.2%/33.5%/19.5% latency breakdown (Fig. 12); the 78% GPU RT-unit transaction reduction (Fig. 13); the 3.14 average max/min load-imbalance ratio (Fig. 14); the 0.78%/1.10% area figures (Table 5); the 3.0× average speedup, 70% energy reduction, and worst-case load-imbalance sensitivity (§6.4).</p>
+      <p style="margin:0"><b>Framing added here:</b> the "cook in the pantry," "library front desk," "two chefs," "delivery routing," "retiring guards," and "space heater" analogies; the relative-latency bar chart (values computed from the paper's stated percentages, normalized to a baseline of 100); the CXL/OS-tiering comparison connecting RayN's compute-to-data offload to migration-based tiering systems (TPP, HeMem, Memtis, Pond); and all "misconception" framings in the Practice tab.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Saed, Nair &amp; Aamodt, "RayN: Ray Tracing Acceleration with Near-memory Computing" (MICRO-58, 2025)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PARTITION EXPLORER (dormant unless matching markup is present) ---- */
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Not optimal.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
