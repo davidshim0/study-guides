@@ -1,0 +1,1037 @@
+<!DOCTYPE html>
+<!-- Magellan field guide — Loop-Guided Software Prefetcher for Indirect Memory Access (Fu et al., ISCA'25).
+     Semantic colors: teal = Magellan (the prefetcher) · honey = SW Prefetch (the rival baseline) ·
+     indigo = Magellan's detection machinery (LDG, nested-loop classifier) · terracotta = naive/hardware baselines (SFI, HW prefetchers). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reading the Loop Two Levels Deep — Magellan, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98E3B; --honey-deep:#B06B1D; --honey-soft:#F7E3C0;
+  --dram:#1D7A82; --dram-soft:#D7ECEC;      /* teal   = Magellan, the winning prefetcher      */
+  --ltram:#5B4B93; --ltram-soft:#E7E1F3;    /* indigo = LDG / nested-loop detection machinery */
+  --optane:#B5502F; --optane-soft:#F3DCCF;  /* terracotta = naive baselines (SFI, HW prefetchers) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(29,122,130,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,75,147,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,142,59,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(91,75,147,.05) 31px,rgba(91,75,147,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,142,59,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:20ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#123f43;font-size:.96rem}
+.primer .ready b{color:#0d2f32}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#123f43}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#392f6e}
+.chip-lru{background:var(--optane-soft);color:#7a3620}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #b9dede;color:#123f43}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#7a3620}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#8ec7cb;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c1b6df;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcd6ee}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#237e85,#1D7A82)}
+.bf-hi{background:linear-gradient(90deg,#248a92,#1D7A82)}
+.bf-lru{background:linear-gradient(90deg,#c76a44,#B5502F)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive, kept for house-style script compatibility) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#123f43;border:1px solid #8ec7cb}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#123f43}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#7a3620}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#d98e3b} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#9d90d6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#123f43}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#7a3620}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>ISCA 2025 · A Field Guide</span>
+    <h1>Prefetching the address you'll need <span class="swash">two loop levels</span> from now</h1>
+    <p class="lede">Graph and sparse-matrix code chases pointers through pointers. Existing software prefetchers only look as far as the current loop's boundary — Magellan reads the whole nested-loop skeleton instead, and prefetches across it.</p>
+    <div class="hero-meta">
+      <span>📄 "Magellan: A High-Performance Loop-Guided Prefetcher for IMA" · Fu, Xia, Yin, Nair, Lis, Ren</span>
+      <span>🎓 Assumes caches, LRU, and prefetching basics — primers cover only what's IMA-specific</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧭</div>
+      <p>Don't just prefetch the <span class="wo">next index inside this loop</span> — read how this loop <span class="ro">nests inside its outer loop</span>, and prefetch across that boundary too.<br><em style="font-size:.9rem">Classify the nesting once, then pick the matching strategy.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>What's actually new here</h2>
+      <p class="sub">You already know caches, prefetching, and LRU. This paper's novelty is entirely about <em>indirect</em> memory access and how to read its shape out of nested loops at compile time. Eight primers, collapsed — open what's unfamiliar.</p>
+    </div>
+
+    <div class="card" style="margin-top:8px">
+      <h3 style="color:var(--ltram)">Quick glossary — the acronyms you'll see everywhere</h3>
+      <div class="gloss">
+        <div class="term-def"><b>IMA</b><span>Indirect Memory Access — a load whose address comes from another array's value: <code>x[a[i]]</code>.</span></div>
+        <div class="term-def"><b>LDG</b><span>Loop Dependence Graph — Magellan's directed graph of load/induction-variable dependencies across nested loop levels.</span></div>
+        <div class="term-def"><b>SFI</b><span>Software Fault Isolation — the classic bounds-check-every-access safety technique Magellan deliberately avoids.</span></div>
+        <div class="term-def"><b>GEP</b><span>GetElementPtr — the LLVM IR instruction that computes an array-element address from a base pointer and offset.</span></div>
+        <div class="term-def"><b>ROB</b><span>Reorder Buffer — bounds how far a mispredicted-path load can speculatively execute; sizes Magellan's safety margin.</span></div>
+        <div class="term-def"><b>DMP / IMP</b><span>Differential-Matching / Indirect Memory Prefetcher — the strongest hardware IMA prefetchers Magellan is benchmarked against.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> Magellan (the prefetcher)</span>
+      <span><i style="background:var(--honey-deep)"></i> SW Prefetch (the closest rival)</span>
+      <span><i style="background:var(--ltram)"></i> LDG / detection machinery</span>
+      <span><i style="background:var(--optane)"></i> naive baselines (SFI, hardware prefetchers)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Local vs. global indirection — the paper's core vocabulary<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An IMA involves an index array <code>a[]</code> and a target array <code>x[]</code>. <b>Local</b> indirection fetches one element per index: <code>x[a[i]]</code>. <b>Global</b> indirection uses the index as a <i>base</i> address and fetches several consecutive elements offset by an inner-loop variable: <code>x[a[i]+j]</code>.</p>
+          <p>Real code combines both: outer loop picks a node, <code>offset=a[i]</code> is a global IMA giving that node's edge range, and each <code>x[offset+j]</code> load inside is local.</p>
+          <div class="ready"><b>Now you're ready:</b> BFS's <code>Edgelist[Worklist[...]]</code> access is global (depends on an outer-loop value as base); its <code>Visited[Neighbor]</code> access is local. Magellan needs to tell these apart to prefetch correctly.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Why SW Prefetch (the 2019 baseline) falls short<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>SW Prefetch [Ainsworth &amp; Jones] walks backward from a load through its source operands to find loop induction variables, then prefetches <code>index + ahead_distance</code> — but only within the <b>current</b> inner loop. It stops the moment the dependency chain crosses into an outer-loop variable.</p>
+          <p>On sparse graphs, inner loops are short (few neighbors per vertex), so <code>j+32</code> routinely overshoots the loop bound and gets clamped to the boundary — the same address, prefetched redundantly, over and over.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper measures this precisely — 85.3% of SW Prefetch's BFS prefetch indices are clamped. Magellan's entire design is a response to this one failure mode.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>The Loop Dependence Graph (LDG)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A directed graph where each node is a load instruction or a loop induction variable, and an edge a→b means b is data-dependent on a. Unlike a plain use-def chain confined to one loop, the LDG explicitly links induction variables across <i>loop levels</i> — so it can see that an inner-loop bound depends on an outer-loop load.</p>
+          <div class="ready"><b>Now you're ready:</b> traversing the LDG is how Magellan classifies a load as local (depends only on same-level things) or global (depends on an outer-loop load/induction variable) — mechanically, not heuristically.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Three nested-loop patterns: stream-in, stream-out, irregular<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Once an IMA is inside a nested loop, Magellan asks: how does the outer loop's direction relate to the inner loop's? <b>Stream-in</b> — same direction, inner index moves continuously across outer iterations (row-by-row matrix traversal). <b>Stream-out</b> — opposite direction (a reverse triangular solve). <b>Irregular</b> — the outer loop's direction isn't fixed at all (worklist-driven graph traversal, e.g. BFS).</p>
+          <div class="ready"><b>Now you're ready:</b> this classification is the whole reason Magellan needs four different prefetch strategies rather than one — each pattern makes a different kind of future address predictable.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Four prefetch strategies, one core trade-off<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Inner-bound (stay inside the current loop, bounds-checked — high instruction cost), inner-free (prefetch unconditionally past the bound, catching the next loop too — medium cost), outer (insert the prefetch in the <i>outer</i> loop body, for the whole next inner loop at once — low cost), and opposite inner-free (inner-free run in reverse, for stream-out).</p>
+          <p>Every strategy trades <b>prefetch coverage</b> against <b>extra executed instructions</b> — there is no free strategy, only a best fit per pattern.</p>
+          <div class="ready"><b>Now you're ready:</b> Magellan's compiler pass is essentially "classify the pattern, then look up the strategy" — see the mapping table in How It Works.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Why this needs a compiler pass, not a runtime detector<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Magellan is an LLVM IR pass: it statically analyzes the source (backward dependency search, loop bound comparison) and <i>inserts</i> new prefetch instructions into the binary — no new hardware, no runtime pattern learner. The trade-off is the mirror image of hardware IMA prefetchers (IMP, DMP): those adapt at runtime with custom logic and area cost; Magellan commits to a strategy at compile time for zero hardware cost.</p>
+          <div class="ready"><b>Now you're ready:</b> this is why the headline comparison in the paper is "matches the best hardware prefetcher, with none of its area."</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>The safety problem: prefetching can crash the program<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A prefetch <i>instruction</i> is architecturally a no-fault hint. But computing its address (<code>x[a[j+32]]</code>) requires first loading <code>a[j+32]</code> — a real, faulting load. If <code>j+32</code> runs past the end of array <code>a</code>, that's an out-of-bounds access.</p>
+          <p>The standard fix, Software Fault Isolation, bounds-checks every such load — and the paper measures this costing 31% more instructions and a 28% slowdown on SpMV. Magellan avoids this entirely (primer 8).</p>
+          <div class="ready"><b>Now you're ready:</b> "ensuring safe prefetches without sacrificing performance" is listed as a first-class contribution, not an afterthought — this is a real correctness constraint, not a hardware-safe hint.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Magellan's fix: pad the allocation instead of checking the address<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Instead of checking every prefetch address at runtime, Magellan statically finds the <code>malloc</code>/<code>calloc</code> call that allocated the prefetched array (by walking backward through the GEP's base-address operand) and <b>enlarges that one allocation</b> by <code>prefetch_distance + ROB_size</code>. Now every possible prefetch index — including ones down a mispredicted branch — lands in valid, allocated memory.</p>
+          <div class="ready"><b>Now you're ready:</b> this only works when the allocation site is staticaly traceable; externally-allocated or heavily-aliased arrays fall back to no optimization, trading some coverage for a guarantee of correctness.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Magellan in a nutshell</h2>
+      <p class="sub">The failure mode it fixes, the two mechanisms that fix it, and how they connect.</p>
+    </div>
+    <div class="prose">
+      <p>Sparse and graph workloads live on <span class="mem-chip chip-ucp">indirect memory access</span>: <code>x[a[i]]</code>-style loads whose addresses are only known once <code>a[i]</code> itself has been read. These addresses are effectively random with respect to the target array, so they miss the cache constantly, and neither next-line/stride hardware prefetchers nor prior software prefetchers cover them well.</p>
+      <p>The prior software approach, <span class="mem-chip chip-sat">SW Prefetch</span>, only looks as far as the boundary of the loop it's currently in. That's fatal for sparse graphs: inner loops (a vertex's neighbor list) are often just a few iterations long, so the prefetch's look-ahead distance routinely overshoots the loop and gets clamped — wasting the prefetch on a redundant address, <b>85.3% of the time on BFS</b>.</p>
+      <p><strong>Magellan</strong>'s fix has two parts. First, it builds a <span class="mem-chip chip-ucp">Loop Dependence Graph (LDG)</span> that tracks load/induction-variable dependencies <i>across</i> loop levels, so it can classify each IMA as local or global and each nested loop as stream-in, stream-out, or irregular — the actual shape of the access pattern. Second, it maps each shape to a tailored prefetch strategy that reaches past the current loop's boundary into the next one (or the current one's later iterations), instead of stopping at the fence SW Prefetch stops at.</p>
+      <p>A separate mechanism keeps this safe without runtime bounds checks: Magellan statically extends the allocation of any array a prefetch load might overrun, so every possible prefetch address — even down a mispredicted branch — stays in valid memory, at a measured cost of <b>0.0036%</b> extra storage.</p>
+      <p><strong>The payoff:</strong> across 14 memory-intensive benchmarks, Magellan cuts cache misses by <b>25%</b> and dynamic instructions by <b>14%</b> versus the best existing software prefetcher, for a <b>1.14×</b> average speedup (up to <b>1.41×</b>) — matching the best hardware IMA prefetcher's benefit with zero added silicon.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>SW Prefetch's failure is structural: it can't see past the loop it's in, and sparse inner loops are short.</li>
+        <li>Magellan's <b>LDG</b> traces dependencies <i>across</i> loop levels — this is what lets it detect global IMAs at all.</li>
+        <li>Nested-loop shape (stream-in / stream-out / irregular) determines which of <b>four prefetch strategies</b> applies.</li>
+        <li>Safety comes from <b>extending allocations</b>, not bounds-checking every access — near-zero overhead vs. SFI's 28% slowdown.</li>
+        <li>Result: <b>25%</b> fewer misses, <b>14%</b> fewer instructions, <b>1.14×</b> avg speedup vs. the best software rival; on par with the best hardware prefetcher, at zero hardware cost.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Where SW Prefetch stops, and where Magellan keeps going</div>
+      <div class="viz-kicker">BFS's nested loop · detection scope of each prefetcher</div>
+      <div class="legend">
+        <span><i style="background:var(--honey-deep)"></i> SW Prefetch's detection scope</span>
+        <span><i style="background:var(--ltram)"></i> Magellan's detection scope (via LDG)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 320" role="img" aria-label="BFS nested loop showing SW Prefetch's limited detection scope versus Magellan's full LDG scope">
+        <rect x="30" y="30" width="700" height="120" rx="14" fill="none" stroke="#B06B1D" stroke-width="2" stroke-dasharray="6 5"/>
+        <text x="46" y="54" font-family="JetBrains Mono" font-size="11" fill="#B06B1D">SW Prefetch's scope — current inner loop only</text>
+        <rect x="60" y="66" width="200" height="60" rx="10" fill="#F7E3C0" stroke="#B06B1D" stroke-width="1.6"/>
+        <text x="160" y="92" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#6e4a09">Offset[node]</text>
+        <text x="160" y="110" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">local IMA</text>
+        <rect x="300" y="66" width="220" height="60" rx="10" fill="#F7E3C0" stroke="#B06B1D" stroke-width="1.6"/>
+        <text x="410" y="92" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#6e4a09">Visited[Neighbor]</text>
+        <text x="410" y="110" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">local IMA</text>
+        <rect x="30" y="180" width="700" height="110" rx="14" fill="none" stroke="#5B4B93" stroke-width="2.4"/>
+        <text x="46" y="204" font-family="JetBrains Mono" font-size="11" fill="#5B4B93">Magellan's scope — LDG spans outer + inner loop</text>
+        <rect x="560" y="66" width="150" height="60" rx="10" fill="#E7E1F3" stroke="#5B4B93" stroke-width="1.6"/>
+        <text x="635" y="92" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#392f6e">Edgelist[…]</text>
+        <text x="635" y="110" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#392f6e">global IMA</text>
+        <path d="M410 126 V216 H560 V126" fill="none" stroke="#5B4B93" stroke-width="2" stroke-dasharray="4 3"/>
+        <text x="480" y="240" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5B4B93">depends on outer-loop var start_pointer</text>
+        <rect x="60" y="228" width="200" height="42" rx="8" fill="#D7ECEC" stroke="#1D7A82" stroke-width="1.6"/>
+        <text x="160" y="253" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#123f43">Worklist[start_pointer]</text>
+        <rect x="300" y="228" width="220" height="42" rx="8" fill="#D7ECEC" stroke="#1D7A82" stroke-width="1.6"/>
+        <text x="410" y="253" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#123f43">outer-loop node select</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> SW Prefetch's backward search halts at the loop it's in, so it sees the two local IMAs (Offset, Visited) but never reaches Edgelist — whose address depends on the <i>outer</i> loop's <code>start_pointer</code>. Magellan's LDG spans both loop levels, so it detects Edgelist as a global IMA and prefetches it correctly. (Paper, Fig. 1 &amp; 7, redrawn)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">detect → classify → strategize → protect</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">SW Prefetch stops at the current loop's boundary; sparse inner loops are too short for that to work</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Detect (LDG)</div><div class="nd">Backward dependency graph across loop levels finds local vs. global IMAs</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Classify</div><div class="nd">Stream-in / stream-out / irregular, from preheader-latch matching + outer-loop direction</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Strategize</div><div class="nd">Pick one of 4 prefetch strategies matched to the pattern</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Protect</div><div class="nd">Extend the array's allocation instead of bounds-checking each access</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">1.14× avg speedup vs. best SW prefetcher, ~ best HW prefetcher</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about Magellan</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 76 q30 -50 50 -50 q20 0 50 50" stroke="#B06B1D" stroke-width="2.5" fill="none" stroke-dasharray="5 4"/>
+          <circle cx="70" cy="26" r="5" fill="#B06B1D"/>
+          <path d="M76 26 h30" stroke="#332C24" stroke-width="2" stroke-dasharray="2 3"/>
+          <text x="110" y="22" font-family="monospace" font-size="8" fill="#9A8E7C">road ends here</text>
+        </svg></div>
+        <span class="term">The core failure · Loop-bound myopia</span>
+        <h3>Reading a map that stops at the page edge</h3>
+        <p>SW Prefetch is a driver reading a paper map: perfectly accurate for the road on this page, but the map simply ends at the page border — there's no hint of what's on the next sheet. When the "page" (inner loop) is short, the driver is constantly told "off the map" and just re-reads the last visible point. Magellan tapes the pages together first (the LDG), so the route continues seamlessly onto the next one.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real map's next page is fixed in advance; which "page" (loop iteration) comes next in an irregular pattern like BFS is only known at runtime — Magellan predicts the shape of the next page, not its exact contents.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="45" height="36" rx="4" fill="#D7ECEC" stroke="#1D7A82" stroke-width="2.4"/>
+          <text x="42" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#123f43">local</text>
+          <rect x="75" y="30" width="45" height="36" rx="4" fill="#E7E1F3" stroke="#5B4B93" stroke-width="2.4"/>
+          <text x="97" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#392f6e">global</text>
+          <path d="M20 74 h100" stroke="#9A8E7C" stroke-width="1.5"/>
+        </svg></div>
+        <span class="term">Detection · Local vs global IMA</span>
+        <h3>A store clerk vs. a delivery dispatcher</h3>
+        <p>A local IMA is a store clerk fetching one item you named. A global IMA is a dispatcher: you give an address, and dispatcher hands you a <i>whole range</i> of items starting there, indexed by a separate running counter. The dispatcher's job (global IMA) can't be understood by watching one clerk transaction (a single-loop backward search) — you need to see where the "starting address" instruction actually came from, possibly a level up.</p>
+        <div class="breaks"><b>Where it breaks:</b> real dispatchers know their range in advance; Magellan must derive the range (the inner loop's trip count) separately from the base address itself — they come from different LDG edges.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 30 q50 0 50 20 q0 20 50 20" stroke="#1D7A82" stroke-width="2.5" fill="none"/>
+          <path d="M20 66 q50 0 50 -20 q0 -20 50 -20" stroke="#B5502F" stroke-width="2.5" fill="none" stroke-dasharray="4 3"/>
+          <text x="20" y="24" font-family="monospace" font-size="8" fill="#123f43">in</text>
+          <text x="20" y="80" font-family="monospace" font-size="8" fill="#7a3620">out</text>
+        </svg></div>
+        <span class="term">Classification · Stream-in vs stream-out</span>
+        <h3>An escalator going the same way as the crowd — or against it</h3>
+        <p>Stream-in is an escalator moving the same direction as the foot traffic beside it: momentum carries forward smoothly, so predicting the next step is easy in the forward direction. Stream-out is the same escalator running the opposite way to a crowd walking past it: still perfectly predictable, but the prefetch logic has to flip its arithmetic to match the reversed direction, or it points the wrong way entirely.</p>
+        <div class="breaks"><b>Where it breaks:</b> escalators never change direction mid-ride; some workloads (SYMGS) genuinely reverse direction between algorithm phases, which is why Magellan re-detects the pattern rather than assuming it's fixed for the whole program.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="30" fill="none" stroke="#5B4B93" stroke-width="2.2" stroke-dasharray="3 4"/>
+          <circle cx="55" cy="40" r="4" fill="#5B4B93"/><circle cx="88" cy="55" r="4" fill="#5B4B93"/><circle cx="70" cy="65" r="4" fill="#5B4B93"/>
+          <path d="M55 40 L88 55 M88 55 L70 65 M70 65 L55 40" stroke="#9A8E7C" stroke-width="1.2" stroke-dasharray="2 2"/>
+        </svg></div>
+        <span class="term">Irregular pattern · Worklist-driven traversal</span>
+        <h3>A tour guide with no fixed itinerary</h3>
+        <p>Most tour guides (stream-in/out) follow a route you could predict from the map. A worklist-driven guide instead visits whichever site got added to today's list last — determined dynamically by which sites earlier visitors flagged as interesting. You can't predict the next stop from direction alone, so the best you can do is prefetch for "wherever the very next stop turns out to be," which means moving the prefetch to the outer loop, right where that decision gets made.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real irregular tour has no exploitable structure at all; BFS's irregularity is bounded — it's still one hop away in the worklist, which is exactly what outer prefetching exploits.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="80" height="36" rx="18" fill="#F3DCCF" stroke="#B5502F" stroke-width="2.2"/>
+          <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#7a3620">check every step</text>
+          <path d="M70 70 v14" stroke="#332C24" stroke-width="2"/>
+          <rect x="45" y="86" width="50" height="6" rx="3" fill="#332C24"/>
+        </svg></div>
+        <span class="term">Safety · Extending allocations vs. SFI</span>
+        <h3>A guardrail along the whole road vs. a toll booth every mile</h3>
+        <p>SFI is a toll booth at every mile marker, stopping traffic to check each car's papers — safe, but the delay adds up (measured: 31% more instructions, 28% slower). Magellan instead builds the guardrail a little farther out along the whole road before anyone drives it, so no car can ever leave the pavement — a one-time cost paid once, at compile/allocation time, not on every trip.</p>
+        <div class="breaks"><b>Where it breaks:</b> guardrails work because the road's shoulder is knowable in advance; Magellan's version only works when it can statically trace the array back to its <code>malloc</code> — externally allocated or heavily aliased arrays don't get a guardrail and fall back to no optimization.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="40" width="45" height="30" rx="4" fill="#D7ECEC" stroke="#1D7A82" stroke-width="2.2"/>
+          <rect x="75" y="40" width="45" height="30" rx="4" fill="#F3DCCF" stroke="#B5502F" stroke-width="2.2" stroke-dasharray="4 3"/>
+          <text x="42" y="58" text-anchor="middle" font-family="monospace" font-size="9" fill="#123f43">compiler</text>
+          <text x="97" y="58" text-anchor="middle" font-family="monospace" font-size="9" fill="#7a3620">silicon</text>
+        </svg></div>
+        <span class="term">Design point · Software vs hardware prefetching</span>
+        <h3>A tailor's alterations vs. a custom-built suit</h3>
+        <p>A hardware IMA prefetcher (DMP, IMP) is a custom-built suit: fits its target patterns exactly, but takes real fabric (chip area) that's wasted on every program that isn't wearing it. Magellan is a skilled tailor altering an off-the-rack suit (an ordinary CPU) at compile time — no extra fabric bought, ready for whichever program shows up next, and the paper measures it fitting nearly as well as the custom suit (1.7× vs 1.8× average speedup).</p>
+        <div class="breaks"><b>Where it breaks:</b> a tailor can only alter what the source code exposes; a truly runtime-discovered pattern with no loop structure in the IR (e.g. through an opaque library call) has no seam for Magellan to alter at all.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Four phases, in the order Magellan's compiler pass runs them.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · IMA detection via the Loop Dependence Graph</h3>
+      <p>For each load inside a loop, Magellan recursively walks its source operands backward (skipping calls, stores, terminators) until it hits either another load or an induction variable — building a dependency chain. It separately walks the loop's induction variable back to its <code>phi</code>-incoming value, which surfaces any loop-carried dependency on an <i>outer</i> loop. All these chains are unified into the LDG.</p>
+      <p>Classifying a load is then a graph query: if it depends only on same-level loads/variables, it's <span class="mem-chip chip-hi">local</span>; if its chain reaches an outer-loop load or induction variable, it's <span class="mem-chip chip-ucp">global</span>.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The BFS Loop Dependence Graph</div>
+      <div class="viz-kicker">nodes = loads / induction variables · edges = data dependency</div>
+      <svg class="full" viewBox="0 0 700 260" role="img" aria-label="Loop Dependence Graph for BFS, showing outer and inner loop nodes and edges">
+        <rect x="20" y="20" width="290" height="90" rx="12" fill="none" stroke="#B5502F" stroke-width="1.6" stroke-dasharray="5 4"/>
+        <text x="34" y="42" font-family="JetBrains Mono" font-size="10" fill="#7a3620">Outer Loop</text>
+        <rect x="40" y="52" width="110" height="42" rx="8" fill="#F3DCCF" stroke="#B5502F" stroke-width="1.6"/>
+        <text x="95" y="77" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#7a3620">start_pointer</text>
+        <rect x="180" y="52" width="110" height="42" rx="8" fill="#F3DCCF" stroke="#B5502F" stroke-width="1.6"/>
+        <text x="235" y="77" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#7a3620">Worklist</text>
+        <path d="M150 73 H180" stroke="#332C24" stroke-width="1.6" marker-end="url(#ah1)"/>
+        <rect x="20" y="130" width="660" height="110" rx="12" fill="none" stroke="#5B4B93" stroke-width="1.6"/>
+        <text x="34" y="152" font-family="JetBrains Mono" font-size="10" fill="#392f6e">Inner Loop</text>
+        <rect x="40" y="162" width="90" height="42" rx="8" fill="#D7ECEC" stroke="#1D7A82" stroke-width="1.6"/>
+        <text x="85" y="187" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#123f43">Offset</text>
+        <rect x="170" y="162" width="30" height="42" rx="8" fill="#fff" stroke="#9A8E7C" stroke-width="1.4"/>
+        <text x="185" y="187" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456">j</text>
+        <rect x="240" y="162" width="120" height="42" rx="8" fill="#E7E1F3" stroke="#5B4B93" stroke-width="1.6"/>
+        <text x="300" y="187" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#392f6e">Edgelist</text>
+        <rect x="410" y="162" width="120" height="42" rx="8" fill="#D7ECEC" stroke="#1D7A82" stroke-width="1.6"/>
+        <text x="470" y="187" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#123f43">Visited</text>
+        <path d="M130 183 H170" stroke="#332C24" stroke-width="1.6" marker-end="url(#ah1)"/>
+        <path d="M200 183 H240" stroke="#332C24" stroke-width="1.6" marker-end="url(#ah1)"/>
+        <path d="M360 183 H410" stroke="#332C24" stroke-width="1.6" marker-end="url(#ah1)"/>
+        <path d="M95 94 V162" stroke="#5B4B93" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#ah2)"/>
+        <path d="M235 94 Q235 130 300 162" fill="none" stroke="#5B4B93" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#ah2)"/>
+        <defs>
+          <marker id="ah1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#332C24"/></marker>
+          <marker id="ah2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#5B4B93"/></marker>
+        </defs>
+      </svg>
+      <figcaption><b>Solid arrows</b> stay within one loop level (Offset→j→Edgelist→Visited: all detectable by a single-loop backward search). <b>Dashed indigo arrows</b> cross from the outer loop into the inner one — <code>Edgelist</code>'s base address depends on <code>Worklist[start_pointer]</code>, one level up. Only a graph that spans both levels catches this; that's the entire reason SW Prefetch misses it. (Paper, Fig. 7, redrawn)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Nested-loop pattern detection (3 steps)</h3>
+      <ol class="seq">
+        <li><b>Locate the inner loop's induction variable</b> and read its <i>preheader</i> (initial value) and <i>latch</i> (bound value) expressions.</li>
+        <li><b>Unroll the inner loop twice</b> and compare the first iteration's preheader to the second iteration's latch. If they don't match, the inner bounds shift unpredictably between outer iterations — classify as <b>irregular</b>.</li>
+        <li><b>If they match</b>, check the outer loop's iteration condition: incrementing → <b>stream-in</b>; decrementing → <b>stream-out</b>.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why this works:</b> stream-in/out both have an inner loop whose bounds are a clean function of the outer index (<code>ptr[i]</code>…<code>ptr[i+1]</code>) — so the preheader/latch pair repeats predictably. BFS's <code>Offset</code> loop matches this cleanly even though the <i>outer</i> traversal order (which vertex is visited next) is irregular — that irregularity lives one level higher, in which the outer-loop pattern is classified separately.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Prefetch strategy selection</h3>
+      <p>Each pattern gets the strategy that best balances prefetch coverage against instruction overhead:</p>
+      <table class="tbl">
+        <thead><tr><th>Pattern</th><th>Strategy</th><th>Prefetch scope</th><th>Overhead</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">stream-in</td><td><b>inner-free</b></td><td>current + future inner loop</td><td>medium</td></tr>
+          <tr><td class="mono">stream-out</td><td><b>opposite inner-free</b></td><td>current + future (reverse direction)</td><td>medium</td></tr>
+          <tr class="best"><td class="mono">irregular (small trip count)</td><td><b>outer</b></td><td>future loop only, issued in outer loop</td><td>low</td></tr>
+          <tr><td class="mono">irregular (large trip count)</td><td><b>inner-bound</b></td><td>current loop only, bounds-checked</td><td>high</td></tr>
+        </tbody>
+      </table>
+      <pre class="sketch"><span class="cm">// stream-in: inner-free — prefetch j+32 unconditionally, no bound check</span>
+<span class="kw">for</span> (i=0;i&lt;size;i++){
+  start,end = ptr[i], ptr[i+1];
+  <span class="kw">for</span> (j=start;j&lt;end;j++){
+    load(x[a[j]]);
+    pref_j = j+32;                    <span class="cm">// deliberately unchecked</span>
+    prefetch(x[a[pref_j]]);           <span class="hl">// safe: allocation was pre-extended</span>
+  }
+}</pre>
+      <div class="callout note"><span class="ic">🌱</span><div>Removing the bound check (vs. SW Prefetch's <code>min(j+32,end)</code>) is exactly what fixes the 85.3%-clamped problem — but it's only safe because of the allocation-extension mechanism in step 4.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Fault avoidance — extend the allocation, not the runtime check</h3>
+      <p>Magellan locates the memory-allocation call behind any array a prefetch might overrun, by tracing a GEP's base-address operand backward through <code>bitcast</code>s and call arguments to a <code>malloc</code>/<code>calloc</code> site (using LLVM's <code>AliasSetTracker</code> and <code>DominatorTreeAnalysis</code> for harder aliasing cases), then rewrites that call's size parameter:</p>
+      <pre class="sketch"><span class="hl">alloc_size += prefetch_distance + rob_size</span>
+<span class="cm">// prefetch_distance = 32 (look-ahead), rob_size = 224 (Kabylake) / 168 (Sandy Bridge)</span>
+<span class="cm">// covers both correctly-predicted and mispredicted-path speculative loads</span></pre>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Falls back safely when it can't be sure.</b> If the allocation site is external, or the pointer is ambiguously aliased across multiple <code>malloc</code> calls, Magellan skips the optimization for that array rather than guess — correctness over coverage.</div></div>
+    </div>
+
+    <!-- RESULTS BARS -->
+    <figure class="viz reveal" id="resultsFig">
+      <div class="viz-title">What Magellan buys, in one look</div>
+      <div class="viz-kicker">vs. the best existing software prefetcher, averaged over 14 benchmarks</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Cache misses<small>Magellan</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="89"><span>−89% vs. baseline</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Cache misses<small>SW Prefetch</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="36"><span>−36% vs. baseline</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Speedup<small>vs. best SW rival</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="14"><span>+14% (1.14×)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Best workload<small>up to</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="41"><span>+41% (1.41×)</span></div></div></div>
+      </div>
+      <figcaption><b>The coverage gap is the whole story:</b> Magellan removes 89% of baseline cache misses vs. SW Prefetch's 36%, by reaching past the loop boundary SW Prefetch stops at. (Paper, Fig. 15–16)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces using the paper's real measurements.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Why 85.3% of SW Prefetch's BFS prefetches are wasted</h3>
+      <p style="color:var(--ink-soft)">BFS's inner loop runs from <code>j=start</code> to <code>end</code>, where <code>range=end-start</code> is a vertex's degree. SW Prefetch computes <code>pref_j = min(j+32, range)</code>. Real web/social graphs have many low-degree vertices — say <code>range=6</code>.</p>
+      <ol class="seq">
+        <li><b>At j=0:</b> <code>j+32=32</code>, but <code>range=6</code>, so <code>pref_j = min(32,6) = 6</code> — clamped to the boundary.</li>
+        <li><b>At j=1,2,3,4,5:</b> same clamp — every iteration of this inner loop computes the identical <code>pref_j=6</code>.</li>
+        <li><b>Result:</b> instead of 6 distinct useful prefetches, SW Prefetch issues 6 <i>identical</i> prefetches for <code>Visited[Edgelist[start+6]]</code> — one address, six times.</li>
+        <li><b>Measured across the whole benchmark:</b> this clamping happens in 85.3% of cases — the paper's headline number for why SW Prefetch underperforms on sparse graphs.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the bug isn't in the prefetch distance choice — it's structural. Any fixed look-ahead distance will overshoot short loops; the fix has to reach into the <i>next</i> loop, which requires seeing across the loop boundary (the LDG).</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Classifying SpMV's loop with the 3-step detector</h3>
+      <p style="color:var(--ink-soft)">SpMV's kernel: <code>for(i=0;i&lt;row;i++) for(j=ptr[i]; j&lt;ptr[i+1]; j++) y[j]+=x[a[j]]</code>.</p>
+      <ol class="seq">
+        <li><b>Step 1:</b> inner induction variable <code>j</code>; preheader = <code>ptr[i]</code>, latch = <code>ptr[i+1]</code>.</li>
+        <li><b>Step 2:</b> unroll twice — iteration <code>i</code>'s preheader is <code>ptr[i]</code>; iteration <code>i+1</code>'s latch is <code>ptr[i+2]</code>. Compare iteration <i>i+1</i>'s <b>preheader</b> (<code>ptr[i+1]</code>) to iteration <i>i</i>'s <b>latch</b> (<code>ptr[i+1]</code>) — they match (both <code>ptr[i+1]</code>).</li>
+        <li><b>Step 3:</b> outer loop condition <code>i&lt;row; i++</code> is incremental → classified <b>stream-in</b>.</li>
+        <li><b>Strategy chosen:</b> inner-free — prefetch <code>x[a[j+32]]</code> unconditionally, catching both later iterations of this row and the start of the next row.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is exactly why SpMV, PageRank, CC, and DC (all row-by-row / stream-in) see the largest gains — an average <b>1.2×</b> geomean, up to <b>1.4×</b> — over the baseline: the pattern is the easiest case to exploit fully.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Sizing the safety net — the 0.0036% storage claim</h3>
+      <p style="color:var(--ink-soft)">The paper reports an average extended-allocation cost of 1486 bytes per application, equal to 0.0036% of that application's total memory footprint. How large is the typical dataset implied by that ratio?</p>
+      <ol class="seq">
+        <li><b>Set up the ratio:</b> 1486 B ÷ (total memory) = 0.0036% = 0.000036.</li>
+        <li><b>Solve for total memory:</b> total memory = 1486 ÷ 0.000036 ≈ <b>41.3 million bytes</b> ≈ <b>41 MB</b>.</li>
+        <li><b>Sanity check against Table 1:</b> Kabylake's L3 is 6 MB, Sandy Bridge's is 40 MB — a ~41 MB average dataset is comfortably larger than even the bigger LLC, confirming these are genuinely LLC-busting sparse workloads, not something that would fit in cache anyway.</li>
+        <li><b>Why the padding itself stays small:</b> the extension is <code>prefetch_distance (32) + ROB_size (≤224)</code> elements, times at most 13 distinct IMAs (bc's worst case) — a few hundred extra elements against a multi-million-element array.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the safety mechanism's cost scales with <i>ROB size and prefetch distance</i>, not with dataset size — so it stays negligible precisely because sparse datasets are large, which is also why they miss the cache in the first place.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Stacking the wins: from naive prefetch to full Magellan</h3>
+      <p style="color:var(--ink-soft)">The paper's ablation (§5.10) isolates two optimizations on top of a naive prefetch insertion: removing bound checks, then adding global-IMA prefetching.</p>
+      <ol class="seq">
+        <li><b>Naive prefetch insertion</b> (bound-checked, local IMA only): limited speedup, and for spmv actually a <i>slowdown</i> — the added instructions cost more than the misses they save.</li>
+        <li><b>Remove bound checks:</b> +11% performance, by cutting the compare-and-clamp instructions and letting more prefetches actually reach ahead.</li>
+        <li><b>Add global-IMA prefetching</b> on top: a further +15% for graph applications, by covering the Edgelist-style accesses local-only detection misses entirely.</li>
+        <li><b>Compounding:</b> 1.11 × 1.15 ≈ <b>1.28×</b> from these two optimizations alone — most of the way to Magellan's full reported 1.14–1.2× (the remainder comes from strategy selection and the LDG's pattern-specific tuning).</li>
+      </ol>
+      <div class="callout note"><span class="ic">🌱</span><div>Every one of Magellan's mechanisms earns its keep individually — none of them alone gets you to the full result, which is why the paper reports this as a staged ablation rather than a single "it works" number.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it checks.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A vertex has degree 40 (its neighbor list has 40 entries). Would SW Prefetch's <code>j+32</code> look-ahead get clamped for this vertex?</div>
+      <details><summary>Show answer</summary><div class="ans">Rarely — only for <code>j &gt; 8</code> (since <code>j+32&gt;40</code> requires <code>j&gt;8</code>), so most of the loop's 40 iterations prefetch a genuinely distinct, useful address. The clamping problem is specific to <b>low-degree</b> vertices, which dominate real social/web graphs (most vertices have few neighbors) — not high-degree ones.<span class="mis">Misconception: that SW Prefetch is broken everywhere. It's broken specifically where sparse graphs concentrate most of their vertices — short inner loops — which is why the 85.3% figure is so damaging in aggregate.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">A load's dependency chain, walked backward, terminates at another load from the <i>same</i> loop level. Is this a local or global IMA? What if it terminates at an induction variable of the <i>outer</i> loop instead?</div>
+      <details><summary>Show answer</summary><div class="ans">Terminating at a same-level load → <b>local IMA</b> (e.g. <code>Visited[Neighbor]</code>, where <code>Neighbor</code> comes from the same inner loop). Terminating at an outer-loop induction variable or load → <b>global IMA</b> (e.g. <code>Edgelist[Worklist[start_pointer]]</code>). The LDG's cross-level edges are exactly what let this distinction be made mechanically.<span class="mis">Misconception: that "global" means "accesses a global variable." It means the address chain crosses a loop-level boundary — nothing to do with variable scope.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Using the 3-step detector: an inner loop's preheader/latch match across unrolled iterations, and the outer loop's condition is <code>for(i=size; i&gt;0; i--)</code>. What pattern, and what strategy follows?</div>
+      <details><summary>Show answer</summary><div class="ans">Matching preheader/latch rules out irregular. The outer condition is decremental → <b>stream-out</b>. Strategy: <b>opposite inner-free</b> — prefetch is issued in the reverse direction so that overshooting the current inner loop's bound correctly lands in the <i>previous</i> (not next) row, matching the outer loop's backward traversal.<span class="mis">Misconception: that "stream-in" and "stream-out" only differ in which way you count — they require different prefetch-index arithmetic, because a forward-looking prefetch computed the normal way would point at already-visited data.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Could increasing SW Prefetch's look-ahead distance from 32 to, say, 128 fix its problem on BFS's <code>Edgelist</code> access specifically?</div>
+      <details><summary>Show answer</summary><div class="ans">No. <code>Edgelist</code>'s address doesn't depend on the inner-loop variable <code>j</code> at all in the way SW Prefetch assumes — it's a <b>global IMA</b>, whose base address depends on the <i>outer</i>-loop's <code>Worklist[start_pointer]</code>. SW Prefetch's backward search never reaches that dependency because it halts at the current loop's boundary, regardless of look-ahead distance. This isn't a tuning problem, it's a detection-scope problem — only an LDG that spans loop levels fixes it.<span class="mis">Misconception: that SW Prefetch's limitation is a tunable parameter (distance). It's structural: the search itself never looks at the right instruction.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why does Magellan extend the <i>allocation size</i> rather than just skip the prefetch when <code>j+pref_d</code> would exceed the array bound?</div>
+      <details><summary>Show answer</summary><div class="ans">Skipping would require a runtime check on every prefetch — exactly the SFI-style overhead (measured at 31% more instructions, 28% slower on SpMV) Magellan is trying to avoid. Extending the allocation once, at allocation time, makes every possible index — including on mispredicted branches — land in valid memory, so the prefetch instruction never needs a guard at all.<span class="mis">Misconception: that "avoiding a crash" and "avoiding a bounds check" are the same choice. Magellan achieves the first without paying for the second by moving the fix from access-time to allocation-time.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Magellan's allocation-extension trick only applies "when the memory allocation site... can be precisely identified and safely extended." Name two concrete situations where it can't, and what happens then.</div>
+      <details><summary>Show answer</summary><div class="ans">(1) The array is allocated in a different translation unit or passed in externally (linkage marks the function as externally callable, or the variable as external) — Magellan can't see or rewrite the allocation call. (2) The pointer is aliased through multiple potential <code>malloc</code> sites that <code>AliasSetTracker</code>/dominator analysis can't disambiguate statically — e.g. conditional aliasing on a runtime branch. In both cases Magellan skips the optimization for that array, preserving correctness at the cost of losing prefetch coverage for it.<span class="mis">Misconception: that Magellan's safety guarantee is unconditional. It is conditional on static traceability — this is a deliberate "no-opt on doubt" policy, not a gap in the design.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 7 · medium</span>
+      <div class="qtext">Magellan is described as "on par with" the best hardware IMA prefetcher (DMP) rather than beating it (1.7× vs. 1.8× average). Why is this framed as a win for Magellan?</div>
+      <details><summary>Show answer</summary><div class="ans">Because the comparison isn't apples-to-apples in cost: DMP requires dedicated custom logic and chip area on every core, permanently, whether or not the workload ever uses IMA. Magellan gets essentially the same benefit purely through a compiler pass — zero hardware cost, deployable on existing commercial CPUs today. "On par in performance, free in hardware" is the actual claim, not "faster than."<span class="mis">Misconception: that a software prefetcher not beating the best hardware prefetcher outright is a weakness. Given the near-zero marginal cost of software prefetching, matching hardware performance is itself the headline result.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 8 · easy</span>
+      <div class="qtext">Triangle Counting (TC) gets only a 1.06× speedup from Magellan, far below SpMV's 1.2–1.4×. Given VTune shows only 15% of TC's pipeline slots are memory-latency-bound, is this a failure of Magellan's detection or strategy selection?</div>
+      <details><summary>Show answer</summary><div class="ans">Neither — it's a ceiling problem, not a detection problem. If only 15% of TC's execution time is even attributable to memory latency, no prefetcher (however perfect) can improve more than that 15% ceiling. TC has good data locality and reuse, making it compute-bound rather than memory-bound; Magellan's IMA detection may work fine, there's just little latency left to hide.<span class="mis">Misconception: that a memory-intensive-<i>looking</i> application (lots of indirect array accesses in the source) is automatically memory-latency-bound in practice. Locality and reuse can make the same code pattern compute-bound instead.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly makes an access "indirect"?<span class="chev">▾</span></summary><div class="a">The address used to load from array <code>x</code> is itself the <i>value</image loaded from another array <code>a</code>: <code>x[a[i]]</code>. Because <code>a[i]</code>'s value can be almost anything (a vertex ID, a matrix column index), the resulting address into <code>x</code> has little spatial or temporal locality — the defining pain point IMA prefetchers target.</div></details>
+      <details><summary><span class="q">Q2</span>Why can't a generic hardware prefetcher (stride, next-line) handle this?<span class="chev">▾</span></summary><div class="a">Those prefetchers predict the <i>next address</i> from a simple arithmetic pattern in the address stream itself (constant stride, sequential lines). IMA addresses are essentially random with respect to the target array — there's no arithmetic regularity in the stream of <code>x[a[i]]</code> addresses to extrapolate from, only in the <i>index computation</i> that produced them, which lives in the source code, not the memory trace.</div></details>
+      <details><summary><span class="q">Q3</span>How is the LDG different from a normal compiler dependence graph?<span class="chev">▾</span></summary><div class="a">A standard use-def or data-dependence graph is typically scoped to a single loop or basic block. The LDG's specific job is unifying dependency chains <i>across</i> nested loop levels — connecting an inner-loop load's operand back through the outer loop's induction variable — which is exactly the piece SW Prefetch's single-loop backward search is missing.</div></details>
+      <details><summary><span class="q">Q4</span>Why does Magellan need three separate nested-loop categories instead of one universal strategy?<span class="chev">▾</span></summary><div class="a">Because each category makes a different kind of future address predictable in a different way. Stream-in and stream-out need arithmetic that runs in opposite directions; irregular loops have no exploitable arithmetic at all across outer iterations, so the only lever left is issuing the prefetch earlier (in the outer loop) rather than computing it differently. One-size-fits-all would either waste instructions or miss opportunities.</div></details>
+      <details><summary><span class="q">Q5</span>Isn't inserting a prefetch in the outer loop for an irregular pattern risky, since you don't know the next iteration's target yet?<span class="chev">▾</span></summary><div class="a">Not as risky as it sounds: BFS-style irregular loops are still driven by a worklist that's already been populated one step ahead (e.g. <code>Worklist[end_pointer]</code> was just written). Outer prefetching exploits the fact that the <i>next</i> node to process is already knowable from that structure, even though the overall visitation order isn't predictable arithmetically.</div></details>
+      <details><summary><span class="q">Q6</span>Does extending allocations waste much memory?<span class="chev">▾</span></summary><div class="a">Measured average: 1486 bytes per application, about 0.0036% of that application's total memory footprint — negligible because sparse datasets are themselves large (tens of MB or more), while the padding only needs to cover <code>prefetch_distance + ROB_size</code>, a few hundred elements at most.</div></details>
+      <details><summary><span class="q">Q7</span>Why does BC (Betweenness Centrality) sometimes see Magellan underperform?<span class="chev">▾</span></summary><div class="a">BC has 13 distinct indirection loads per traversal — the most of any benchmark tested — so inserted prefetches for different loads can interfere with each other's memory requests, and Magellan's static, compile-time scheduling can't adapt to which of those 13 turns out to matter most at runtime. The paper flags this as a case for future dynamic, feedback-based tuning.</div></details>
+      <details><summary><span class="q">Q8</span>Does Magellan replace hardware prefetchers, or work alongside them?<span class="chev">▾</span></summary><div class="a">Alongside. Hardware prefetchers (next-line, stride) are left running and catch the regular/streaming accesses Magellan doesn't target; Magellan handles the irregular indirect ones. Enabling both together improves performance a further 1.13× on average over Magellan alone, because the two cover complementary access patterns.</div></details>
+      <details><summary><span class="q">Q9</span>Why is the outer-prefetching degree fixed at 1 instead of tuned per application?<span class="chev">▾</span></summary><div class="a">The paper measured up to a 40% performance gap across degree settings, and found most workloads peak at degree 1 (one node's worth of look-ahead); a few (e.g. sssp on com-LiveJournal) peak at degree 4, but the average trade-off across all tested graphs and machines favors degree 1 as the single, non-tuned default — simplicity over squeezing out the last few percent on select cases.</div></details>
+      <details><summary><span class="q">Q10</span>How does Magellan compare to profile-guided software prefetchers like APT-GET?<span class="chev">▾</span></summary><div class="a">APT-GET profiles the program first (minutes of profiling, then recompiles with tuned prefetch parameters) and beats plain SW Prefetch by 1.13× on average. Magellan, using purely static loop-structure analysis with no profiling step, still outperforms APT-GET by a further 1.14× — the paper notes APT-GET's profile-guided tuning could in principle be layered on top of Magellan for additional gains.</div></details>
+      <details><summary><span class="q">Q11</span>Does Magellan keep helping as core count increases?<span class="chev">▾</span></summary><div class="a">Up to a point. SpMV shows nearly 7.2× speedup at 8 cores vs. 1 core, but scaling degrades by 16 cores because DRAM bandwidth contention starts dominating — more cores competing for the same memory channels means each core's prefetches face longer latencies and more interference. The authors note adaptively throttling prefetch aggressiveness at high core counts as future work.</div></details>
+      <details><summary><span class="q">Q12</span>What's the biggest limitation the paper acknowledges?<span class="chev">▾</span></summary><div class="a">Everything is decided statically at compile time — there's no runtime feedback loop. This shows up concretely in BC (static scheduling can't adapt to which of 13 IMAs matters most at runtime) and in scalability (no adaptive throttling under bandwidth pressure at high core counts). The paper positions a dynamic, feedback-based extension as the natural next step.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>IMA (Indirect Memory Access)</b><span>A load whose address is itself the value read from another array: <code>x[a[i]]</code>. The paper's central object of study.</span></div>
+      <div class="term-def"><b>Local IMA</b><span>An IMA that fetches one element per index value, entirely within one loop level, e.g. <code>x[a[i]]</code>.</span></div>
+      <div class="term-def"><b>Global IMA</b><span>An IMA that uses an outer-loop-derived value as a base address, offset by an inner-loop variable: <code>x[a[i]+j]</code>.</span></div>
+      <div class="term-def"><b>Loop Dependence Graph (LDG)</b><span>Magellan's directed graph of load/induction-variable dependencies spanning multiple nested loop levels — what lets it detect global IMAs.</span></div>
+      <div class="term-def"><b>Nested-loop pattern</b><span>Stream-in, stream-out, or irregular — classifies how an outer loop's direction relates to its inner loop's, determining the prefetch strategy.</span></div>
+      <div class="term-def"><b>Inner-bound / inner-free / outer / opposite inner-free</b><span>Magellan's four prefetch strategies, each matched to one nested-loop pattern, trading prefetch coverage against instruction overhead.</span></div>
+      <div class="term-def"><b>Fault avoidance (allocation extension)</b><span>Statically enlarging an array's allocation by <code>prefetch_distance + ROB_size</code> so every possible prefetch address stays valid, without runtime bounds checks.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>SFI (Software Fault Isolation)</b><span>Bounds-checking every memory access explicitly. Measured cost: 31% more instructions, 28% slowdown on SpMV — the baseline Magellan's allocation trick avoids.</span></div>
+      <div class="term-def"><b>GEP (GetElementPtr)</b><span>The LLVM IR instruction computing an element address from a base pointer + offset; Magellan traces its base-address operand back to a <code>malloc</code>/<code>calloc</code> site.</span></div>
+      <div class="term-def"><b>ROB (Reorder Buffer)</b><span>Bounds how far speculative execution down a mispredicted branch can go; sizes the extra safety margin Magellan adds to an allocation (224 on Kabylake, 168 on Sandy Bridge).</span></div>
+      <div class="term-def"><b>Preheader / latch</b><span>A loop's entry value and exit-condition value for its induction variable — compared across unrolled iterations to detect the nested-loop pattern.</span></div>
+      <div class="term-def"><b>AliasSetTracker / Dominator Tree Analysis</b><span>LLVM analyses Magellan uses to track pointer aliasing and find the last store before a prefetched load, when the allocation site isn't immediately obvious.</span></div>
+      <div class="term-def"><b>SW Prefetch</b><span>Ainsworth &amp; Jones's 2019 compiler prefetcher for IMA — the closest prior software approach, limited to the current inner loop (inner-bound prefetching).</span></div>
+      <div class="term-def"><b>APT-GET</b><span>A profile-guided software prefetcher using outer prefetching, tuned via runtime profiling; beats SW Prefetch by 1.13× but is itself outperformed by Magellan.</span></div>
+      <div class="term-def"><b>DMP / IMP / Berti / IPCP / Event-trigger</b><span>Hardware (and one software-hardware co-designed) IMA/spatial prefetchers Magellan is benchmarked against on gem5; DMP is the strongest.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">Magellan vs. baselines, at a glance</div>
+      <div class="viz-kicker">averaged over 14 benchmarks unless noted</div>
+      <table class="tbl">
+        <thead><tr><th>Comparison</th><th>Metric</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr class="best"><td>vs. best software prefetcher</td><td>speedup</td><td class="mono">1.14× avg, up to 1.41×</td></tr>
+          <tr><td>vs. best software prefetcher</td><td>cache miss reduction</td><td class="mono">25%</td></tr>
+          <tr><td>vs. best software prefetcher</td><td>dynamic instruction reduction</td><td class="mono">14%</td></tr>
+          <tr><td>vs. non-prefetch baseline (Kabylake)</td><td>speedup</td><td class="mono">1.2× avg, up to 2.5×</td></tr>
+          <tr><td>vs. non-prefetch baseline (Sandy Bridge)</td><td>speedup</td><td class="mono">1.1× avg, up to 1.6×</td></tr>
+          <tr><td>vs. best hardware prefetcher (DMP)</td><td>speedup</td><td class="mono">1.7× vs. 1.8× — on par, no HW cost</td></tr>
+          <tr><td>Storage overhead</td><td>extended allocation</td><td class="mono">1486 B avg — 0.0036% of memory</td></tr>
+        </tbody>
+      </table>
+      <figcaption>All figures as reported in the paper's evaluation (§5); "on par" framing is the paper's own (§5.4).</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>LLVM IR and compiler passes <span class="diff med">medium</span></h4><div class="meta">explainer · 30–45 min</div><p>How an LLVM pass reads/rewrites IR (GEP, phi nodes, basic blocks) — the substrate Magellan's whole analysis runs on.</p></div>
+    <div class="read-item reveal"><h4>Software Fault Isolation <span class="diff easy">easy</span></h4><div class="meta">Wahbe et al., SOSP 1993</div><p>The classic bounds-checking technique Magellan's allocation-extension approach is built to avoid the cost of.</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Software Prefetching for Indirect Memory Accesses <span class="diff med">medium</span></h4><div class="meta">Ainsworth &amp; Jones · ACM TOCS · 2019</div><p>"SW Prefetch" — the direct predecessor and closest software baseline; its inner-bound-only detection scope is what Magellan's LDG generalizes past.</p></div>
+    <div class="read-item reveal"><h4>Apt-Get: Profile-Guided Timely Software Prefetching <span class="diff med">medium</span></h4><div class="meta">Jamilan, Khan, Ayers, Kasikci, Litz · EuroSys · 2022</div><p>The profile-guided outer-prefetching rival Magellan outperforms by 1.14× without any profiling step.</p></div>
+    <div class="read-item reveal"><h4>Differential-Matching Prefetcher for Indirect Memory Access (DMP) <span class="diff hard">hard</span></h4><div class="meta">Fu, Xia, Luo, Chen, Zhao, Ren · HPCA · 2024</div><p>The strongest hardware IMA prefetcher in the comparison — same lead author group; Magellan is the software-only answer to DMP's custom hardware.</p></div>
+    <div class="read-item reveal"><h4>IMP: Indirect Memory Prefetcher <span class="diff hard">hard</span></h4><div class="meta">Yu, Hughes, Satish, Devadas · MICRO · 2015</div><p>Early dedicated hardware IMA prefetcher exploiting arithmetic regularity in address histories — one of the harder hardware baselines.</p></div>
+    <div class="read-item reveal"><h4>Prodigy: Data-Indirect Irregular Workloads via HW-SW Co-Design <span class="diff hard">hard</span></h4><div class="meta">Talati et al. · HPCA · 2021</div><p>A software-annotated, hardware-executed alternative point in the design space between pure software (Magellan) and pure hardware (DMP/IMP) prefetching.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card" style="background:var(--paper-2);border-color:var(--line-strong)">
+      <p style="margin-bottom:.6em"><b>From the paper directly:</b> all percentages, speedups, storage figures, benchmark/dataset names, and system specs (Tables 1–3, Figs. 12–28) are quoted or recomputed from the ISCA'25 text and abstract. The 85.3% clamping figure, 89%/36% miss-reduction split, 1486 B / 0.0036% storage figure, and the +11%/+15% ablation numbers are all as stated in §1, §5.6, and §5.10.</p>
+      <p style="margin:0"><b>Framing added for this guide:</b> the map/tailor/escalator/tour-guide analogies, the "guardrail vs. toll booth" framing for fault avoidance, the arithmetic in Worked Example ③ (backing out the ~41 MB implied dataset size), and the compounding calculation in Worked Example ④ are original explanatory devices, not from the paper.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Fu, Xia, Yin, Nair, Lis, Ren, "Magellan: A High-Performance Loop-Guided Prefetcher for Indirect Memory Access" (ISCA '25)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PARTITION EXPLORER (inert here — no matching elements in this guide) ---- */
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Suboptimal.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
