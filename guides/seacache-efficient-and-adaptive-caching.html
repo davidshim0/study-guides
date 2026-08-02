@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<!-- SeaCache field guide — Efficient and Adaptive Caching for Sparse Accelerators (Li, Jiang, Gao, MICRO'25).
+     Palette: green = actual tensor data / efficient caching · honey = guide metadata (tensor A / gLFU counters)
+     · violet = SeaCache's own machinery (packing, virtual tags, adaptive sizing) · rust = the costly baseline (gLRU, LRU, fixed blocks). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Right-Sizing the Cache for Ragged Data — SeaCache, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D9901F; --honey-deep:#A66B10; --honey-soft:#F6E4BE;
+  --dram:#2F8F5B; --dram-soft:#DCF0E3;      /* green  = actual tensor data / efficient caching        */
+  --ltram:#6A4FC2; --ltram-soft:#EAE2F8;    /* violet = SeaCache's own machinery                      */
+  --optane:#C0453B; --optane-soft:#F6DCD8;  /* rust   = the costly baseline (gLRU pointers, LRU, fixed blocks) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(47,143,91,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(106,79,194,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,144,31,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(106,79,194,.05) 31px,rgba(106,79,194,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,144,31,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1a5636;font-size:.96rem}
+.primer .ready b{color:#12401f}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1a5636}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#42328f}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1a5636}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#12401f;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1a5636}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1a5636}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(47,143,91,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(106,79,194,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,144,31,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>MICRO 2025 · A Field Guide</span>
+    <h1>Give the cache to whatever <span class="swash">shape</span> the fiber is — not the shape the <span class="swash" style="color:var(--optane)">block</span> demands</h1>
+    <p class="lede">Sparse accelerators cache rows and columns of ragged length in fixed-size blocks, and evict them with a policy that needs future knowledge no general cache can have. SeaCache gets both right, cheaply.</p>
+    <div class="hero-meta">
+      <span>📄 "SeaCache" · Li, Jiang, Gao · Tsinghua</span>
+      <span>🎓 Written for readers who already know caches, tiering, and CXL</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧵</div>
+      <p><span class="ro">PACK &amp; SPLIT</span> fibers to fill every block exactly — then replace by <span class="ro">counting</span> future reuse, not by <span class="wo">chasing pointer chains</span>.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>What's domain-specific here</h2>
+      <p class="sub">You already know sets, ways, LRU, and why caches beat scratchpads for irregular access — the primers below skip that and go straight to what's specific to <em>sparse tensor</em> caching.</p>
+    </div>
+
+    <div class="subhead" style="margin-top:0">Quick glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>Fiber</b><span>A row or column of a sparse tensor in compressed form (CSR/CSC) — the natural unit of reuse, indexed by ID, not address.</span></div>
+      <div class="term-def"><b>SpMSpM</b><span>Sparse-sparse matrix multiplication, 𝐶=𝐴×𝐵 — the paper's main workload.</span></div>
+      <div class="term-def"><b>Gust / IP / OP</b><span>Gustavson's, Inner-Product, Outer-Product — the three loop orders (dataflows) for SpMSpM; SeaCache targets Gust by default.</span></div>
+      <div class="term-def"><b>Belady's Optimal</b><span>Evict the block used farthest in the future — provably best, usually impossible because the future is unknown.</span></div>
+      <div class="term-def"><b>gLRU / gLFU</b><span>Guided LRU / guided LFU — replacement guided by tensor 𝐴's structure, which reveals 𝐵's future reuse pattern.</span></div>
+      <div class="term-def"><b>Virtual tag</b><span>A cache-set slot with a counter but no data block — extra room to track future-reuse info for fibers not yet cached.</span></div>
+      <div class="term-def"><b>P&amp;S</b><span>Fiber packing &amp; splitting — SeaCache's mapping fix for variable fiber lengths vs. fixed block size.</span></div>
+      <div class="term-def"><b>Meta-tag</b><span>The tag field storing a fiber's ID directly (no physical address translation), as in X-Cache.</span></div>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Why fiber IDs replace physical addresses<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>In CSR/CSC, finding an element's physical address requires reading row-pointer metadata first. X-Cache skips that: it indexes the cache directly by fiber ID (row/column number), so a fiber that's cached needs zero metadata lookups — about 40% lower load-to-use latency in SpMSpM.</p>
+          <div class="ready"><b>Now you're ready:</b> SeaCache's tag array literally stores fiber IDs (split as Tag-H/Tag-L), not addresses — everything in Section 4.1 builds on this.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Why Belady's Optimal is achievable here at all<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>In Gust, which rows of 𝐵 get reused next is fully determined by the non-zero pattern of 𝐴 — walking column 𝑘 of 𝐴 tells you exactly when 𝐵𝑘 is needed again. That's "free" future knowledge general-purpose caches never get, and it's what lets a guided policy realize the true optimal.</p>
+          <div class="ready"><b>Now you're ready:</b> "guided" always means "guided by the other operand's structural metadata" — not a heuristic, but literal future information.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Why realizing that optimal is expensive (gLRU's actual cost)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Two ways to get gLRU: (1) precompute 𝐴's transpose offline and read it as-is — but transposing a sparse matrix costs up to 126% of the actual computation, and doubles online accesses to 𝐴; or (2) build the transpose on the fly with per-column linked lists of ~20-bit pointers, sized linearly in 𝐴's dimension 𝐾 (not its non-zero count) — potentially hundreds of kB to a few MB.</p>
+          <div class="ready"><b>Now you're ready:</b> gLRU's cost isn't the idea, it's the pointer-chain bookkeeping — that's exactly what SeaCache's gLFU replaces.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Why fixed cache blocks fight sparse fiber lengths<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Real matrices (SuiteSparse) show fiber lengths varying wildly — both across matrices and within one matrix. A block sized for short fibers wastes almost nothing per fiber but overflows on long ones (X-Cache, 16 B); a block sized for long fibers (SpArch, 576 B) wastes most of its space on short fibers. No single fixed size wins everywhere.</p>
+          <div class="ready"><b>Now you're ready:</b> this — not the replacement policy — is design goal 1, and it's solved independently by fiber packing &amp; splitting (Section 4.1).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Why scratchpads struggle with sparse data specifically<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A scratchpad's explicit, decoupled buffering is great when block sizes are predictable, but sparse fibers have irregular lengths that fragment scratchpad space, and — unlike a cache — a scratchpad has no cheap way to skip fetching a fiber it turns out never to need.</p>
+          <div class="ready"><b>Now you're ready:</b> SeaCache still beats an optimized scratchpad (Tailors) by 2.1× on average — caching's flexibility wins once its two weaknesses (mapping, replacement cost) are fixed.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>SeaCache in a nutshell</h2>
+      <p class="sub">Two problems, three fixes, and how they compose.</p>
+    </div>
+    <div class="prose">
+      <p>Sparse accelerators cache tensor fibers (rows/columns) by ID rather than address, which is fast but exposes two problems. First, fiber lengths vary drastically, so any single fixed cache block size either wastes space on short fibers or overflows on long ones. Second, the theoretically optimal replacement policy — <span class="mem-chip chip-lru">guided LRU (gLRU)</span> — is genuinely achievable in sparse tensor algebra (the structure of one operand predicts the other's future reuse), but implementing it needs either an expensive offline transpose or wide, dimension-sized pointer lists online.</p>
+      <p><strong>SeaCache</strong> fixes both, independently. <b>Fiber packing &amp; splitting</b> lets one fixed-size block hold several short fibers or one segment of a long one, so space utilization stays high regardless of length. <b>Guided LFU (gLFU)</b> swaps gLRU's wide recency pointers for narrow 4-bit reuse counters — nearly as accurate, far cheaper — and adds a few <b>virtual tags</b> per set (counter-only shadow slots) to track fibers not yet cached. Finally, because the counters need a prefetched window of the guiding tensor, a <b>two-phase adaptive mechanism</b> shares cache space between real data and this guide metadata, sized first from sparsity statistics, then tuned online with simulated annealing.</p>
+      <p><strong>The payoff:</strong> integrated together, SeaCache beats state-of-the-art sparse caches (InnerSP, SpArch, X-Cache) by <b>2.8× on average</b>, and an optimized scratchpad (Tailors) by <b>2.1×</b> — for roughly <b>6%</b> extra chip area and a <b>60.2%</b> energy cut versus InnerSP.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Fixed block size vs. variable fiber length is a <b>mapping</b> problem, separate from replacement — solved by packing short fibers together and splitting long ones across blocks.</li>
+        <li>Belady's Optimal is <em>achievable</em> in Gust-style SpMSpM (the other operand's structure is the future), but <b>gLRU</b>'s pointer-chain implementation is what's expensive, not the idea itself.</li>
+        <li><b>gLFU</b> replaces per-column linked lists (~20-bit pointers, ∝ dimension 𝐾) with per-column 4-bit counters (∝ 𝐾 too, but ~5× narrower) — and empirically performs as well or better.</li>
+        <li><b>Virtual tags</b> (counter-only shadow ways) recover most of the accuracy lost from not storing every counter.</li>
+        <li>Guide metadata and real data <b>share</b> the same cache; the split ratio is picked offline from sparsity, then adapted online by simulated annealing.</li>
+        <li>Net result: 2.8× vs. SOTA caches, 2.1× vs. an optimized scratchpad, ~6% area, 60.2% less energy than InnerSP.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">same 64-byte block, naive mapping vs. SeaCache's packing &amp; splitting</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> cached &amp; used data</span>
+        <span><i style="background:var(--ink-faint)"></i> wasted space (short fiber, no packing)</span>
+        <span><i style="background:var(--optane)"></i> overflow — discarded, becomes a miss</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="Naive fixed block mapping wastes or overflows vs SeaCache packing and splitting">
+        <defs>
+          <pattern id="hatch" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+            <rect width="8" height="8" fill="#EFE7D6"/><line x1="0" y1="0" x2="0" y2="8" stroke="#B7AC94" stroke-width="3"/>
+          </pattern>
+        </defs>
+        <text x="20" y="26" font-family="JetBrains Mono" font-size="11" fill="#6E6456">NAIVE FIXED 64B BLOCKS (InnerSP style)</text>
+        <g font-family="JetBrains Mono" font-size="10.5" fill="#6E6456">
+          <rect x="40" y="42" width="200" height="60" rx="6" fill="url(#hatch)" stroke="#D8C8AC" stroke-width="1.4"/>
+          <rect x="40" y="42" width="55" height="60" rx="6" fill="#2F8F5B"/>
+          <text x="67" y="118" text-anchor="middle">short fiber f1 (waste)</text>
+          <rect x="290" y="42" width="200" height="60" rx="6" fill="url(#hatch)" stroke="#D8C8AC" stroke-width="1.4"/>
+          <rect x="290" y="42" width="80" height="60" rx="6" fill="#2F8F5B"/>
+          <text x="330" y="118" text-anchor="middle">short fiber f2 (waste)</text>
+          <rect x="540" y="42" width="200" height="60" rx="6" fill="#2F8F5B" stroke="#D8C8AC" stroke-width="1.4"/>
+          <rect x="705" y="42" width="35" height="60" rx="4" fill="#C0453B" opacity="0.85"/>
+          <text x="640" y="118" text-anchor="middle" fill="#332C24">long fiber f3</text>
+          <text x="705" y="30" text-anchor="middle" fill="#9a3a22">overflow → miss</text>
+        </g>
+        <text x="20" y="160" font-family="JetBrains Mono" font-size="11" fill="#6E6456">SEACACHE: FIBER PACKING &amp; SPLITTING</text>
+        <g font-family="JetBrains Mono" font-size="10.5" fill="#fff">
+          <rect x="40" y="176" width="200" height="60" rx="6" fill="#2F8F5B"/>
+          <line x1="106" y1="176" x2="106" y2="236" stroke="#fff" stroke-width="2" opacity="0.7"/>
+          <line x1="173" y1="176" x2="173" y2="236" stroke="#fff" stroke-width="2" opacity="0.7"/>
+          <text x="140" y="253" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#332C24">1 block packs f1+f2+f4 (Cnt=10)</text>
+          <rect x="290" y="176" width="200" height="60" rx="6" fill="#2F8F5B"/>
+          <text x="390" y="209" text-anchor="middle">f3 segment 0</text>
+          <rect x="540" y="176" width="200" height="60" rx="6" fill="#2F8F5B"/>
+          <text x="640" y="209" text-anchor="middle">f3 segment 1 (adj. ID)</text>
+          <text x="390" y="253" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#332C24">long fiber f3 fully cached, split across 2 blocks</text>
+        </g>
+        <path d="M400 130 v30" stroke="#6A4FC2" stroke-width="2.5" marker-end="url(#arrowhead)"/>
+        <defs><marker id="arrowhead" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6A4FC2"/></marker></defs>
+        <text x="410" y="148" font-family="Fraunces" font-size="13" font-weight="600" fill="#6A4FC2">re-map by fiber ID, not address</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> the naive mapping either strands unused space (f1, f2) or discards the tail of a long fiber as an overflow miss (f3). SeaCache packs f1, f2, and part of f4 into one 64-byte block (2 Cnt bits mark 3 fibers, 16 Extra bits give their offsets) and splits f3 cleanly across two blocks with an adjusted ID. Same hardware block, far higher utilization — packing still needs contiguous IDs and splitting still has a segment-length ceiling. (Paper §2.3.1, §4.1, Figs. 1–3)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">two problems → three independent fixes → integrated result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem 1</div><div class="nd">Fixed blocks waste space on short fibers, overflow on long ones</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Fix: P&amp;S</div><div class="nd">Pack multiple short fibers per block; split long fibers across blocks (1.80×)</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem 2</div><div class="nd">gLRU is optimal but needs wide, dimension-sized pointer lists</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Fix: gLFU + vtags</div><div class="nd">Narrow 4-bit counters + shadow tag slots for future fibers (1.10×)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Fix: adaptive prefetch size</div><div class="nd">Offline sparsity estimate, then online simulated annealing (1.38×)</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six pictures, and where each snaps</div>
+      <h2>How to think about SeaCache</h2>
+      <p class="sub">Read in any order. Each ends with the point where the picture stops matching the hardware.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="30" width="108" height="40" rx="4" fill="#DCF0E3" stroke="#2F8F5B" stroke-width="2.5"/>
+          <rect x="20" y="34" width="22" height="32" rx="2" fill="#2F8F5B"/><rect x="46" y="34" width="14" height="32" rx="2" fill="#2F8F5B"/>
+          <rect x="64" y="34" width="30" height="32" rx="2" fill="#2F8F5B"/>
+          <path d="M100 34 h20 M100 66 h20" stroke="#C0453B" stroke-width="2.5" stroke-dasharray="3 2"/>
+        </svg></div>
+        <span class="term">The mapping fix · Fiber packing &amp; splitting</span>
+        <h3>Packing a moving truck</h3>
+        <p>Boxes come in wildly different sizes. Load them one-per-shelf and you waste most shelves on small boxes and can't fit the big ones at all. A good mover stacks several small boxes on one shelf and splits an oversized item across two — SeaCache does exactly this with fibers and 64-byte blocks (2 Cnt bits + 16 Extra bits of "packing list" per block, ~3.4% overhead).</p>
+        <div class="breaks"><b>Where it breaks:</b> a mover can rearrange freely; SeaCache can only pack fibers with <i>contiguous</i> IDs sharing a set, and can only split a fiber into as many segments as the 16-bit Extra field can uniquely tag (~21,845 elements/fiber before limits kick in).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 20 h30 M20 30 h20 M20 40 h25" stroke="#C0453B" stroke-width="3" stroke-linecap="round"/>
+          <path d="M90 30 a20 20 0 1 1 0 0.1" fill="none" stroke="#6A4FC2" stroke-width="3"/>
+          <text x="90" y="35" text-anchor="middle" font-family="monospace" font-size="14" font-weight="700" fill="#6A4FC2">7</text>
+        </svg></div>
+        <span class="term">The replacement fix · gLRU → gLFU</span>
+        <h3>A guest list vs. a headcount</h3>
+        <p>To know who to seat last, you could keep a full ordered guest list per table (exact arrival order, gLRU's linked lists) — precise, but every list is as long as the invite pool. Or you could just keep a headcount per table of who's still expected (gLFU's 4-bit counters) — much smaller, and just as good for deciding who to bump.</p>
+        <div class="breaks"><b>Where it breaks:</b> a headcount forgets <i>order</i>, only volume — that's literally why gLFU is no longer provably optimal like gLRU, even though it measures similarly well in practice (idealized miss rates of 15.9% vs. 16.5%).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="24" width="100" height="48" rx="6" fill="#EAE2F8" stroke="#6A4FC2" stroke-width="2.5"/>
+          <rect x="24" y="28" width="18" height="40" rx="2" fill="#6A4FC2" opacity="0.35"/>
+          <rect x="46" y="28" width="18" height="40" rx="2" fill="#6A4FC2" opacity="0.35"/>
+          <text x="33" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a2c78">3</text>
+          <text x="55" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a2c78">1</text>
+        </svg></div>
+        <span class="term">Extra tracking · Virtual tags</span>
+        <h3>A waitlist with no seats</h3>
+        <p>A restaurant tracks not just seated parties but a waitlist — names and party sizes with no table assigned yet. That's a virtual tag: a slot in the cache set with a counter but no data block, tracking a fiber's expected future importance <i>before</i> it earns a real slot. Skipping this made miss rates 2.6× worse — most of what matters about the future concerns things not yet cached.</p>
+        <div class="breaks"><b>Where it breaks:</b> a waitlist can be arbitrarily long; SeaCache only affords ~4 virtual tags per set — diminishing returns kick in fast (Fig. 5: 0→2→4→8→16 virtual tags), so more isn't free area for little extra accuracy.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="60" width="100" height="16" rx="4" fill="#F6E4BE" stroke="#D9901F" stroke-width="2"/>
+          <rect x="20" y="60" width="30" height="16" rx="4" fill="#2F8F5B"/>
+          <path d="M35 54 v-24 M35 30 l-6 8 M35 30 l6 8" stroke="#332C24" stroke-width="2" fill="none" stroke-linecap="round"/>
+          <text x="35" y="24" text-anchor="middle" font-family="monospace" font-size="9" fill="#332C24">1/16</text>
+        </svg></div>
+        <span class="term">Sharing space · Two-phase adaptive sizing</span>
+        <h3>A shared kitchen counter</h3>
+        <p>Prep space and plated food compete for the same counter. Too little prep space and you can't season the next dish (small prefetch → inaccurate future info); too much and there's nowhere to put finished plates (large prefetch → starves the data cache). SeaCache first eyeballs a starting split from how "busy" the recipe is (offline sparsity estimate), then nudges it while cooking based on what's actually going wrong (online simulated annealing).</p>
+        <div class="breaks"><b>Where it breaks:</b> a cook adjusts continuously and intuitively; SeaCache only re-checks every 1/500 of total work and accepts worse splits early on purpose (high "temperature"), which is deliberate — annealing, not a thermostat.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="24" fill="none" stroke="#6A4FC2" stroke-width="2.5"/>
+          <circle cx="45" cy="48" r="3" fill="#332C24"/>
+          <path d="M45 48 L60 30" stroke="#C0453B" stroke-width="2" stroke-linecap="round"/>
+          <path d="M45 48 L58 55" stroke="#2F8F5B" stroke-width="2" stroke-linecap="round"/>
+          <path d="M100 20 q10 20 0 40" stroke="#D9901F" stroke-width="2" fill="none" stroke-dasharray="3 3"/>
+        </svg></div>
+        <span class="term">Global search · Simulated annealing</span>
+        <h3>Hiking downhill with occasional detours uphill</h3>
+        <p>Figure 6's miss-rate-vs-prefetch-size curve has multiple local dips, so blindly walking to the nearest low point can strand you in a shallow one. Simulated annealing occasionally accepts an uphill (worse) move early on — cooling as it goes (𝑇(𝑘)=0.2×0.99^𝑘) — so it can escape shallow local minima and settle near the true best split, typically within 25 iterations and 95% of optimal.</p>
+        <div class="breaks"><b>Where it breaks:</b> a hiker can backtrack any distance; SeaCache only nudges the prefetch size incrementally each round, so it explores the neighborhood of its current split, not the whole landscape at once.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="20" rx="4" fill="#DCF0E3" stroke="#2F8F5B" stroke-width="2"/>
+          <rect x="20" y="56" width="100" height="20" rx="4" fill="#F6E4BE" stroke="#D9901F" stroke-width="2"/>
+          <text x="70" y="44" text-anchor="middle" font-family="monospace" font-size="10" fill="#1a5636">actual B data</text>
+          <text x="70" y="70" text-anchor="middle" font-family="monospace" font-size="10" fill="#6e4a09">guide metadata (A)</text>
+        </svg></div>
+        <span class="term">Same footprint · No dedicated buffer</span>
+        <h3>One drawer, two labels</h3>
+        <p>Rather than build a second, separate SRAM structure to hold prefetched guide data (as an offline gLRU design effectively does by pinning it all on-chip), SeaCache partitions each bank's data array between actual 𝐵 fiber data and prefetched 𝐴 guide metadata, distinguished only by a bit of state — gLFU's reuse counters and virtual tags live separately, as extra bits alongside the tags.</p>
+        <div class="breaks"><b>Where it breaks:</b> a labeled drawer never runs out mid-use; the shared cache genuinely trades one type of content for the other, which is exactly why getting the split ratio right (design goal 3) matters so much.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's mechanisms rebuilt as diagrams.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Fiber-ID mapping, and where it strains</h3>
+      <p>X-Cache indexes the cache directly by fiber ID, skipping address translation. But a fixed block size can't track real fiber lengths: X-Cache's tiny 16 B blocks waste little on short fibers but truncate long ones; SpArch's 576 B blocks fit long fibers but leave short ones mostly empty. Neither adapts to a workload's actual (and internally varying) length distribution.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Tag fields for packing and splitting</div>
+      <div class="viz-kicker">2 Cnt bits + 16 Extra bits per 64-byte block</div>
+      <svg class="full" viewBox="0 0 700 210" role="img" aria-label="Tag array fields supporting fiber packing and splitting">
+        <g font-family="JetBrains Mono" font-size="11">
+          <rect x="20" y="30" width="120" height="40" rx="6" fill="#EAE2F8" stroke="#6A4FC2" stroke-width="1.5"/><text x="80" y="54" text-anchor="middle" fill="#3a2c78">Tag-H / Tag-L</text>
+          <rect x="150" y="30" width="80" height="40" rx="6" fill="#F6E4BE" stroke="#D9901F" stroke-width="1.5"/><text x="190" y="54" text-anchor="middle" fill="#6e4a09">Cnt (2 b)</text>
+          <rect x="240" y="30" width="120" height="40" rx="6" fill="#F6E4BE" stroke="#D9901F" stroke-width="1.5"/><text x="300" y="54" text-anchor="middle" fill="#6e4a09">Extra (16 b)</text>
+          <rect x="370" y="30" width="150" height="40" rx="6" fill="#DCF0E3" stroke="#2F8F5B" stroke-width="1.5"/><text x="445" y="54" text-anchor="middle" fill="#1a5636">Data (64 B)</text>
+        </g>
+        <text x="20" y="100" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Packing mode (Cnt=10₂ → 3 fibers)</text>
+        <g font-family="JetBrains Mono" font-size="10.5" fill="#6E6456">
+          <text x="20" y="122">Tag: 0x00|7 → fibers 0x00337, 0x00338, 0x00339 (contiguous IDs)</text>
+          <text x="20" y="140">Extra decodes to 3 offsets: 0, 5, 10 (positions within the 64 B block)</text>
+        </g>
+        <text x="20" y="170" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Splitting mode (Cnt=00₂, long fiber 0x12330)</text>
+        <g font-family="JetBrains Mono" font-size="10.5" fill="#6E6456">
+          <text x="20" y="192">Segment 0 → set 0x33 (Extra = segment count = 2). Segment 1 → ID+16 → set 0x34 (Extra = low 16 b of original ID, checked on access)</text>
+        </g>
+      </svg>
+      <figcaption><b>Fuzzy tag matching:</b> a request tag is a hit if it falls in [Tag, Tag+Cnt] for some way — so accessing fiber 0x00338 above matches the packed block even though its own tag isn't stored. (Paper §4.1, Fig. 3)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Guided LFU — counting instead of pointing</h3>
+      <p>Gust's dependency (which 𝐵𝑘 row is needed next depends on column 𝑘 of 𝐴) is exploited by prefetching a sliding window of 𝐴 elements into a guide buffer. gLRU reorganizes that window into per-column <i>linked lists</i> ordered by row ID — accurate, but each column needs head/tail pointers plus one next-pointer per buffered element, all ~20 bits wide and scaling with dimension 𝐾. gLFU instead keeps one small <b>counter per column</b>: incremented when an 𝐴 element enters the prefetch window, decremented when it's consumed. 4 bits per counter is enough — sparsity keeps counts low, and saturation on the rare high-count fiber is harmless since it's already unlikely to be evicted.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Sliding the prefetch window</div>
+      <div class="viz-kicker">gLFU per-column counters, before/after one slide event</div>
+      <svg class="full" viewBox="0 0 700 190" role="img" aria-label="gLFU counters updating as the prefetch window slides">
+        <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Before: element c (column k=1) about to be consumed; g (column k=2) about to be prefetched</text>
+        <g font-family="JetBrains Mono" font-size="12">
+          <rect x="20" y="42" width="150" height="46" rx="8" fill="#EAE2F8" stroke="#6A4FC2" stroke-width="1.3"/><text x="95" y="62" text-anchor="middle" fill="#3a2c78">k=0</text><text x="95" y="79" text-anchor="middle" font-weight="700">1</text>
+          <rect x="180" y="42" width="150" height="46" rx="8" fill="#F6E4BE" stroke="#D9901F" stroke-width="1.5"/><text x="255" y="62" text-anchor="middle" fill="#6e4a09">k=1 (c)</text><text x="255" y="79" text-anchor="middle" font-weight="700">2 → 1</text>
+          <rect x="340" y="42" width="150" height="46" rx="8" fill="#F6E4BE" stroke="#D9901F" stroke-width="1.5"/><text x="415" y="62" text-anchor="middle" fill="#6e4a09">k=2 (g)</text><text x="415" y="79" text-anchor="middle" font-weight="700">1 → 2</text>
+          <rect x="500" y="42" width="150" height="46" rx="8" fill="#EAE2F8" stroke="#6A4FC2" stroke-width="1.3"/><text x="575" y="62" text-anchor="middle" fill="#3a2c78">k=3</text><text x="575" y="79" text-anchor="middle" font-weight="700">1</text>
+        </g>
+        <text x="20" y="112" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">column k=1 decrements (c leaves the window) · column k=2 increments (g enters)</text>
+        <text x="20" y="150" font-family="Fraunces" font-size="13" font-weight="600" fill="#332C24">On the next replacement, k=2's row 𝐵₂ now looks more valuable than k=1's 𝐵₁ — evict 𝐵₁'s block first.</text>
+      </svg>
+      <figcaption><b>The decrement piggybacks on the actual access</b> to c's fiber, so it costs no extra cache probe; only the increment (prefetching g) needs a separate tag-array-only access — which is why SeaCache adds a second tag-array port. (Paper §4.2, Fig. 4, illustrative counts)</figcaption>
+    </figure>
+
+    <div class="callout warn"><span class="ic">⚠</span><div><b>Without virtual tags, this degrades badly.</b> A counter can only live where a fiber already has a cache slot — but the fibers that matter most for a <i>future</i> decision are often not yet cached. Skipping virtual tags entirely raised miss rates 2.6× over the idealized (infinite-metadata) gLFU. Adding just 4 virtual tags per 16-way set (160 extra bits/set) recovers most of that gap.</div></div>
+
+    <div class="prose">
+      <h3>3 · Two-phase adaptive prefetch sizing</h3>
+      <p>The guide buffer for 𝐴 shares space with the 𝐵 data cache, so its size is a real tradeoff: too small and many columns have no counter at all (zero-information); too large and it starves the data cache <i>and</i> exceeds what gLFU's counters (plus virtual tags) can hold, discarding useful increments.</p>
+      <pre class="sketch"><span class="cm">// Offline: estimate from B's average non-zero row length</span>
+nzlB = nnz_B / (K × (J / T_J))
+prefetch_size = max(1 / nzlB, <span class="hl">1/1024</span>)      <span class="cm">// floor: never below 0.1% of cache</span>
+
+<span class="cm">// Online, every ~1/500 of total MACs:</span>
+<span class="kw">if</span> discard_rate &gt; 20% <span class="kw">and</span> miss_rate &lt; 20%: shrink prefetch window
+<span class="kw">elif</span> discard_rate &lt; 20% <span class="kw">and</span> miss_rate &gt; 20%: grow prefetch window
+<span class="kw">else</span>: perturb size; accept if <span class="hl">P(k,ΔM) = exp(−ΔM / T(k))</span> &gt; random()
+<span class="cm">// T(k) = 0.2 × 0.99^k — accepts worse moves early, converges within ~25 iterations</span></pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Two independent signals, not one.</b> The <b>discard rate</b> (dropped counter increments) says "too big"; the <b>miss rate</b> on real accesses lacking any counter says "too small." Neither alone would find the right size for both dense matrices (which want ~1/16 or less) and highly sparse ones (which want much more).</div></div>
+    </div>
+
+    <!-- INTERACTIVE: prefetch-size explorer -->
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: pick a matrix, find its best prefetch size</div>
+      <div class="viz-kicker">drag to change how much cache goes to guide metadata (of 128ths, as in Fig. 6)</div>
+      <div class="part-viz">
+        <div>
+          <div class="ways-strip" id="waysStrip"></div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">prefetch size (n/128):</span>
+            <input type="range" min="0" max="10" value="2" id="partRange">
+            <span class="mono" id="partRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">4/128</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-set="3">Paper's static best (1/16 = 8/128)</button>
+            <button class="tbtn" data-set="dense">Dense matrix (mouse_gene-like)</button>
+            <button class="tbtn" data-set="sparse">Sparse matrix (af_shell9-like)</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">miss rate<b id="pVpr">—</b></div>
+            <div class="pstat">discard rate (proxy)<b id="pEq">—</b></div>
+            <div class="pstat">effective quality<b id="pTot">—</b></div>
+          </div>
+          <div class="pverdict sub" id="pVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>What you'll find:</b> the dense matrix's curve bottoms out near a small prefetch size (little metadata needed, most space should be data), while the sparse matrix needs a much larger one (many columns are empty, need to look farther ahead). A single static choice can't win both — which is why the adaptive mechanism exists. (Miss-rate curves are illustrative, shaped to match the trends described for Fig. 6.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Putting it together</h3>
+      <p>A <b>prefetch controller</b> slides the guide window and runs the two-phase size selection; a <b>fiber iterator</b> per PE decodes packed/split blocks back into fibers; the cache itself carries the extra Cnt/Extra bits, per-block counters, virtual tags, and a second tag-array port. All three techniques are independent and orthogonal to the PE array — they apply equally to other dataflows (SpArch's condensed OP) and other tensor kernels (SpMM, MS-BFS), and compose with dynamic tiling schemes without change.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations straight from the paper's own figures — overhead, limits, and how the three techniques compose.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Fiber packing/splitting overhead — 3.4%</h3>
+      <p style="color:var(--ink-soft)">Each 64-byte block gets 2 Cnt bits + 16 Extra bits, on top of a normal ~20-bit tag. What's the relative area cost?</p>
+      <ol class="seq">
+        <li><b>Baseline block cost</b> = tag + data = 20 bits + 64 bytes × 8 bits = 20 + 512 = <b>532 bits</b>.</li>
+        <li><b>Added bits</b> = 2 (Cnt) + 16 (Extra) = <b>18 bits</b>.</li>
+        <li><b>Overhead</b> = 18 / (20 + 64×8) = 18 / 532 ≈ <b>3.4%</b> — matching the paper's own figure exactly.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> because block size can now grow (64 B, not X-Cache's tiny 16 B) without wasting space on short fibers, the 3.4% tax buys back both the packing gain (1.80×) and the ability to use fewer, larger banks.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② The segment limit for fiber splitting</h3>
+      <p style="color:var(--ink-soft)">The 16-bit Extra field disambiguates a split segment from a same-tag fiber by storing the low 16 bits of the original ID. How long can a fiber get before this aliases?</p>
+      <ol class="seq">
+        <li><b>Aliasing condition:</b> two segments collide only if they differ by a multiple of 2¹⁶ = 65536 in ID, which (with 4-bit Tag-L shifts) requires ≥ 4096 blocks of separation.</li>
+        <li><b>4096 blocks × 64 bytes/block</b> = <b>256 kB</b> of fiber data before risk of collision.</li>
+        <li><b>Each element</b> = 64-bit value + 32-bit coordinate = <b>96 bits</b>.</li>
+        <li><b>Elements per fiber limit</b> = 256×1024×8 bits / 96 bits ≈ <b>21,845 elements</b> — comfortably above nearly every row/column in SuiteSparse, and moot anyway once tiling shortens fibers.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is a real but practically irrelevant limit: it only bites on single unsplit fibers longer than 21K non-zeros, which tiling naturally avoids by chopping long rows into shorter per-tile fibers.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Why virtual tags matter so much: the 2.6× gap</h3>
+      <p style="color:var(--ink-soft)">Figure 5 shows "gLFU w/ 0 vtag" with miss rates 2.6× worse than the idealized (unlimited-metadata) gLFU. Where does that gap come from?</p>
+      <ol class="seq">
+        <li><b>Idealized gLFU</b> assumes every column's counter is tracked, cached or not — 15.9% average miss rate.</li>
+        <li><b>With 0 virtual tags</b>, a counter can only exist for a column whose fiber is already occupying a real cache way.</li>
+        <li><b>But the columns that most need tracking</b> are exactly those about to become important — i.e., not yet cached. Those counters simply vanish.</li>
+        <li><b>Result:</b> replacement decisions are made mostly blind to imminent future reuse, and miss rate jumps 2.6× — until 4 virtual tags per set recover most of the idealized accuracy at ~1.8% extra bits/set.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the "guided" part of gLFU is only as good as its ability to track fibers <i>before</i> they're cached — virtual tags are not an optimization, they're what makes gLFU's guidance real.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Composing the three techniques: 1.80× × 1.10× × 1.38×</h3>
+      <p style="color:var(--ink-soft)">The paper reports each technique's individual contribution on top of a "Base" design (fiber-ID mapping + plain LRU). Do they simply multiply to the reported 2.8× headline?</p>
+      <ol class="seq">
+        <li><b>Fiber packing &amp; splitting</b> alone: <b>1.80×</b> over Base.</li>
+        <li><b>+ gLFU with virtual tags</b> (adaptive size not yet applied): <b>1.10×</b> further improvement over the P&amp;S-only design.</li>
+        <li><b>+ Two-phase adaptive prefetch sizing</b>: <b>1.38×</b> further improvement, i.e. 1.12× over the best static size (1/16) alone.</li>
+        <li><b>Compounding:</b> 1.80 × 1.10 × 1.38 ≈ <b>2.73×</b> over Base — in the same ballpark as, though not identical to, the headline "2.8× over SOTA cache designs," since the 2.8× figure compares against different (non-Base) prior designs (InnerSP/SpArch/X-Cache), not against SeaCache's own Base.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div><b>Reading Figure 10 vs. Figure 7 carefully:</b> the ablation (Fig. 10) isolates SeaCache's own techniques against its own baseline; the headline comparison (Fig. 7) is against three <i>different</i> prior accelerators. Both tell a consistent story, but they aren't the same denominator — worth checking whenever a paper reports both an ablation and a SOTA comparison.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">X-Cache uses tiny 16-byte blocks. You'd expect it to badly underperform InnerSP's 64-byte blocks on matrices with long fibers. The paper found the gap smaller than expected — why?</div>
+      <details><summary>Show answer</summary><div class="ans">Because <i>neither</i> fixed size actually handles long fibers well — a 64-byte block still overflows on a genuinely long fiber, just at a higher length threshold than 16 bytes. Both designs discard the tail of long fibers as misses; X-Cache just does it sooner. The real fix isn't "pick a bigger fixed size," it's removing the fixed-size constraint altogether via packing and splitting.<span class="mis">Misconception: that block size alone determines how well long fibers are served. Any single fixed size eventually overflows — only variable mapping (P&amp;S) actually solves it.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">A 64-byte block normally costs 20 (tag) + 512 (data) = 532 bits. SeaCache adds 2 Cnt bits and 16 Extra bits. What's the percentage overhead, and does it change if you also add 4 virtual tags per 16-way set?</div>
+      <details><summary>Show answer</summary><div class="ans">P&amp;S alone: 18/532 ≈ <b>3.4%</b>. Adding 4 virtual tags costs ~160 bits per 16-way set (20 bits × 4 tag-only ways + 4-bit counters × 20 total ways); relative to a full set's ~8800 bits (16 × 550 bits with P&amp;S already included), that's another ~1.8%. Combined, the paper reports the total as about <b>5.3%</b> more bits — the two overheads compound rather than simply add, but the difference is small at this scale.<span class="mis">Misconception: that stacking overheads always sum linearly. They compound multiplicatively (1.034 × 1.018 ≈ 1.053); it happens to look additive here only because both percentages are small.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Figure 5 shows idealized gLFU (15.9% miss rate) slightly beating idealized gLRU (16.5%), even though gLRU is the one that's "provably optimal." How is that possible?</div>
+      <details><summary>Show answer</summary><div class="ans">"Provably optimal" (Belady's) assumes <i>unlimited</i> knowledge of the future. Both idealized gLRU and idealized gLFU in this comparison are still limited by the same finite prefetch window of tensor 𝐴 — gLRU's reuse-distance ordering degrades in a way that a simple frequency count doesn't, when the true next-reuse event falls outside that finite window. So within a bounded lookahead, "recency of next use" and "count of future uses" aren't guaranteed to rank the same, and empirically counting edges out ordering here.<span class="mis">Misconception: that gLRU's theoretical optimality guarantees it wins any head-to-head comparison. Optimality is conditioned on full future knowledge; with a finite prefetch window, that guarantee no longer applies.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Why does gLRU's online (non-transposed) implementation cost scale with the tensor dimension 𝐾, rather than with the number of non-zeros?</div>
+      <details><summary>Show answer</summary><div class="ans">Because gLRU needs a head and tail pointer for <i>every column</i> — even columns with zero prefetched non-zeros still need a (null) head/tail entry to check against — plus one next-pointer per buffered non-zero element. The head/tail structure is sized to 𝐾 (or the tiled 𝑇𝐾), not to the sparsity of the data; a very sparse but wide matrix (large 𝐾, few non-zeros) still pays for 𝐾 pointers it barely uses. gLFU's counters are also sized to 𝐾, but each is only 4 bits instead of ~20, so the fixed 𝐾-proportional cost shrinks roughly 5×.<span class="mis">Misconception: that a "guided" policy's cost scales with how much data there is. It scales with how many possible categories (columns) exist to track, which is a structural property of the tensor shape, not its density.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why does SpArch, which also uses guided replacement, perform poorly on matrices like ldoor and dielFilterV2real specifically?</div>
+      <details><summary>Show answer</summary><div class="ans">These are very large matrices whose guide metadata (head/tail + linked-list pointers, sized ∝ 𝐾) can exceed the entire cache capacity at the tile size that would otherwise give good data reuse. SpArch is forced to shrink the tile size to keep metadata under roughly half the cache, but smaller tiles mean worse data reuse and more redundant off-chip accesses — the "fix" for the metadata problem directly undermines the reuse the tiling was meant to provide.<span class="mis">Misconception: that any amount of guide metadata is worth it if the policy is more accurate. Past a point, the metadata's own footprint starts starving the very data cache it's supposed to help.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 6 · medium</span>
+      <div class="qtext">Why would a single, globally fixed prefetch size (say, always 1/16 of the cache) not work well across all matrices?</div>
+      <details><summary>Show answer</summary><div class="ans">Dense-ish matrices have a high data-to-metadata ratio: a small prefetch window already lets most columns find a non-zero quickly, so a bigger window just steals cache space from real data (e.g. mouse_gene, nd24k want small sizes). Highly sparse matrices need to look much farther ahead before a column shows any non-zero at all, so a small fixed window leaves most counters at zero and uninformative (e.g. af_shell9-like matrices want larger sizes). One size trades one group's performance for the other's — which is exactly why the paper found 1/16 the best <i>static average</i>, but still 1.12× worse than adapting per matrix.<span class="mis">Misconception: that "best on average" means "good for everyone." A single static choice can be measurably suboptimal for the specific matrix you actually run.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">Why does the two-phase mechanism use simulated annealing rather than simple hill-climbing (always move toward lower miss rate)?</div>
+      <details><summary>Show answer</summary><div class="ans">Figure 6 shows the miss-rate-vs-prefetch-size curve can have multiple local minima for a given matrix. Pure hill-climbing would stop at whichever local dip it reaches first, which may not be the global best. Simulated annealing deliberately accepts some worse moves early (high temperature, T(k)=0.2×0.99^k), letting it hop out of a shallow local minimum before the acceptance probability cools toward zero and it commits to refining the best region found.<span class="mis">Misconception: that greedily taking the locally best move is always safe for parameter tuning. It's only safe if the objective is convex (single minimum); non-convex curves need some willingness to temporarily get worse.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 8 · easy</span>
+      <div class="qtext">For an extremely sparse matrix like p2p-Gnutella08 (very short fibers, few non-zeros per row), which of SeaCache's three techniques matters least, and why?</div>
+      <details><summary>Show answer</summary><div class="ans">Fiber packing likely matters most (very short fibers waste the most space in any fixed block), while the exact replacement policy matters less — with so few non-zeros, even plain LRU or X-Cache's simple approach already achieves relatively low miss rates on these matrices, because there's little data to misjudge. The paper's own results show X-Cache and InnerSP both do comparatively well on p2p-Gnutella08 and p2p-Gnutella31 specifically, versus struggling elsewhere.<span class="mis">Misconception: that SeaCache's gains are uniform across all matrices. Each technique's payoff depends on the sparsity pattern, and extremely sparse matrices are where the mapping fix (not the replacement fix) does most of the work.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Twelve questions newcomers ask most.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly is a "fiber," and why not just call it a cache line?<span class="chev">▾</span></summary><div class="a">A fiber is a full row or column of a sparse tensor in compressed form — a variable-length sequence of non-zero (coordinate, value) pairs. It's the natural unit of reuse in sparse tensor algebra, but unlike a cache line, its length isn't fixed, which is the entire mapping problem SeaCache solves.</div></details>
+      <details><summary><span class="q">Q2</span>Is SeaCache a new dataflow or accelerator design?<span class="chev">▾</span></summary><div class="a">No — it only modifies the on-chip cache (mapping + replacement + capacity sharing), and is explicitly orthogonal to the PE array design and dataflow choice. It's evaluated mainly with the Gustavson's dataflow but also shown to work with condensed Outer Product (SpArch's dataflow).</div></details>
+      <details><summary><span class="q">Q3</span>Why is Belady's Optimal achievable here when it's usually theoretical?<span class="chev">▾</span></summary><div class="a">In SpMSpM with Gustavson's dataflow, which 𝐵 rows get reused, and when, is fully determined by the non-zero pattern of the other operand, 𝐴 — which is already known (it's the input data, not a prediction). Reading ahead in 𝐴's structure literally reveals the future, something general-purpose caches never have access to.</div></details>
+      <details><summary><span class="q">Q4</span>If gLRU realizes that optimal, why replace it with gLFU at all?<span class="chev">▾</span></summary><div class="a">Not because gLRU is inaccurate, but because implementing it is expensive: either an offline transpose (up to 126% extra compute, unless amortized over reuse) or online per-column linked lists whose pointers scale with the tensor's dimension 𝐾 at ~20 bits each. gLFU replaces those pointers with 4-bit counters — about 5× narrower — while measuring empirically about as well.</div></details>
+      <details><summary><span class="q">Q5</span>What's the tradeoff for giving up gLRU's optimality guarantee?<span class="chev">▾</span></summary><div class="a">gLFU is no longer provably optimal — a frequency count can't fully capture ordering information a linked list preserves. In practice, on the evaluated matrices, idealized gLFU (15.9% miss rate) performed at least as well as idealized gLRU (16.5%) under the same finite prefetch window, so the practical gap is small or even favors gLFU here.</div></details>
+      <details><summary><span class="q">Q6</span>Why do virtual tags matter so much?<span class="chev">▾</span></summary><div class="a">A counter can only exist where a fiber has a cache slot. Without virtual tags, the counters for fibers not yet cached — often exactly the ones that matter most for an upcoming decision — simply don't exist, degrading miss rate 2.6× versus the idealized (unlimited-metadata) case. A modest 4 virtual tags per set recovers most of that gap for a small (~1.8%) bit-overhead.</div></details>
+      <details><summary><span class="q">Q7</span>How does fiber packing know which fibers can share a block?<span class="chev">▾</span></summary><div class="a">Only fibers with contiguous IDs mapping to the same set can pack together, since their tags must be storable as one base tag plus a small count. SeaCache widens the "Tag-L" bits it skips when computing set IDs (to 4 bits by default) specifically to make more contiguous IDs land in the same set, enabling more packing opportunities.</div></details>
+      <details><summary><span class="q">Q8</span>Is there a limit to how long a fiber can be before splitting breaks?<span class="chev">▾</span></summary><div class="a">Yes — because segment disambiguation relies on the low 16 bits of the original fiber ID, fibers longer than about 21,845 elements risk address aliasing between segments. This is essentially never hit in the evaluated SuiteSparse matrices, and tiling (which shortens fibers per tile) makes it even less likely in practice.</div></details>
+      <details><summary><span class="q">Q9</span>Why share cache space between data and guide metadata instead of a separate SRAM buffer?<span class="chev">▾</span></summary><div class="a">A dedicated buffer sized for the worst case would either be wastefully large for matrices needing little guide data, or too small for very sparse ones. Sharing lets the same physical SRAM serve whichever role is more valuable at the moment, with the two-phase mechanism deciding the split per matrix instead of per hardware instance.</div></details>
+      <details><summary><span class="q">Q10</span>Does SeaCache beat scratchpad-style buffering too, not just other caches?<span class="chev">▾</span></summary><div class="a">Yes — 2.1× on average over an optimized scratchpad design (Tailors). Scratchpads condense data well when tiles fit exactly, but can't easily reclaim space from an arbitrary-length fiber once it's evicted, and can't skip fetching fibers that turn out unneeded the way an on-demand cache can.</div></details>
+      <details><summary><span class="q">Q11</span>Does any of this generalize beyond SpMSpM?<span class="chev">▾</span></summary><div class="a">The paper evaluates 𝐹ᵀ×𝐹, 𝐹×𝐷 (SpMM), and 𝐹ᵀ×𝑆 (one MS-BFS iteration) in addition to self-multiplication SpMSpM, with fiber packing/splitting applying unchanged (any workload accesses data as fibers) and guided replacement applying wherever one operand's structure predicts another's reuse order.</div></details>
+      <details><summary><span class="q">Q12</span>How does this connect to OS-level memory tiering research?<span class="chev">▾</span></summary><div class="a">The pattern rhymes strongly: gLFU's narrow per-column counters are structurally similar to the lightweight access-frequency counters used by page-hotness trackers like DAMON or multi-gen LRU, chosen for the same reason (avoid expensive precise ordering machinery). Virtual tags are a hardware analogue of the "ghost" tracking used in ARC-style and exclusive caches — and conceptually close to how systems like HeMem or Memtis track candidate hot pages before they're promoted. The two-phase adaptive prefetch sizing (offline estimate, then online feedback-driven correction) is the same shape as adaptive hot-tier sizing in Memtis or dynamic pool sizing in Pond for CXL memory — start from a cheap static estimate, then let runtime signals correct it. None of this is claimed by the SeaCache paper itself; it's a useful cross-domain lens, not a paper claim.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead" style="margin-top:0">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>SeaCache</b><span>The paper's cache design: fiber packing &amp; splitting + guided LFU with virtual tags + two-phase adaptive prefetch sizing.</span></div>
+      <div class="term-def"><b>Fiber packing &amp; splitting (P&amp;S)</b><span>Pack several short, contiguous-ID fibers into one block; split a long fiber across multiple blocks with an adjusted, re-tagged ID.</span></div>
+      <div class="term-def"><b>Guided LRU (gLRU)</b><span>Replacement guided by the other tensor's structure, realizing Belady's Optimal; expensive due to wide, dimension-sized pointer lists.</span></div>
+      <div class="term-def"><b>Guided LFU (gLFU)</b><span>SeaCache's practical alternative: per-column 4-bit reuse counters instead of gLRU's linked lists; not provably optimal but empirically similar.</span></div>
+      <div class="term-def"><b>Virtual tag</b><span>A cache-set slot holding only a gLFU counter, no data — extra room to track fibers not yet cached that matter for future decisions.</span></div>
+      <div class="term-def"><b>Two-phase adaptive prefetch sizing</b><span>Offline sparsity-based initial estimate, then online simulated-annealing correction, for how much cache the guide buffer should occupy.</span></div>
+      <div class="term-def"><b>Cnt / Extra bits</b><span>Per-block tag metadata: Cnt (2 b) marks packing mode and fiber count; Extra (16 b) holds offsets (packing) or the original low ID bits (splitting).</span></div>
+      <div class="term-def"><b>Tag-H / Tag-L</b><span>The split fiber-ID tag: Tag-L bits are skipped when forming the set index (to let contiguous IDs land together for packing), Tag-H is the rest.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Fiber-ID-based mapping</b><span>X-Cache's technique of indexing the cache directly by fiber (row/column) ID instead of physical address.</span></div>
+      <div class="term-def"><b>Belady's Optimal</b><span>Evict the block used farthest in the future; the theoretical best, realizable here because one operand's structure reveals the other's future.</span></div>
+      <div class="term-def"><b>Gustavson's (Gust) / IP / OP dataflow</b><span>Three SpMSpM loop orders; Gust is SeaCache's default, chosen for balanced reuse across operands.</span></div>
+      <div class="term-def"><b>Meta-tag</b><span>A tag storing a fiber ID directly, avoiding compressed-format pointer chasing to find a physical address.</span></div>
+      <div class="term-def"><b>Prefetch buffer / guide metadata</b><span>The window of the guiding tensor (𝐴) kept on-chip to compute reuse counts for the other tensor (𝐵).</span></div>
+      <div class="term-def"><b>Discard rate / miss rate (online signals)</b><span>Discard rate: fraction of dropped counter increments — high means too much metadata was prefetched, so shrink the window. Miss rate: fraction of accesses lacking any counter — high means insufficient prefetching, so grow the window.</span></div>
+      <div class="term-def"><b>Simulated annealing</b><span>Search that accepts some worse moves early (high "temperature," cooling over iterations) to avoid getting stuck in a local minimum of the miss-rate curve.</span></div>
+      <div class="term-def"><b>SuiteSparse Matrix Collection</b><span>The real-world sparse matrix benchmark suite used for evaluation, spanning densities from 0.0006% to 0.356%.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What SeaCache buys (Gust dataflow, vs. each baseline)</div>
+      <div class="viz-kicker">geometric-mean speedups across 23 SuiteSparse matrices</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">vs. SpArch<small>gLRU, 576 B blocks</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="6.8"><span>6.8×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">vs. InnerSP<small>gLRU, offline transpose</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="3.1"><span>3.1×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">vs. X-Cache<small>LRU, 16 B blocks</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="2.8"><span>2.8×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">vs. Scratchpad<small>Tailors, optimized</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="2.1"><span>2.1×</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 8×</p>
+      <figcaption><b>Headline framing:</b> the paper reports separate geometric-mean speedups per baseline — 3.1× vs. InnerSP, 6.8× vs. SpArch, and 2.8× vs. X-Cache — not a single average across the three; the scratchpad comparison (2.1×) is reported separately. Area overhead ≈ 6%; energy vs. InnerSP: −60.2%. (Paper §6.1, Fig. 7, Fig. 9, Table 2)</figcaption>
+    </figure>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>A Study of Replacement Algorithms for a Virtual-Storage Computer <span class="diff hard">hard</span></h4><div class="meta">L. A. Belady · IBM Systems Journal · 1966</div><p>The origin of the optimal replacement policy that gLRU/gLFU both approximate — evict what's needed farthest in the future.</p></div>
+    <div class="read-item reveal"><h4>P-OPT: Practical Optimal Cache Replacement for Graph Analytics <span class="diff med">medium</span></h4><div class="meta">Balaji, Crago, Jaleel, Lucia · HPCA · 2021</div><p>The CPU-side ancestor of guided replacement and cache-space sharing with guide metadata that SeaCache builds on and extends to accelerators.</p></div>
+    <div class="read-item reveal"><h4>InnerSP: Locality-Aware Inner Product Sparse Matrix Multiplication <span class="diff med">medium</span></h4><div class="meta">Baek, Hwang, Heo, Kim, Huh · PACT · 2021</div><p>Offline-transpose gLRU baseline SeaCache is compared against directly (3.1× headline speedup).</p></div>
+    <div class="read-item reveal"><h4>SpArch: Efficient Architecture for Sparse Matrix Multiplication <span class="diff hard">hard</span></h4><div class="meta">Zhang, Wang, Han, Dally · HPCA · 2020</div><p>Online gLRU with large (576 B) blocks and condensed Outer Product dataflow — the baseline SeaCache beats most (6.8×).</p></div>
+    <div class="read-item reveal"><h4>X-Cache: A Modular Architecture for Domain-Specific Caches <span class="diff med">medium</span></h4><div class="meta">Sedaghati, Hakimi, Hojabr, Shriraman · ISCA · 2022</div><p>Source of the fiber-ID-based cache indexing scheme SeaCache's own mapping builds directly on top of.</p></div>
+    <div class="read-item reveal"><h4>Tailors: Accelerating Sparse Tensor Algebra by Overbooking Buffer Capacity <span class="diff hard">hard</span></h4><div class="meta">Xue, Wu, Emer, Sze · MICRO · 2023</div><p>The optimized scratchpad design used as SeaCache's non-caching baseline (2.1× headline speedup), and the tiling methodology SeaCache adopts.</p></div>
+    <div class="read-item reveal"><h4>Adaptive Cache Compression for High-Performance Processors <span class="diff med">medium</span></h4><div class="meta">Alameldeen, Wood · ISCA · 2004</div><p>Earlier general-purpose "pack multiple blocks into one" idea; SeaCache's packing differs by exploiting read-only, fixed-length sparse fibers instead of compressing variable-ratio dense data.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card reveal" style="background:var(--paper-2)">
+      <p style="margin-bottom:.6em"><b>From the paper directly:</b> all headline speedups (2.8×, 2.1×, 3.1×/6.8×/2.8× per baseline), technique contributions (1.80×/1.10×/1.38×), miss rates (16.5%/15.9%/2.6× degradation), overhead figures (3.4%, 5.3%, ~6% area, 60.2% energy), the segment-length derivation, and Algorithm 1's formulas are taken directly from the paper's text, figures, and Table 1/2.</p>
+      <p style="margin-bottom:.6em"><b>Framing added here:</b> the signature figure's specific fiber IDs/values, the gLFU counter walkthrough numbers, and the prefetch-size explorer's miss-rate curves are illustrative — shaped to match the trends the paper describes (Figs. 2, 4, 6) but not digitized from exact figure pixel values, since the source figures don't provide precise underlying numbers in text. The comparisons to TPP/HeMem/Memtis/Pond and OS memory-tiering research (FAQ Q12) are this guide's own cross-domain framing, not claims made by the SeaCache authors.</p>
+      <p style="margin:0"><b>A minor source inconsistency:</b> the paper's own text states the fiber-length limit as both "21854 elements" and, in the same sentence, the calculation "21845 = 256 kB / (32 bit + 64 bit)" — we use the calculated value (21,845) consistently since it matches the stated formula.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Li, Jiang &amp; Gao, "SeaCache: Efficient and Adaptive Caching for Sparse Accelerators" (MICRO-58, 2025)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 8;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PREFETCH-SIZE EXPLORER ---- */
+  // illustrative miss-rate (%) curves over prefetch numerators [1,2,4,8,16,24,32,40,48,56,64] out of 128
+  var numer = [1,2,4,8,16,24,32,40,48,56,64];
+  var denseMiss  = [38,24,17,21,28,36,44,51,57,62,67];   // mouse_gene-like: wants small prefetch
+  var sparseMiss = [56,49,41,33,26,20,17,19,24,30,36];   // af_shell9-like: wants larger prefetch
+  var discardProxy = numer.map(function(n){ return Math.min(95, Math.round((n/64)*80)); }); // grows with prefetch size
+
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(idx){
+    if(!strip) return;
+    var n = numer[idx];
+    var metaSlots = Math.round(n/8); // out of 16
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=16-metaSlots?'vpr':'eq')+'"></div>'; }
+    strip.innerHTML = html;
+  }
+  var currentMatrix = 'dense';
+  function setPrefetch(idx){
+    var range = document.getElementById('partRange'); if(!range) return;
+    idx = Math.max(0, Math.min(10, idx));
+    range.value = idx;
+    document.getElementById('partRangeVal').textContent = numer[idx] + '/128';
+    var curve = currentMatrix === 'sparse' ? sparseMiss : denseMiss;
+    var miss = curve[idx], disc = discardProxy[idx];
+    document.getElementById('pVpr').textContent = miss + '%';
+    document.getElementById('pEq').textContent = disc + '%';
+    document.getElementById('pTot').textContent = Math.round(100 - miss*0.6 - Math.max(0,disc-40)*0.4) + '/100';
+    buildStrip(idx);
+    var minIdx = curve.indexOf(Math.min.apply(null, curve));
+    var verd = document.getElementById('pVerdict');
+    if(idx === minIdx){ verd.className = 'pverdict opt'; verd.textContent = '✓ Near-optimal for this matrix — lowest miss rate in this sweep.'; }
+    else if(idx < minIdx){ verd.className = 'pverdict sub'; verd.textContent = 'Too small — many columns have no counter yet, miss rate is rising from missing guidance.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Too large — guide metadata is crowding out real data (and overflowing gLFU counters).'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPrefetch(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){
+      b.addEventListener('click', function(){
+        var v = b.dataset.set;
+        if(v === 'dense'){ currentMatrix = 'dense'; setPrefetch(1); }
+        else if(v === 'sparse'){ currentMatrix = 'sparse'; setPrefetch(6); }
+        else { setPrefetch(parseInt(v,10)); }
+      });
+    });
+    setPrefetch(2);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
