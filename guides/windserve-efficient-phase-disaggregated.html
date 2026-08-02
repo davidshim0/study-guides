@@ -1,0 +1,1044 @@
+<!DOCTYPE html>
+<!-- WindServe field guide — Phase-Disaggregated LLM Serving with Stream-based Dynamic Scheduling (Feng et al., ISCA'25).
+     Built as a self-contained interactive study guide. Semantic colors:
+     honey = prefill instance / TTFT · teal = decoding instance / TPOT ·
+     indigo = WindServe's own machinery (Global Scheduler, Profiler, Coordinator, SBD) ·
+     terracotta = the static/co-located baseline (DistServe fixed placement, vLLM hybrid batching) that WindServe fixes. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Moving the Line at Runtime — WindServe, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E3A23F; --honey-deep:#BD7A16; --honey-soft:#F8E7C4;
+  --dram:#1F7A82; --dram-soft:#D8ECEE;      /* teal  = decoding instance / TPOT        */
+  --ltram:#5B54C4; --ltram-soft:#E8E5F8;    /* indigo = WindServe's machinery           */
+  --optane:#B6503A; --optane-soft:#F3DED4;  /* terracotta = static / co-located baseline */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,122,130,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,84,196,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(227,162,63,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(91,84,196,.05) 31px,rgba(91,84,196,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(227,162,63,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#124346;font-size:.96rem}
+.primer .ready b{color:#0d3335}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#124346}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a3499}
+.chip-lru{background:var(--optane-soft);color:#8a3a26}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9DEE1;color:#124346}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#8a3a26}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#8fc7cb;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c1bce8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dad5f5}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#7069d3,#5B54C4)}
+.bf-hi{background:linear-gradient(90deg,#2a9aa3,#1F7A82)}
+.bf-lru{background:linear-gradient(90deg,#c86a52,#B6503A)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive; unused on this paper's How-It-Works but kept for house-style parity) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#124346;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#124346}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#8a3a26}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e3a23f} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8e88db}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#124346}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#8a3a26}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,122,130,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,84,196,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(227,162,63,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>ISCA 2025 · A Field Guide</span>
+    <h1>Giving GPUs to whoever's <span class="swash">starving</span>, not whoever <span class="swash" style="color:var(--optane)">grabbed them at boot</span></h1>
+    <p class="lede">Split prefill and decoding onto separate GPU pools once, at deployment time, and you've frozen that split forever — even as request patterns shift underneath you. This is the plain-English story of <strong>WindServe</strong>, a scheduler that keeps re-drawing that line at runtime.</p>
+    <div class="hero-meta">
+      <span>📄 "WindServe" · Feng, Huang, Zhang, Liang, Yan, Wu — ISCA'25</span>
+      <span>🎓 Some LLM-serving basics assumed — the primers cover them</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🌬️</div>
+      <p>Don't nail prefill and decoding to a <span class="wo">fixed GPU split decided once</span> — watch queue depth and KV-cache pressure and <span class="ro">move work across the boundary before either phase starves</span>.<br><em style="font-size:.9rem">Measure the bottleneck first, then shift load toward it.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then nine ideas the paper assumes</h2>
+      <p class="sub">Skim the acronym table first — you'll see these letters everywhere. Then the primer cards clear up the concepts behind them; tap any to open.</p>
+    </div>
+
+    <div class="card" style="background:var(--ltram-soft);border-color:#c1bce8">
+      <h3 style="color:#3a3499">🔑 Quick glossary</h3>
+      <div class="gloss" style="color:#3a3499">
+        <div class="term-def"><b>TTFT</b><span>Time To First Token — queuing + prompt-processing time. The prefill phase's scorecard.</span></div>
+        <div class="term-def"><b>TPOT</b><span>Time Per Output Token — average time to produce each token after the first. The decoding phase's scorecard.</span></div>
+        <div class="term-def"><b>PD</b><span>Phase-Disaggregated — prefill and decoding run on separate GPU instances instead of one hybrid batch.</span></div>
+        <div class="term-def"><b>KV cache</b><span>Cached key/value tensors from earlier tokens, reused every decoding step to avoid recomputation.</span></div>
+        <div class="term-def"><b>SLO</b><span>Service Level Objective — a latency target (e.g. TTFT &lt; 0.25 s) a request must meet.</span></div>
+        <div class="term-def"><b>TP / PP</b><span>Tensor / Pipeline Parallelism — how a model is split across GPUs. "[TP-2, TP-1]" = prefill uses 2-way TP, decode uses 1-way.</span></div>
+        <div class="term-def"><b>SBD</b><span>Stream-based Disaggregation — WindServe's own term for running prefill and decode in separate CUDA streams.</span></div>
+        <div class="term-def"><b>NVLink / PCIe</b><span>The two interconnects moving KV cache between GPUs — NVLink is fast (400 GB/s here); PCIe is slower (the paper's KV-transfer example uses ~32 GB/s one-way over PCIe Gen4 ×16, well below the link's 64 GB/s bidirectional rating).</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:22px">
+      <span><i style="background:var(--honey-deep)"></i> prefill instance / TTFT</span>
+      <span><i style="background:var(--dram)"></i> decoding instance / TPOT</span>
+      <span><i style="background:var(--ltram)"></i> WindServe's machinery</span>
+      <span><i style="background:var(--optane)"></i> static baseline (DistServe / vLLM)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Prefill and decoding — one request, two very different jobs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Every LLM request runs through two phases. <b>Prefill</b> processes the entire prompt at once to produce the first output token — every prompt token multiplies against every other, so cost grows roughly quadratically with prompt length and it's <b>compute-bound</b>. <b>Decoding</b> then generates one token at a time, feeding back the last token plus all cached history — mostly moving data around, so it's <b>I/O-bound</b>.</p>
+          <p>Prefill for a long prompt can take dozens of times longer than a single decode step. Batch the two together and one drowns out the other.</p>
+          <div class="ready"><b>Now you're ready:</b> WindServe's entire design is about giving these two very different jobs the resources each actually needs, and letting that allocation move as the workload does.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>TTFT and TPOT — the two clocks that matter<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>TTFT</b> (time to first token) = queuing delay + prefill time. It's what a user perceives as "how long before anything happens." <b>TPOT</b> (time per output token) = the average gap between subsequent tokens — what a user perceives as "how fast is it typing."</p>
+          <p>Optimizing one in isolation is easy; the hard part is that fixes for TTFT (e.g. squeezing prefill jobs onto GPUs) often directly interfere with TPOT, and vice versa.</p>
+          <div class="ready"><b>Now you're ready:</b> almost every design choice in this paper is a trade between these two clocks — the paper's whole pitch is getting both without the usual trade-off.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>KV cache — why decoding needs memory, not just compute<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Self-attention needs the key/value tensors of every prior token on every step. Recomputing them each time would be wasteful, so serving systems cache them — the <b>KV cache</b> — trading GPU memory for compute. The longer the conversation, the bigger the cache.</p>
+          <p>This cache is large: for OPT-13B at the 2048-token context limit it's about <b>1.5 GB per request</b>. It has to live somewhere in GPU memory, and in phase-disaggregated systems it must be <i>moved</i> from where it was created (prefill) to where it's used (decoding).</p>
+          <div class="ready"><b>Now you're ready:</b> that move is a real cost — measured in this paper at roughly 65 ms over PCIe — which is exactly the overhead WindServe is built to hide.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>PagedAttention and continuous batching — the ground floor<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>vLLM's <b>PagedAttention</b> allocates KV cache in fixed-size blocks on demand instead of reserving a worst-case slab per request, cutting memory fragmentation. <b>Continuous batching</b> lets requests join or leave a running batch mid-stream instead of waiting for the whole batch to finish.</p>
+          <p>WindServe builds directly on both — it manages KV cache in blocks and schedules requests continuously — its contribution sits one layer up, in <i>how work is placed across instances</i>.</p>
+          <div class="ready"><b>Now you're ready:</b> when the paper says "KV block manager" or "running pipeline," that's this machinery, inherited and extended.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Phase-Disaggregation (PD) — split the phases, not just the batch<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>vLLM-style systems batch prefill and decode jobs of different requests <i>together</i> on one GPU pool — simple, but a long prefill can stall decode steps for everyone else in the batch (interference). <b>Phase-disaggregation</b> instead runs prefill and decoding on <i>separate</i> GPU instances, transferring the KV cache between them once prefill finishes.</p>
+          <p>This removes interference and lets each phase's GPUs be sized and placed independently — but, as this paper shows, it also means each instance's resource allocation is now <i>fixed</i> unless something actively manages it.</p>
+          <div class="ready"><b>Now you're ready:</b> DistServe is the paper's PD baseline; WindServe keeps PD's isolation benefit while removing its fixed-allocation weakness.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Placement notation: [TP-a, PP-b]<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A model this large doesn't fit on one GPU, so it's split. <b>Tensor Parallelism (TP)</b> splits each layer's matrices across GPUs, which must talk to each other on every layer. <b>Pipeline Parallelism (PP)</b> splits the model's <i>layers</i> across GPUs, which hand off activations layer-by-layer.</p>
+          <p>The paper writes placements as <code>[TP-a, PP-b]</code> for a prefill instance and a second pair for decoding — e.g. <code>[TP-2, TP-1]</code> is shorthand meaning prefill uses 2-way TP (no PP), decode uses 1-way TP.</p>
+          <div class="ready"><b>Now you're ready:</b> every placement is a GPU-count decision made once, before serving starts — the "coarse-grained" allocation this paper's whole motivation section is arguing against.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>CUDA streams and Hyper-Q — sharing one GPU without partitioning it<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>CUDA stream</b> is a queue of GPU commands that execute in order, but different streams can run concurrently, sharing the GPU's SMs and memory bandwidth. <b>Hyper-Q</b> (Kepler-and-later NVIDIA GPUs) provides 32 independent hardware queues so kernels from different streams can genuinely overlap instead of serializing.</p>
+          <p>This is different from partitioning schemes like MIG (Multi-Instance GPU), which carves the GPU into walled-off, hardware-isolated pieces. MPS (Multi-Process Service) is more flexible — it still allows cross-partition operations via IPC — but its configuration can only be changed at process launch, not adjusted on the fly the way a CUDA stream can.</p>
+          <div class="ready"><b>Now you're ready:</b> Stream-based Disaggregation is exactly this — prefill and decode jobs on the same GPU, in different streams, sharing hardware directly rather than through a rigid partition.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Chunked-prefill — the other way to reduce interference<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>If a prefill job must share a GPU with decode jobs, one fix is to break the prefill into small <b>chunks</b> and interleave them between decode steps, so no single decode step waits too long behind a giant prefill matrix multiply.</p>
+          <p>It works — but it stretches out the prefill job itself, since it's now competing for GPU time in small slices rather than running to completion.</p>
+          <div class="ready"><b>Now you're ready:</b> chunked-prefill is WindServe's main point of comparison for handling co-located prefill/decode jobs — Stream-based Disaggregation is offered as a faster alternative.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>Per-GPU request rate and SLO attainment<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The paper reports load as <b>per-GPU request rate</b> (requests/second divided by GPU count) rather than total throughput, so results stay comparable across differently-sized deployments — this is the paper's "linear scaling rule."</p>
+          <p><b>SLO attainment</b> is the percentage of requests that meet <i>both</i> their TTFT and TPOT targets — the paper's single best summary number for "is this system actually usable under load."</p>
+          <div class="ready"><b>Now you're ready:</b> every chart in this paper's evaluation is one of: latency vs. per-GPU rate, or SLO attainment vs. per-GPU rate. That's the whole vocabulary.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>WindServe in a nutshell</h2>
+      <p class="sub">The problem with fixed PD placement, the runtime fix, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>Phase-disaggregation solves interference by giving prefill and decoding their own GPU instances — but it introduces a new problem: that split is decided once, at deployment, based on an assumed workload. Under real, shifting traffic, one instance ends up starved while the other sits idle. The paper's Figure 3 makes this concrete: give prefill 2 GPUs and decode 1 (<code>[TP-2,TP-1]</code>) and prefill has near-zero queuing (avg <b>0.066 s</b>) while decode becomes the bottleneck; give both 2 GPUs (<code>[TP-2,TP-2]</code>) and prefill queuing delay <i>rises</i> to <b>0.179 s</b> because now decode is over-provisioned and prefill is comparatively squeezed. Whichever fixed split you pick, someone loses. DistServe sizes and places prefill/decode instances well for an assumed workload, but that scheduling becomes inflexible once traffic shifts; the paper discusses replanning placement online as a possible fix, but describes it as a stagnating, disruptive approach rather than a real-time answer.</p>
+      <p><strong>WindServe's</strong> fix is to stop treating the placement as fixed. A <span class="mem-chip chip-ucp">Global Scheduler</span> — a <b>Profiler</b> that predicts how long a batch of tokens will take, and a <b>Coordinator</b> that watches both instances' queues and KV-cache pressure — dynamically moves work across the prefill/decode boundary in two directions: <b>Dynamic Prefill Dispatch</b> sends overflow prefill tokens to the decode instance when the prefill instance is queuing up, and <b>Dynamic Rescheduling</b> moves some decode requests to the prefill instance when the decode instance's KV cache is nearly exhausted.</p>
+      <p>Moving work introduces its own costs, so WindServe adds two mechanisms to keep them cheap: <b>Stall-free Rescheduling</b> lets a request keep decoding while most of its KV cache migrates in the background, pausing only briefly for the final handoff once the remainder is small; and <b>Stream-based Disaggregation</b> runs the borrowed prefill jobs in a separate CUDA stream from the decode instance's own work, so the two barely interfere.</p>
+      <p><strong>The payoff:</strong> against DistServe, the current state-of-the-art PD system, WindServe cuts median TTFT by up to <b>4.28×</b> and TTFT P99 by <b>2.1×</b> on OPT-13B, while also cutting TPOT P99 by <b>1.5×</b> — and it improves SLO attainment by at least <b>1.5×</b> at high load, across both chatbot and summarization workloads.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🌬️ Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>PD architectures fix interference but freeze resource allocation — one instance idles while the other queues, and the imbalance flips depending on which fixed split you chose.</li>
+        <li>The <b>Profiler</b> predicts batch completion time from token counts (not request counts) using a regressed quadratic/linear model, giving precise overload signals.</li>
+        <li>The <b>Coordinator</b> acts on those signals with two moves: <b>Dynamic Prefill Dispatch</b> (compute→decode instance) and <b>Dynamic Rescheduling</b> (memory pressure→prefill instance).</li>
+        <li><b>Stall-free Rescheduling</b> migrates most of the KV cache while the request keeps decoding, pausing only briefly for the final handoff once the remaining cache drops below a threshold.</li>
+        <li><b>Stream-based Disaggregation</b> co-locates borrowed prefill work with decode work in separate CUDA streams — faster for both phases than chunked-prefill.</li>
+        <li>Result: up to 4.28× median TTFT, 2.1× TTFT P99, 1.5× TPOT P99 vs. DistServe; ≥1.5× better SLO attainment at high load.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">a fixed split always has a losing side — a dynamic one doesn't have to</div>
+      <div class="legend">
+        <span><i style="background:var(--honey-deep)"></i> prefill queuing delay</span>
+        <span><i style="background:var(--optane)"></i> static placement (DistServe-style)</span>
+        <span><i style="background:var(--ltram)"></i> WindServe (dynamic, illustrative — not a Fig. 3 measurement)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 320" role="img" aria-label="Prefill queuing delay under two fixed placements vs a dynamic scheduler">
+        <line x1="70" y1="30" x2="70" y2="230" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="230" x2="700" y2="230" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end"><text x="62" y="233">0</text><text x="62" y="163">0.1s</text><text x="62" y="93">0.2s</text></g>
+        <text x="385" y="252" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">placement strategy</text>
+        <!-- bar 1: [TP-2,TP-1] avg 0.066s -->
+        <rect x="150" y="184" width="90" height="46" rx="6" fill="#B6503A"/>
+        <text x="195" y="252" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456">[TP-2,TP-1]</text>
+        <text x="195" y="176" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#8a3a26">0.066s avg</text>
+        <text x="195" y="270" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">decode is the bottleneck instead</text>
+        <!-- bar 2: [TP-2,TP-2] avg 0.179s -->
+        <rect x="330" y="90" width="90" height="140" rx="6" fill="#B6503A"/>
+        <text x="375" y="252" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456">[TP-2,TP-2]</text>
+        <text x="375" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#8a3a26">0.179s avg</text>
+        <text x="375" y="270" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">prefill queues up instead</text>
+        <!-- arrow -->
+        <path d="M450 150 h60" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow)"/>
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#9A8E7C"/></marker></defs>
+        <text x="480" y="140" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#6E6456">Global<br/>Scheduler</text>
+        <!-- bar 3: WindServe, illustrative -->
+        <rect x="560" y="205" width="90" height="25" rx="6" fill="#5B54C4"/>
+        <text x="605" y="252" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456">WindServe (illustrative)</text>
+        <text x="605" y="198" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#3a3499">no fixed loser</text>
+        <text x="605" y="270" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">shifts load to whichever queues up</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> under a fixed GPU split, whichever way you configure it, someone queues — prefill's own measured queuing delay swings from 0.066 s to 0.179 s just by changing the decode instance's GPU count (paper, Fig. 3a; these two bars are the paper's own measured numbers). The third bar is illustrative, not a Fig. 3 measurement — the paper doesn't report a comparable queuing-delay number for WindServe in that figure. The point it's making: WindServe's Global Scheduler watches both queues and shifts individual jobs across the prefill/decode boundary as they fill up, which is what turns into the 4.28× median TTFT and 1.5× TPOT P99 improvements over DistServe reported elsewhere in the paper.</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → sense → decide → move safely → isolate</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">PD's prefill/decode split is fixed at deployment; real traffic shifts underneath it</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Sense (Profiler)</div><div class="nd">Predicts batch completion time from token counts via a regressed quadratic/linear model</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Decide (Coordinator)</div><div class="nd">Triggers Dynamic Prefill Dispatch or Dynamic Rescheduling based on the overload signal</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Move safely</div><div class="nd">Stall-free Rescheduling migrates KV cache without pausing decode</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Isolate (SBD)</div><div class="nd">Borrowed prefill jobs run in a separate CUDA stream from decode's own work</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Payoff</div><div class="nd">4.28× median TTFT, 1.5× TPOT P99 vs. DistServe</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about WindServe</h2>
+      <p class="sub">Each picture stands alone — read them in any order. Every card ends with an honest note about where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="40" width="46" height="40" rx="4" fill="#F8E7C4" stroke="#BD7A16" stroke-width="2.5"/>
+          <rect x="80" y="40" width="46" height="40" rx="4" fill="#D8ECEE" stroke="#1F7A82" stroke-width="2.5"/>
+          <path d="M60 60 h20" stroke="#5B54C4" stroke-width="3" stroke-linecap="round" stroke-dasharray="5 4"/>
+          <circle cx="36" cy="30" r="4" fill="#BD7A16"/><circle cx="103" cy="30" r="4" fill="#1F7A82"/>
+          <path d="M20 30 h32 M87 30 h32" stroke="#332C24" stroke-width="2" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">The core idea · Fixed vs. floating staff</span>
+        <h3>Two checkout lines, one till</h3>
+        <p>Staff two registers by their average traffic and you'll still be wrong the moment traffic shifts — one line backs up, the other's cashier waits idle. A store that instead floats a spare cashier to whichever line is backing up stays fast either way. That floating cashier is WindServe's <b>Dynamic Prefill Dispatch</b> and <b>Dynamic Rescheduling</b> — moving jobs to whichever instance is currently starved, not the one decided at open.</p>
+        <div class="breaks"><b>Where it breaks:</b> a cashier needs to walk over and learn a new till; a CUDA stream switch is nearly free. The real cost WindServe worries about is GPU hardware contention once the "cashier" arrives, not travel time — that's what Stream-based Disaggregation manages.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="34" height="56" rx="4" fill="#F8E7C4" stroke="#BD7A16" stroke-width="2.5"/>
+          <rect x="86" y="20" width="34" height="56" rx="4" fill="#D8ECEE" stroke="#1F7A82" stroke-width="2.5"/>
+          <path d="M56 40 q14 -6 28 0 M56 56 q14 6 28 0" stroke="#5B54C4" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+          <circle cx="70" cy="48" r="4" fill="#5B54C4"/>
+        </svg></div>
+        <span class="term">Stall-free migration · KV cache handoff</span>
+        <h3>A moving crew that lets you keep cooking</h3>
+        <p>A bad moving crew makes you stop everything while they load the truck. A good one lets you keep using the kitchen until the very last box, then does one quick final handoff. WindServe's <b>Stall-free Rescheduling</b> is the good crew: a request keeps decoding — generating new KV cache — while its <i>existing</i> KV cache streams to the prefill instance in the background, and only pauses for the small remainder at the end.</p>
+        <div class="breaks"><b>Where it breaks:</b> a moving crew handles one apartment at a time; WindServe deliberately migrates <i>long-context</i> requests first (the opposite of Llumnix's short-request-first policy), because freeing the most KV-cache space per move matters more here than minimizing per-move cost.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="24" width="108" height="48" rx="6" fill="#E8E5F8" stroke="#5B54C4" stroke-width="2.5"/>
+          <line x1="70" y1="24" x2="70" y2="72" stroke="#5B54C4" stroke-width="2" stroke-dasharray="3 3"/>
+          <circle cx="42" cy="48" r="6" fill="#1F7A82"/><circle cx="98" cy="48" r="6" fill="#BD7A16"/>
+          <path d="M42 48 q28 0 28 -20 M98 48 q-28 0 -28 20" stroke="#9A8E7C" stroke-width="1.5" fill="none" stroke-dasharray="2 2"/>
+        </svg></div>
+        <span class="term">Streams vs. partitions · SBD</span>
+        <h3>Two chefs, one kitchen, no walls</h3>
+        <p>Wall a kitchen into two separate stalls (MIG) and each chef is safe from the other but stuck with whatever's on their side, even when idle. Let two chefs share every burner and counter freely (a CUDA stream) and both can use whatever's free — at the cost of occasionally bumping elbows. WindServe deliberately chooses the shared-kitchen model: it accepts some GPU-resource contention between the streams in exchange for never leaving a burner idle.</p>
+        <div class="breaks"><b>Where it breaks:</b> the paper is explicit that this trade only pays off in the decoding instance, where just a <i>few</i> borrowed prefill jobs share space with the main decode work — it deliberately avoids the shared-kitchen model in the prefill instance, where the Profiler's predictions are less reliable.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 76 L60 24 L100 60 L124 20" fill="none" stroke="#5B54C4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="60" cy="24" r="4" fill="#BD7A16"/><circle cx="100" cy="60" r="4" fill="#1F7A82"/>
+        </svg></div>
+        <span class="term">The Profiler · token-based prediction</span>
+        <h3>Judging the wait by the cart, not the checkout line</h3>
+        <p>Counting people in line tells you little if one cart has 3 items and another has 300. The Profiler ignores request <i>counts</i> and instead predicts completion time from the actual <b>token counts</b> — quadratic in prefill tokens (attention cost grows with the square of prompt length), linear in total context length for decoding — because that's what really drives GPU time.</p>
+        <div class="breaks"><b>Where it breaks:</b> the analogy stops at "count the right thing." The Profiler's coefficients are fit offline by profiling and regression before runtime, so it can misjudge if actual hardware behavior drifts from that calibration — the paper doesn't claim it adapts online.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="42" width="108" height="14" rx="6" fill="#F3DED4" stroke="#B6503A" stroke-width="2"/>
+          <circle cx="70" cy="49" r="9" fill="#E3A23F" stroke="#BD7A16" stroke-width="2"/>
+          <path d="M70 30 v8 M70 60 v8" stroke="#332C24" stroke-width="2" stroke-linecap="round"/>
+          <text x="70" y="24" text-anchor="middle" font-family="monospace" font-size="9" fill="#8a3a26">thrd</text>
+        </svg></div>
+        <span class="term">The threshold trade-off · Dynamic Prefill Dispatch</span>
+        <h3>A metering light on the on-ramp</h3>
+        <p>Set a highway on-ramp meter too strict and cars pile up waiting to merge (queuing delay). Set it too loose and the highway itself jams (overload downstream). The <code>thrd</code> threshold that triggers Dynamic Prefill Dispatch is exactly this dial: too low and it dumps too many prefill jobs onto the decode instance, backing it up; too high and prefill jobs queue with nowhere to go. WindServe sets it just under the TTFT SLO.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real ramp meter is one fixed rate; WindServe's threshold interacts with a second dial — the decoding instance's <code>budget</code> for how many prefill tokens it will accept per forward pass — so it's really two dials tuned together, not one.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="20" rx="4" fill="#F3DED4" stroke="#B6503A" stroke-width="2"/>
+          <text x="70" y="44" text-anchor="middle" font-family="monospace" font-size="9" fill="#8a3a26">chunk · chunk · chunk</text>
+          <rect x="20" y="60" width="30" height="20" rx="4" fill="#D8ECEE" stroke="#1F7A82" stroke-width="2"/>
+          <rect x="60" y="60" width="60" height="20" rx="4" fill="#F8E7C4" stroke="#BD7A16" stroke-dasharray="4 3"/>
+          <text x="35" y="74" text-anchor="middle" font-family="monospace" font-size="8" fill="#124346">decode</text>
+          <text x="90" y="74" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">prefill (own stream)</text>
+        </svg></div>
+        <span class="term">Chunked-prefill vs. SBD</span>
+        <h3>Slicing the cake vs. baking two at once</h3>
+        <p>Chunked-prefill slices one big job into many small pieces so it never blocks anything for long — but slicing a cake doesn't make more oven space; the total baking time still stretches out, sometimes 4× longer than a single decode step in the paper's LLaMA2-70B numbers. Stream-based Disaggregation instead runs the whole prefill job at once, in parallel, in its own oven (stream) — finishing faster overall while still leaving decode's own oven largely undisturbed.</p>
+        <div class="breaks"><b>Where it breaks:</b> two ovens sharing one kitchen's power circuit still compete for electricity; the paper reports decode's own per-step time under SBD (≈0.34 s) stays essentially at its uncontended baseline (≈0.35 s) — resource sharing costs decode far less here than the stretched-out prefill costs it under chunking.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, following the paper's own architecture (Fig. 4).</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem, quantified — a fixed split can't win</h3>
+      <p>Under a <span class="mem-chip chip-lru">static</span> PD placement, resources for one phase are provisioned once. The paper shows two failure modes directly: with GPU memory, the prefill instance discards its KV cache once transfer completes, so <i>all</i> active KV cache piles onto the decode instance — leading to swapping between GPU and CPU memory once it overflows. With compute, decode jobs are I/O-bound and rarely saturate their GPUs, yet stringent TPOT SLOs push teams to over-provision decode anyway — starving prefill of compute it could have used.</p>
+    </div>
+
+    <div class="prose">
+      <h3>2 · The Profiler — predicting cost from tokens, not requests</h3>
+      <p>Attention and FFN dominate per-layer cost. For a prefill batch of <code>N</code> input tokens and hidden size <code>H</code>, attention FLOPs are <code>8NH² + 4N²H</code> and FFN FLOPs are <code>16NH²</code> — dominated by the <code>N²</code> term as prompts grow, which is why the model in Eq. 1 has a quadratic component. For decoding, both modules are I/O-bound: total bytes moved scale with <code>ΣL</code>, the sum of all context lengths in the batch — hence the linear model in Eq. 2.</p>
+      <pre class="sketch"><span class="hl">T̂_prefill = a_p·N + b_p·N² + c_p</span>     <span class="cm"># N = prefill tokens in the batch</span>
+<span class="hl">T̂_decode  = a_d·ΣL + c_d</span>            <span class="cm"># ΣL = sum of context lengths</span></pre>
+      <p>Coefficients (<code>a,b,c</code>) are fit offline via profiling and quadratic regression, then used at runtime to predict how long any candidate batch will take — the signal every scheduling decision below is built on.</p>
+    </div>
+
+    <!-- ARCHITECTURE DIAGRAM -->
+    <figure class="viz reveal">
+      <div class="viz-title">Fig. 4, rebuilt — where each piece sits</div>
+      <div class="viz-kicker">new request → dispatch decision → running instances → migration when memory is tight</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">New Request</div><div class="nd">Arrives at the Coordinator</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Global Scheduler</div><div class="nd">Profiler predicts TTFT; Coordinator checks decode-instance slots</div></div>
+      </div>
+      <div style="text-align:center;margin:10px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.2rem">↓ dispatch ↓</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Prefill Instance</div><div class="nd">Waiting queue → running pipeline (FCFS); chunked-prefill only if a rescheduled decode job is present</div></div>
+        <div class="flow-arrow">⇄</div>
+        <div class="node n-hi"><div class="nt">Decoding Instance</div><div class="nd">Decode Stream + Prefill Stream + Null Stream; KV manager tracks block pressure</div></div>
+      </div>
+      <div style="text-align:center;margin:10px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.2rem">↓ on overload ↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Dynamic Prefill Dispatch</div><div class="nd">Overflow prefill tokens → decode instance's Prefill Stream</div></div>
+        <div class="flow-arrow">↔</div>
+        <div class="node n-rule"><div class="nt">Dynamic Rescheduling</div><div class="nd">Long-context decode requests → prefill instance, stall-free</div></div>
+      </div>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · Dynamic Prefill Dispatch — Algorithm 1, in plain steps</h3>
+      <ol class="seq">
+        <li><b>Predict TTFT.</b> The Profiler estimates completion time for the new request, given everyone already ahead of it in the prefill instance's waiting queue and currently-running batch.</li>
+        <li><b>Compare to threshold.</b> If that predicted TTFT exceeds <code>thrd</code> (set just under the TTFT SLO), the prefill instance is considered overloaded for this request.</li>
+        <li><b>Check decode-side capacity.</b> The Coordinator computes available <code>slots</code> on the decode instance — a token budget capped so borrowed prefill work won't itself blow the TPOT SLO — using the running pipeline and KV block manager. If KV blocks are inadequate, slots = 0.</li>
+        <li><b>Dispatch or queue.</b> If slots cover the new request's length, it's added to <code>assistRequests</code> and slotted into the decode instance's next-ready batch; otherwise it falls back to the prefill instance's normal queue.</li>
+        <li><b>Trigger isolation.</b> Any prefill work now running inside the decode instance activates Stream-based Disaggregation for the duration of that batch.</li>
+      </ol>
+      <div class="callout note"><span class="ic">🌬️</span><div><b>Why token-length, not request-count?</b> <code>T̂_prefill</code> depends on total tokens, so the Profiler's flag is a much more precise overload signal than simply counting queued requests — a queue of five tiny requests and a queue of one giant one are treated very differently, as they should be.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Stall-free Rescheduling — migrating memory without pausing compute</h3>
+      <p>When the decode instance's KV blocks near exhaustion, WindServe migrates some <i>long-context</i> requests' KV cache to the prefill instance — chosen specifically because freeing long contexts frees the most space per migration. Crucially, the migrating request keeps decoding and producing <i>new</i> KV cache throughout the transfer; only once the remaining untransferred portion drops below a small threshold does the decode instance briefly pause that one request, hand off the tail, and let the prefill instance resume its decoding. The prefill instance runs any of its own prefill jobs in chunked-prefill form while a rescheduled decode request shares it, to bound the reverse interference.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why long-context requests, not short ones?</b> Unlike Llumnix — which migrates short requests to minimize per-move overhead and fragmentation — WindServe migrates long ones to maximize the KV cache freed per migration, since the whole point here is relieving memory pressure, not balancing load evenly.</div></div>
+    </div>
+
+    <!-- STREAM TIMELINE SVG -->
+    <figure class="viz reveal">
+      <div class="viz-title">Fig. 7, rebuilt — three ways to co-locate prefill and decode</div>
+      <div class="viz-kicker">regular hybrid batch · chunked-prefill · stream-based disaggregation</div>
+      <svg class="full" viewBox="0 0 720 230" role="img" aria-label="Comparison of hybrid batching, chunked-prefill, and stream-based disaggregation timelines">
+        <text x="10" y="24" font-family="Fraunces" font-size="13" font-weight="600" fill="#8a3a26">Regular hybrid batch — one stream, prefill blocks every decode step</text>
+        <rect x="10" y="32" width="130" height="24" rx="4" fill="#F3DED4" stroke="#B6503A"/><text x="75" y="48" text-anchor="middle" font-family="monospace" font-size="10" fill="#8a3a26">A,B decode</text>
+        <rect x="145" y="32" width="220" height="24" rx="4" fill="#F3DED4" stroke="#B6503A" stroke-dasharray="3 2"/><text x="255" y="48" text-anchor="middle" font-family="monospace" font-size="10" fill="#8a3a26">C,D prefill blocks A,B</text>
+        <rect x="370" y="32" width="130" height="24" rx="4" fill="#F3DED4" stroke="#B6503A"/><text x="435" y="48" text-anchor="middle" font-family="monospace" font-size="10" fill="#8a3a26">A,B,C,D decode</text>
+
+        <text x="10" y="94" font-family="Fraunces" font-size="13" font-weight="600" fill="#6e4a09">Chunked-prefill — smaller blocks, but prefill itself stretches out (~4× a decode step)</text>
+        <rect x="10" y="102" width="80" height="24" rx="4" fill="#F8E7C4" stroke="#BD7A16"/><text x="50" y="118" text-anchor="middle" font-family="monospace" font-size="10" fill="#6e4a09">A,B</text>
+        <rect x="94" y="102" width="60" height="24" rx="4" fill="#F8E7C4" stroke="#BD7A16" stroke-dasharray="3 2"/><text x="124" y="118" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">+Cp1</text>
+        <rect x="158" y="102" width="60" height="24" rx="4" fill="#F8E7C4" stroke="#BD7A16"/><text x="188" y="118" text-anchor="middle" font-family="monospace" font-size="10" fill="#6e4a09">A,B</text>
+        <rect x="222" y="102" width="60" height="24" rx="4" fill="#F8E7C4" stroke="#BD7A16" stroke-dasharray="3 2"/><text x="252" y="118" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">+Cp2</text>
+        <rect x="286" y="102" width="60" height="24" rx="4" fill="#F8E7C4" stroke="#BD7A16"/><text x="316" y="118" text-anchor="middle" font-family="monospace" font-size="10" fill="#6e4a09">B,C</text>
+        <rect x="350" y="102" width="150" height="24" rx="4" fill="#F8E7C4" stroke="#BD7A16" stroke-dasharray="3 2"/><text x="425" y="118" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">…more chunks…</text>
+
+        <text x="10" y="164" font-family="Fraunces" font-size="13" font-weight="600" fill="#3a3499">Stream-based Disaggregation — decode stream and prefill stream run concurrently</text>
+        <rect x="10" y="172" width="480" height="22" rx="4" fill="#D8ECEE" stroke="#1F7A82"/><text x="250" y="187" text-anchor="middle" font-family="monospace" font-size="10" fill="#124346">Decode Stream: A,B → B,C → B,C,D (mostly undisturbed)</text>
+        <rect x="10" y="198" width="480" height="22" rx="4" fill="#E8E5F8" stroke="#5B54C4"/><text x="250" y="213" text-anchor="middle" font-family="monospace" font-size="10" fill="#3a3499">Prefill Stream: C,D prefill — runs to completion in parallel</text>
+      </svg>
+      <figcaption><b>Read top to bottom:</b> a regular hybrid batch lets a prefill job block decode outright; chunked-prefill avoids the block but pays for it in prefill duration (≈1.4 s for a 2048-token LLaMA2-70B prefill vs. a 0.35 s decode step — about 4×); Stream-based Disaggregation runs both concurrently in separate streams, finishing that same prefill in ≈0.75 s while decode's own step stays close to its uncontended baseline — the paper reports ≈0.34 s under SBD versus ≈0.35 s single-step (paper §3.4, Fig. 8).</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces using the paper's own measurements — KV transfer bandwidth, the FFN FLOPs derivation behind the Profiler, the SBD-vs-chunking comparison, and the headline speedups.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① How expensive is a KV cache migration, really?</h3>
+      <p style="color:var(--ink-soft)">OPT-13B, a request at the 2048-token context limit, prefill and decode each on their own single GPU, connected via PCIe Gen4 ×16 (32 GB/s, P2P enabled).</p>
+      <ol class="seq">
+        <li><b>KV cache size at this context length ≈ 1.5 GB</b> (paper, §2.2) — this is what must move between instances.</li>
+        <li><b>Naive transfer time</b> = size ÷ bandwidth = 1.5 GB ÷ 32 GB/s ≈ <b>47 ms</b>.</li>
+        <li><b>Measured transfer time ≈ 65 ms</b> — higher than the naive bandwidth calculation because of real transfer/protocol overhead on top of raw throughput.</li>
+        <li><b>Compare to one decoding step:</b> the paper states this transfer "could take several times the duration of a single decoding iteration" — meaning a blocking migration would stall many token-generation steps for that request.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🌬️</span><div><b>Insight:</b> 65 ms sounds small in isolation, but against a per-token decode budget it's enormous — which is exactly why WindServe never blocks decoding on a transfer (Stall-free Rescheduling) and instead overlaps the transfer with ongoing prefill or decode computation.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Where the Profiler's quadratic term comes from</h3>
+      <p style="color:var(--ink-soft)">The paper derives FFN cost directly: "the two matrices multiplied at the first layer have shapes B×H and H×4H, and Matrix-Vector multiplication needs one multiply-add (2 FLOPs) per matrix element, so the FLOPs for the first layer are B×H×4H×2."</p>
+      <ol class="seq">
+        <li><b>Layer 1 FLOPs</b> = B·H·4H·2 = <b>8BH²</b>.</li>
+        <li><b>Layer 2</b> (shape 4H×H, projecting back down) is symmetric: 4H·B·H·2 = <b>8BH²</b>.</li>
+        <li><b>Total FFN FLOPs</b> = 8BH² + 8BH² = <b>16BH²</b> — matching Table 1's decode-FFN entry exactly, with <code>B</code> the batch size.</li>
+        <li><b>Now compare to prefill attention:</b> Table 1 gives attention prefill FLOPs as 8NH² + <b>4N²H</b> — that <code>N²</code> term (N = prefill tokens) is why <code>T̂_prefill</code> in Eq. 1 needs a quadratic component, while decode's cost (Eq. 2) stays linear in total context length ΣL, since decoding never re-processes the full prompt at once.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is the arithmetic reason prefill and decode need <i>different</i> prediction models — it's not an engineering convenience, it falls directly out of how self-attention's cost scales with sequence length.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Stream-based Disaggregation vs. chunked-prefill, LLaMA2-70B</h3>
+      <p style="color:var(--ink-soft)">A 2048-token prefill job must run alongside ongoing decoding. Chunked-prefill uses chunk size 512; a single decode step here costs ≈0.35 s.</p>
+      <ol class="seq">
+        <li><b>Chunked-prefill total prefill time ≈ 1.4 s.</b> Ratio to one decode step: 1.4 ÷ 0.35 = <b>4×</b> — matching the paper's own comparison.</li>
+        <li><b>Stream-based Disaggregation prefill time ≈ 0.75 s</b> for the same 2048-token job — because it runs as one continuous computation in its own stream rather than being sliced and re-queued.</li>
+        <li><b>Speedup in prefill completion:</b> 1.4 ÷ 0.75 ≈ <b>1.87×</b> faster than chunked-prefill.</li>
+        <li><b>Cost to decode:</b> each decode iteration under SBD takes ≈0.34 s — essentially unchanged from the uncontended 0.35 s single-step baseline (the two are within measurement noise of each other, not a real slowdown), versus chunked-prefill's decode steps which stay closer to baseline but at the price of that 4× stretched-out prefill.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🌬️</span><div><b>Insight:</b> chunking trades prefill time for decode smoothness one-for-one; SBD gets both — faster prefill <i>and</i> nearly-undisturbed decode — because the two jobs genuinely run in parallel on shared hardware rather than taking turns.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Tallying the headline speedups against DistServe</h3>
+      <p style="color:var(--ink-soft)">Pulling every reported comparison into one table (all vs. DistServe, the PD state-of-the-art baseline).</p>
+      <table class="tbl">
+        <thead><tr><th>Model / dataset</th><th>Metric</th><th>Improvement</th></tr></thead>
+        <tbody>
+          <tr class="best"><td class="mono">OPT-13B, ShareGPT</td><td>TTFT median</td><td><b>4.28×</b></td></tr>
+          <tr><td class="mono">OPT-13B, ShareGPT</td><td>TTFT P99</td><td>2.1×</td></tr>
+          <tr><td class="mono">OPT-13B, ShareGPT</td><td>TPOT P99</td><td>1.5×</td></tr>
+          <tr><td class="mono">OPT-66B, ShareGPT</td><td>TTFT median</td><td>1.54×</td></tr>
+          <tr><td class="mono">OPT-66B, ShareGPT</td><td>TPOT P99</td><td>1.52×</td></tr>
+          <tr><td class="mono">LLaMA2, LongBench</td><td>TTFT median</td><td>1.65–2.1×</td></tr>
+          <tr><td class="mono">LLaMA2, LongBench</td><td>TTFT P99</td><td>1.55–1.76×</td></tr>
+          <tr><td class="mono">All, high load</td><td>SLO attainment</td><td>≥1.5×</td></tr>
+        </tbody>
+      </table>
+      <div class="callout why"><span class="ic">💡</span><div>Note the pattern: TTFT gains are consistently larger than TPOT gains everywhere. That's the fingerprint of Dynamic Prefill Dispatch doing most of the work — it directly targets prefill queuing, while TPOT is protected more conservatively by Stream-based Disaggregation and Dynamic Rescheduling, which are deliberately cautious about ever making decode worse.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the common misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A team doubles the GPUs on their decoding instance to be safe about TPOT SLOs. Why might this make TTFT <i>worse</i>, not better?</div>
+      <details><summary>Show answer</summary><div class="ans">Because compute is a shared, zero-sum resource across the deployment. Adding GPUs to decode without adding them to prefill leaves the prefill instance with the same fixed compute budget while decode sits comparatively idle (decode is usually I/O-bound and rarely saturates its GPUs). If traffic grows, prefill queues up — exactly the [TP-2,TP-2] case in Figure 3, where prefill queuing delay rose to 0.179 s because decode was over-provisioned.<span class="mis">Misconception: that more GPUs anywhere always helps. In a fixed PD split, resources given to one phase are resources denied to the other — the imbalance doesn't disappear, it just moves.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">A KV cache is 3 GB and must cross a PCIe Gen4 ×16 link at 32 GB/s. Estimate the naive transfer time, and explain why the real measured time (per the paper's OPT-13B example) is typically higher.</div>
+      <details><summary>Show answer</summary><div class="ans">Naive: 3 GB ÷ 32 GB/s ≈ <b>94 ms</b>. The paper's own OPT-13B example (1.5 GB) gives a naive estimate of ≈47 ms but a measured transfer of ≈65 ms — about 1.4× the naive figure — due to real transfer/protocol overhead on top of raw bandwidth. Scaling that same overhead factor, 3 GB would realistically take somewhat more than the ≈94 ms naive estimate.<span class="mis">Misconception: that bandwidth alone determines transfer time. Real transfers carry fixed and variable overhead beyond the theoretical throughput — always the case in system numbers, not just an LLM-serving quirk.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why does the Coordinator set the Dynamic Prefill Dispatch threshold <code>thrd</code> "slightly below the TTFT SLO," rather than exactly at the SLO or well below it?</div>
+      <details><summary>Show answer</summary><div class="ans">Setting it too low triggers dispatch constantly, dumping excess prefill work onto the decode instance and risking overloading <i>it</i> instead — increasing TTFT via decode-side queuing and hurting TPOT via prefill-decode interference (paper, Fig. 5). Setting it at or above the SLO means requests only get help after they've already begun violating their target, which is too late. Just below the SLO leaves a margin for the dispatch decision and any residual queuing delay to still land inside the SLO.<span class="mis">Misconception: that more aggressive load-shedding is always better. The threshold is a genuine two-sided trade-off (Figure 5 shows both directions degrade SLO attainment), not a dial you simply crank down.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Stall-free Rescheduling lets a request keep decoding while its KV cache migrates. Why not just pause the request immediately and migrate everything in one shot — wouldn't that be simpler and just as fast?</div>
+      <details><summary>Show answer</summary><div class="ans">Pausing immediately would add the full migration time (tens of ms, "several times" a decode step per the paper) directly to that request's TPOT for every affected step — exactly the stall the design is named to avoid. By letting decoding continue and only pausing for the small remaining delta once most of the cache is already transferred, the visible pause shrinks to a fraction of the full migration cost. It is simpler to implement pause-then-migrate, but at a direct TPOT cost the paper is specifically trying to eliminate.<span class="mis">Misconception: that "simpler" and "faster" migration strategies are the same axis. Stall-free Rescheduling trades a bit of engineering complexity (tracking in-flight KV deltas) for a real latency win.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">WindServe deliberately does <i>not</i> apply Stream-based Disaggregation inside the prefill instance, even though the paper shows SBD helps. Why?</div>
+      <details><summary>Show answer</summary><div class="ans">SBD's scheduling relies on the Profiler predicting when the co-located job is "about to complete" so the other stream can be fetched and synchronized correctly. In the decode instance, only a <i>few</i> borrowed prefill jobs are ever involved, so misprediction risk is limited. Applying SBD inside the prefill instance would make its whole scheduling policy hinge heavily on Profiler accuracy, which the authors judge insufficiently robust there.<span class="mis">Misconception: that a technique proven beneficial in one place should be applied everywhere it's structurally possible. WindServe's authors explicitly scope SBD to where its dependency on prediction accuracy is safe.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">MIG (Multi-Instance GPU) offers strong isolation between partitions. Why doesn't WindServe use it instead of CUDA streams for co-locating prefill and decode?</div>
+      <details><summary>Show answer</summary><div class="ans">MIG partitions are inflexible and fixed at GPU-configuration time — reconfiguring them isn't something you do many times per second in response to a queue filling up. MIG also disables peer-to-peer (P2P) GPU communication, which distributed LLM inference (tensor/pipeline parallelism) depends on. CUDA streams, by contrast, can be created, used, and torn down at runtime with no such restriction.<span class="mis">Misconception: that more isolation is always the better engineering choice. Isolation and runtime flexibility are in tension here, and WindServe's whole premise — reacting to load within milliseconds — requires the flexible option even at some cost in isolation.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 7 · medium</span>
+      <div class="qtext">Table 4 sets OPT-13B's TPOT SLO to 0.1 s, following the paper's rule "≈4× the execution time of a decoding iteration ... without prefill interference." What does this imply about the uncontended per-step decode latency for OPT-13B, and why build in that 4× margin at all?</div>
+      <details><summary>Show answer</summary><div class="ans">0.1 s ÷ 4 ≈ <b>25 ms</b> implied uncontended decode-step latency for OPT-13B under this setup. The 4× margin exists because in practice a decode step is rarely perfectly uncontended — batching effects, occasional prefill interference, and normal variance all inflate the real per-step time above the ideal baseline; setting the SLO at a bare 1× would make it nearly impossible to meet even under healthy conditions.<span class="mis">Misconception: that an SLO should equal the best-case measured latency. SLOs need headroom for realistic operating conditions, not laboratory-ideal ones — that's the whole reason for the "≈4×" rule instead of "=1×".</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 8 · hard</span>
+      <div class="qtext">The paper reports that WindServe's TTFT improvements (up to 4.28×) are consistently larger than its TPOT improvements (up to 1.5×) across every workload tested. Give the mechanistic reason, not just "that's what the graphs show."</div>
+      <details><summary>Show answer</summary><div class="ans">Dynamic Prefill Dispatch acts directly and aggressively on TTFT — it exists purely to relieve prefill queuing, and the decode instance has a strict token <code>budget</code> for absorbing that work so it never fully saturates. TPOT improvements, by contrast, come indirectly — Dynamic Rescheduling reduces KV-cache swapping and Stream-based Disaggregation limits interference, but both are deliberately conservative (bounded budgets, separate streams, stall-free transfers) specifically so they don't regress TPOT. The mechanisms optimizing TTFT are direct and unbounded-in-intent; the mechanisms protecting TPOT are indirect and intentionally bounded.<span class="mis">Misconception: that both metrics are optimized by the "same amount of effort." WindServe's design asymmetrically prioritizes not regressing TPOT over maximizing its improvement, while TTFT is attacked much more directly.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Twelve questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What problem does WindServe actually solve, in one sentence?<span class="chev">▾</span></summary><div class="a">Phase-disaggregated LLM serving removes prefill/decode interference but freezes the GPU split between them at deployment time; WindServe adds a runtime scheduler that keeps moving individual jobs across that split as load shifts, without giving up disaggregation's isolation benefits.</div></details>
+      <details><summary><span class="q">Q2</span>Isn't phase-disaggregation already the state of the art — why isn't DistServe enough?<span class="chev">▾</span></summary><div class="a">DistServe plans placement and instance sizing well for an assumed workload, but that scheduling is inflexible once traffic shifts; the paper discusses online replanning as a possible fix but describes it as disruptive and stagnating rather than a real-time answer. WindServe instead reacts within the running system, without replanning placement at all.</div></details>
+      <details><summary><span class="q">Q3</span>What exactly triggers Dynamic Prefill Dispatch?<span class="chev">▾</span></summary><div class="a">The Profiler predicts a new request's TTFT given everything ahead of it in the prefill instance. If that prediction exceeds a threshold set just under the TTFT SLO, the Coordinator checks whether the decode instance has spare token "slots" (bounded by a budget that protects its own TPOT SLO) and, if so, dispatches the prefill work there.</div></details>
+      <details><summary><span class="q">Q4</span>And what triggers Dynamic Rescheduling?<span class="chev">▾</span></summary><div class="a">Decode-instance KV cache blocks nearing exhaustion — the memory-pressure signal, not a compute one. WindServe responds by migrating some long-context decode requests to the prefill instance, freeing decode-instance KV blocks for everyone else.</div></details>
+      <details><summary><span class="q">Q5</span>Why migrate long-context requests specifically, not short ones?<span class="chev">▾</span></summary><div class="a">Migrating a long-context request frees far more KV cache space per migration than a short one — and since the goal here is relieving memory pressure fast, that's the more valuable trade, even though (per Llumnix's logic) short requests would be cheaper to move individually.</div></details>
+      <details><summary><span class="q">Q6</span>What does "stall-free" actually mean?<span class="chev">▾</span></summary><div class="a">The migrating request keeps decoding — producing new KV cache — while its existing cache streams to the prefill instance in the background. Only once the untransferred remainder is small does decoding briefly pause for the final handoff, so the visible stall is much shorter than the full migration.</div></details>
+      <details><summary><span class="q">Q7</span>How is Stream-based Disaggregation different from chunked-prefill?<span class="chev">▾</span></summary><div class="a">Chunked-prefill slices a prefill job into small pieces interleaved between decode steps in the <i>same</i> stream — it avoids blocking decode but stretches prefill's own completion time considerably (≈4× a decode step in the paper's LLaMA2-70B example). Stream-based Disaggregation instead runs prefill in a genuinely separate CUDA stream concurrently with decode, finishing faster while leaving decode nearly undisturbed.</div></details>
+      <details><summary><span class="q">Q8</span>Why not use NVIDIA MPS or MIG for this instead of raw CUDA streams?<span class="chev">▾</span></summary><div class="a">MIG has fixed partitions, disables P2P GPU communication (breaking distributed inference), and can't be reconfigured at runtime. MPS is more flexible but can only be reconfigured at process launch. CUDA streams can be created and adjusted continuously during serving, which is what runtime dynamic scheduling requires.</div></details>
+      <details><summary><span class="q">Q9</span>Does dynamic scheduling ever make things worse?<span class="chev">▾</span></summary><div class="a">Yes, in bounded ways the paper is upfront about: Stream-based Disaggregation slightly reduces decode efficiency from shared-hardware contention; Dynamic Rescheduling temporarily forces chunked-prefill in the prefill instance, moderately raising TTFT there. Both effects are described as minimal compared to the gains, and ablations (§5.4) quantify them directly.</div></details>
+      <details><summary><span class="q">Q10</span>How does the Profiler know how long a batch will take?<span class="chev">▾</span></summary><div class="a">It uses a quadratic-in-tokens model for prefill (T̂_prefill = a·N + b·N² + c) and a linear-in-context-length model for decode (T̂_decode = a·ΣL + c), with coefficients fit by profiling and regression before runtime — reflecting that prefill's attention cost grows with the square of prompt length while decode's I/O cost grows linearly with total context.</div></details>
+      <details><summary><span class="q">Q11</span>What are WindServe's own acknowledged limitations?<span class="chev">▾</span></summary><div class="a">No multi-node evaluation (cross-node NCCL/GDR communication would need additional tuning); Stream-based Disaggregation roughly doubles I/O overhead since independent kernels can't share loads; and GPU sharing via streams is still coarse-grained — the CTA scheduler's opacity limits how finely WindServe can control contention between the two streams.</div></details>
+      <details><summary><span class="q">Q12</span>What's proposed as future work?<span class="chev">▾</span></summary><div class="a">Extending the PD architecture to heterogeneous GPU clusters (e.g. pairing high-compute/low-bandwidth GPUs for prefill with other GPUs for decode to cut cost), plus load balancing across many instances and fine-grained autoscaling strategies for large-scale deployment.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results, and further reading</h2>
+      <p class="sub">Every term in one place, the headline numbers, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>WindServe</b><span>The paper's system: a PD-architecture LLM server with a Global Scheduler that dynamically moves work across the prefill/decode boundary at runtime.</span></div>
+      <div class="term-def"><b>Global Scheduler</b><span>WindServe's cross-instance coordination layer, composed of a Profiler and a Coordinator.</span></div>
+      <div class="term-def"><b>Profiler</b><span>Predicts batch completion time from token counts using a regressed quadratic (prefill) / linear (decode) model.</span></div>
+      <div class="term-def"><b>Coordinator</b><span>Monitors instance load and KV-cache pressure; triggers Dynamic Prefill Dispatch and Dynamic Rescheduling.</span></div>
+      <div class="term-def"><b>Dynamic Prefill Dispatch</b><span>Sends overflow prefill tokens from an overloaded prefill instance to the decode instance when it has spare capacity.</span></div>
+      <div class="term-def"><b>Dynamic Rescheduling</b><span>Migrates long-context decode requests to the prefill instance when decode-instance KV cache nears exhaustion.</span></div>
+      <div class="term-def"><b>Stall-free Rescheduling</b><span>Migration method that lets a request keep decoding while its KV cache transfers, pausing only for a small final delta.</span></div>
+      <div class="term-def"><b>Stream-based Disaggregation (SBD)</b><span>Runs co-located prefill and decode jobs in separate CUDA streams inside the decode instance to reduce interference.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Prefill / decoding phase</b><span>Prefill processes the whole prompt (compute-bound); decoding generates tokens one at a time (I/O-bound).</span></div>
+      <div class="term-def"><b>TTFT / TPOT</b><span>Time To First Token / Time Per Output Token — the two latency metrics the paper optimizes.</span></div>
+      <div class="term-def"><b>KV cache</b><span>Cached key/value tensors reused every decoding step; ≈1.5 GB per request at OPT-13B's 2048-token context limit.</span></div>
+      <div class="term-def"><b>PD architecture</b><span>Phase-Disaggregated: prefill and decoding run on separate serving instances with KV cache transferred between them.</span></div>
+      <div class="term-def"><b>Chunked-prefill</b><span>Splitting a prefill job into small pieces interleaved with decode steps in one stream — avoids blocking but lengthens prefill.</span></div>
+      <div class="term-def"><b>PagedAttention</b><span>vLLM's block-based KV cache allocation, avoiding worst-case pre-reservation; the memory-management foundation WindServe builds on.</span></div>
+      <div class="term-def"><b>TP / PP placement</b><span>Tensor / Pipeline Parallelism configuration, written [TP-a, PP-b], deciding how many GPUs an instance uses and how.</span></div>
+      <div class="term-def"><b>CUDA stream / Hyper-Q</b><span>A sequence of GPU commands that can run concurrently with other streams; Hyper-Q provides 32 hardware queues enabling this.</span></div>
+      <div class="term-def"><b>MIG / MPS / Time-Slicing / vGPU</b><span>Alternative NVIDIA GPU-sharing technologies, all rejected by WindServe for lacking runtime flexibility or P2P support.</span></div>
+      <div class="term-def"><b>Per-GPU request rate</b><span>Load reported as requests/second divided by GPU count, per the paper's linear scaling rule, for cross-configuration comparability.</span></div>
+      <div class="term-def"><b>SLO attainment</b><span>Percentage of requests meeting both their TTFT and TPOT targets — the paper's summary quality-of-service metric.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What WindServe buys (vs. DistServe)</div>
+      <div class="viz-kicker">speedup factors reported across models and datasets · higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">TTFT median<small>OPT-13B, ShareGPT</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="4.28"><span>4.28× faster</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">TTFT P99<small>OPT-13B, ShareGPT</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="2.1"><span>2.1× faster</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">TPOT P99<small>OPT-13B, ShareGPT</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="1.5"><span>1.5× faster</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">TTFT median<small>LLaMA2, LongBench, best case</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="2.1"><span>up to 2.1× faster</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">SLO attainment<small>high load, at least</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="1.5"><span>≥1.5× better</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 4.5×</p>
+      <figcaption><b>TTFT gains dominate:</b> Dynamic Prefill Dispatch acts directly on queuing delay, while TPOT gains are protected more conservatively by Stream-based Disaggregation and Dynamic Rescheduling, which are designed above all not to regress decode. (Paper §5.2)</figcaption>
+    </figure>
+
+    <div class="subhead">Testbed &amp; implementation, for context</div>
+    <div class="read-item reveal"><h4>Hardware <span class="diff easy">easy</span></h4><div class="meta">§5.1</div><p>8× NVIDIA PCIe A800-80GB GPUs; NVLink 400 GB/s (bidirectional) within a pair, PCIe Gen4 64 GB/s (bidirectional) across the rest — individual KV-cache transfers are bounded by roughly half that one-way (~32 GB/s, as used in the worked examples); 2.90 GHz Intel Xeon Gold 6326, 768 GB DRAM.</p></div>
+    <div class="read-item reveal"><h4>Software footprint <span class="diff easy">easy</span></h4><div class="meta">§4</div><p>Built on DistServe's open-source implementation; ~1.4K lines of Python for the front-end/Global Scheduler, ~2K lines of C++/CUDA extending SwiftTransformer for async KV transfer, SBD, and concurrency control.</p></div>
+
+    <div class="subhead">Related papers (from the paper's own reference list)</div>
+    <div class="read-item reveal"><h4>DistServe: Disaggregating Prefill and Decoding for Goodput-optimized LLM Serving <span class="diff med">medium</span></h4><div class="meta">Zhong et al. · OSDI 2024</div><p>The state-of-the-art PD baseline WindServe compares against throughout — static placement, offline replanning.</p></div>
+    <div class="read-item reveal"><h4>Efficient Memory Management for LLM Serving with PagedAttention <span class="diff med">medium</span></h4><div class="meta">Kwon et al. (vLLM) · SOSP 2023</div><p>The block-based KV cache management and continuous batching foundation WindServe builds directly on top of.</p></div>
+    <div class="read-item reveal"><h4>Taming Throughput-Latency Tradeoff with Sarathi-Serve <span class="diff med">medium</span></h4><div class="meta">Agrawal et al. · OSDI 2024</div><p>Origin of chunked-prefill, WindServe's main point of comparison for co-locating prefill and decode work.</p></div>
+    <div class="read-item reveal"><h4>Llumnix: Dynamic Scheduling for LLM Serving <span class="diff med">medium</span></h4><div class="meta">Sun et al. · OSDI 2024</div><p>Multi-stage KV migration that inspired Stall-free Rescheduling — but migrates short requests, the opposite priority from WindServe.</p></div>
+    <div class="read-item reveal"><h4>Splitwise: Efficient Generative LLM Inference Using Phase Splitting <span class="diff med">medium</span></h4><div class="meta">Patel et al. · ISCA 2024</div><p>An independent phase-splitting PD design, part of the broader context this paper positions itself within.</p></div>
+    <div class="read-item reveal"><h4>POD-Attention: Unlocking Full Prefill-Decode Overlap <span class="diff hard">hard</span></h4><div class="meta">Kamath et al. · arXiv 2024</div><p>A concurrent GPU-kernel-level approach to overlapping prefill and decode compute, complementary to WindServe's stream-level approach.</p></div>
+    <div class="read-item reveal"><h4>FlashAttention-2: Faster Attention with Better Parallelism <span class="diff hard">hard</span></h4><div class="meta">Dao · ICLR 2024</div><p>The attention kernel WindServe incorporates for its prefill phase.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Feng, Huang, Zhang, Liang, Yan &amp; Wu, "WindServe: Efficient Phase-Disaggregated LLM Serving with Stream-based Dynamic Scheduling" (ISCA'25)</span>
+    <span><b>Source notes:</b> all figures, algorithms, and quoted numbers above are drawn from the paper text; analogies, the "one rule" framing, the quick-glossary layout, and the rebuilt diagrams are original explanatory framing, not from the paper.</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 4.5;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PARTITION EXPLORER (kept for house-style parity; inert unless matching markup is present) ---- */
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'"></div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
