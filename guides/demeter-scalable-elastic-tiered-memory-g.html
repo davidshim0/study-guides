@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<!-- Demeter field guide — Guest-Delegated Tiered Memory for Virtualized Cloud (Hu, Hu, Wu, Yang, SOSP'25).
+     Semantic colors: teal = guest-delegated approach (Demeter) · honey = hypervisor-based baseline (TPP-H, the problem)
+     · indigo = Demeter's machinery (PEBS/segment-tree/balloon) · terracotta = TLB-flush / tracking overhead (the cost). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Let the Guest Watch Its Own Memory — Demeter, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;      /* teal  = guest-delegated approach (Demeter) */
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;    /* indigo = Demeter's machinery (PEBS/segtree/balloon) */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = TLB-flush / tracking overhead */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:20ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:158px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2025 · A Field Guide</span>
+    <h1>Stop asking the hypervisor to <span class="swash">guess</span> what the guest already <span class="swash" style="color:var(--optane)">knows</span></h1>
+    <p class="lede">A VM sits between two things that both know its memory access pattern intimately — the guest kernel, and the hardware sampler watching it. The hypervisor, stuck outside both, has been doing tiered-memory management the hard way. Demeter just hands the job to the guest.</p>
+    <div class="hero-meta">
+      <span>📄 "Demeter" · Hu, Hu, Wu, Yang · SOSP '25</span>
+      <span>🎓 Some virtualization/mm basics assumed — primers cover them</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🌾</div>
+      <p>Let the <span class="ro">GUEST</span> track, classify, and move its own hot pages — the <span class="wo">HOST</span> should only hand out elastic capacity, never chase page tables.<br><em style="font-size:.9rem">Delegate the pipeline; keep only provisioning at the hypervisor.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then ten minutes of primers</h2>
+      <p class="sub">The acronyms first, since the paper leans on them heavily; then the concepts they sit on, collapsed — open whichever is unfamiliar.</p>
+    </div>
+
+    <div class="card">
+      <h3>Quick glossary — acronyms you'll see everywhere</h3>
+      <div class="gloss">
+        <div class="term-def"><b>FMEM / SMEM</b><span>Fast memory tier (DRAM) / slow memory tier (PMEM or CXL.mem).</span></div>
+        <div class="term-def"><b>TMM / TMP</b><span>Tiered Memory Management (track→classify→migrate) vs. Tiered Memory Provisioning (deciding tier capacity/elasticity).</span></div>
+        <div class="term-def"><b>gVA / gPA / hPA</b><span>Guest virtual, guest physical, host physical address — the three layers a memory access crosses in a VM.</span></div>
+        <div class="term-def"><b>EPT / NPT</b><span>Extended/Nested Page Tables — hardware structure translating gPA→hPA (Intel/AMD terms; paper uses "EPT" generically).</span></div>
+        <div class="term-def"><b>PTE.A/D</b><span>Page Table Entry Access/Dirty bits — set by hardware on access; the traditional (and expensive) way to detect "was this touched?"</span></div>
+        <div class="term-def"><b>PEBS</b><span>Processor Event-Based Sampling — a hardware unit that samples load/store instructions directly, no page-table bit games required.</span></div>
+        <div class="term-def"><b>PMI</b><span>Performance Monitoring Interrupt — fires when a PEBS buffer overflows; expensive if it happens too often.</span></div>
+        <div class="term-def"><b>TLB</b><span>Translation Lookaside Buffer — caches address translations; must be flushed when page tables change.</span></div>
+        <div class="term-def"><b>QoS</b><span>Quality of Service — here, Demeter exposes telemetry and tier-aware provisioning hooks toward this goal; concrete QoS/fairness policy is left to future work.</span></div>
+        <div class="term-def"><b>GUPS</b><span>Giga Updates Per Second — a skewed-access microbenchmark used throughout the paper's evaluation.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> guest-delegated (Demeter)</span>
+      <span><i style="background:var(--honey-deep)"></i> hypervisor-based baseline (TPP-H)</span>
+      <span><i style="background:var(--ltram)"></i> Demeter's machinery (PEBS/segtree/balloon)</span>
+      <span><i style="background:var(--optane)"></i> TLB-flush / tracking overhead</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Tiered memory: FMEM + SMEM<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Server DRAM capacity per core has been shrinking for a decade, so clouds pair a small fast tier (DRAM) with a large slow tier — PMEM or CXL.mem — that costs roughly half as much per GB. The system's job is to keep hot pages in FMEM and cold ones in SMEM.</p>
+          <div class="ready"><b>Now you're ready:</b> the whole paper is about <i>who decides</i> which pages go where, inside a virtualized cloud.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>2D address translation in a VM<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A guest thinks in guest virtual addresses (gVA). Its own page tables (GPT) turn that into a guest physical address (gPA) — an illusion of physical memory the hypervisor maintains. A second hardware structure, EPT (Intel) or NPT (AMD), turns gPA into the real host physical address (hPA). Every memory access, in the worst case, walks both tables: up to 25 memory accesses for one translation on modern 5-level page tables.</p>
+          <div class="ready"><b>Now you're ready:</b> anything that has to modify either table (GPT or EPT) pays this translation tax — which is exactly what access tracking does.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>TLBs and why flushing them hurts<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The TLB caches translation results so most accesses skip the expensive page-table walk. But whenever a page table entry changes, cached TLB entries referencing it become stale and must be flushed — <b>single-address</b> flushes remove one mapping; <b>full</b> flushes (invept) wipe every mapping for a guest, forcing every subsequent access to re-walk both dimensions.</p>
+          <div class="ready"><b>Now you're ready:</b> §2.3.1's entire argument is that hypervisor-based tracking is forced into expensive full flushes, while guest-side tracking can use cheap single-address ones.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>PTE.A/D bits — the traditional access signal<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Hardware automatically sets an Access bit (and Dirty bit, on writes) in a page table entry whenever it's used. A scanner periodically reads these bits to infer "was this page touched recently?", then <i>clears</i> them to detect future accesses — and clearing requires a TLB flush so the hardware doesn't serve a stale cached translation instead of re-setting the bit.</p>
+          <div class="ready"><b>Now you're ready:</b> that clear-then-flush cycle, repeated every scan round across gigabytes of VM memory, is the mechanism Demeter tries to avoid entirely.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>PEBS — hardware sampling instead of bit-scanning<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Processor Event-Based Sampling has the CPU itself record a sample (with the accessed address) every N memory events, writing it to a buffer in memory — no page-table bit clearing, no TLB flush. Kernel-based systems (HeMem, Memtis) already showed PEBS beats PTE.A/D scanning on bare metal. It was long assumed unusable for guest VMs.</p>
+          <div class="ready"><b>Now you're ready:</b> Demeter's second core insight is that this assumption was wrong — modern hardware (PEBS v5) makes guest PEBS safe and fast. See §2.3.2 and the analogies tab.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Memory ballooning &amp; overcommitment<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Clouds rent out more memory than physically exists, betting most VMs won't use their full allocation simultaneously. A <b>balloon driver</b> inside the guest lets the host reclaim (inflate) or return (deflate) memory pages, giving elasticity without hard-resizing the VM.</p>
+          <div class="ready"><b>Now you're ready:</b> conventional balloons have no idea which <i>tier</i> a page belongs to — that's the gap Demeter's double balloon closes.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>NUMA nodes as a tier-exposure trick<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Multi-socket machines already expose "NUMA nodes" to the OS — regions of memory with different latency from each CPU. Guest kernels already know how to handle multiple NUMA nodes with different characteristics, so exposing FMEM and SMEM as two virtual NUMA nodes needs no new OS abstraction at all.</p>
+          <div class="ready"><b>Now you're ready:</b> this is how Demeter tells the guest kernel "here are your two tiers" using nothing but standard ACPI tables.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Segment-tree-style range classification<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Rather than tracking hotness per 4 KiB page (millions of entries), you can track hotness per contiguous <i>range</i> of virtual address space, splitting a range in two only when one half looks hotter than its neighbors, and merging ranges back together once they've gone cold.</p>
+          <div class="ready"><b>Now you're ready:</b> this range tree, operating in guest virtual address space, is the core data structure behind Demeter's hotness classifier (§3.2.1).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>Three flavors of TMM: kernel, hypervisor, guest-delegated<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Kernel-based</b> systems (TPP, Memtis, HeMem) run on bare metal with full access to hardware and the true virtual address space. <b>Hypervisor-based</b> systems (RAMinate, vTMM, HeteroOS) run TMM in the host for a VM, but only ever see gPA/hPA — never the guest's virtual addresses. <b>Guest-delegated</b> (Demeter) runs the full TMM pipeline inside the guest kernel itself, keeping only elastic provisioning at the host.</p>
+          <div class="ready"><b>Now you're ready:</b> Demeter's argument is that hypervisor-based is the wrong layer entirely — not just an implementation detail to optimize.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Demeter in a nutshell</h2>
+      <p class="sub">The problem with tracking from outside the guest, the two insights that fix it, and how the pieces fit together.</p>
+    </div>
+    <div class="prose">
+      <p>Existing virtualized tiered-memory systems put the hypervisor in charge of tracking, classifying, and migrating guest pages. To track accesses, they scan <span class="mem-chip chip-lru">PTE.A/D bits</span> in EPT or GPT — but the hypervisor only ever sees guest physical addresses (gPA), never the guest's own virtual addresses (gVA). Without gVA, it can't target single-address TLB invalidation, so it's forced into destructive <b>full</b> EPT flushes on every scan round. Demeter's authors measured this directly: a hypervisor-based TPP variant (TPP-H) issues <b>4.7×</b> more TLB flush instructions than the same logic run inside the guest, and runs <b>2.5×</b> slower.</p>
+      <p>Demeter's fix is architectural, not incremental: delegate the <i>entire</i> three-step TMM pipeline — tracking, classification, migration — to the guest kernel, and leave the hypervisor with only <b>tiered memory provisioning (TMP)</b>: making elastic capacity available. Two insights make this workable. <b>Insight 1:</b> inside the guest, access tracking sees real gVAs, so it can use cheap single-address TLB invalidation and read undisturbed locality. <b>Insight 2:</b> <span class="mem-chip chip-ucp">PEBS</span>, long assumed off-limits to guests due to an old architectural bug, is now safe and fast under PEBS v5 — and is <i>fundamentally unusable from the host side</i>, since PEBS only ever records guest virtual addresses, meaningless to a hypervisor.</p>
+      <p>On top, Demeter designs a <b>range-based hotness classifier</b> that operates in guest virtual address space (not physical — where the kernel's lazy allocator has already scrambled locality), a scalable PEBS pipeline that drains samples at context-switch time instead of running dedicated polling threads, and a <b>double balloon</b> mechanism giving the host page-granular, tier-aware elastic control without touching TMM decisions.</p>
+      <p><strong>The payoff:</strong> up to <b>2×</b> over hypervisor-based approaches, and <b>28%</b> on average (geomean) over the next-best guest-based alternative (TPP), across seven real workloads on DRAM+PMEM and DRAM+CXL.mem, all while keeping system-wide monitoring overhead under <b>0.2 CPU cores</b> as VM count scales on a 36-core host.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🌾 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Hypervisor-based TMM can only see gPA/hPA, forcing destructive <b>full</b> TLB flushes — 4.7× more flush instructions, 2.5× slower than the same logic in-guest.</li>
+        <li>PEBS was wrongly believed unusable in guests; an architectural EPT-fault bug was the culprit, fixed by <b>PEBS v5</b> — and it's structurally unusable from the host anyway (host can't act on gVAs).</li>
+        <li>Guest virtual address space, not physical, preserves true locality — the kernel's lazy page allocator scrambles physical layout.</li>
+        <li><b>Range-based classification</b> (segment-tree-like splits/merges) scales to TiB address spaces with &lt;50 tracked ranges.</li>
+        <li>Context-switch-time PEBS draining eliminates dedicated polling threads — 16× less CPU than Memtis's design.</li>
+        <li><b>Double balloon</b> gives page-granular, tier-aware elasticity — unlike block-granular (128 MiB/1 GiB) conventional hot-plug.</li>
+        <li>Result: up to 2× vs hypervisor-based, 28% avg vs best guest-based alternative, system-wide monitoring overhead &lt;0.2 core as VM count scales.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Same logic, three vantage points — TLB flushes and elapsed time (Table 1, GUPS workload)</div>
+      <div class="viz-kicker">hypervisor-based (TPP-H) vs. guest-based (TPP-G) vs. guest-delegated (Demeter)</div>
+      <div class="legend">
+        <span><i style="background:var(--honey-deep)"></i> TPP-H (hypervisor, scans EPT)</span>
+        <span><i style="background:var(--ltram)"></i> TPP-G (guest, scans GPT)</span>
+        <span><i style="background:var(--dram)"></i> Demeter (guest, EPT-friendly PEBS)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 340" role="img" aria-label="TLB flush counts and elapsed time comparison">
+        <text x="20" y="26" font-family="JetBrains Mono" font-size="11" fill="#6E6456">TLB flush instructions (millions) — single-address + full</text>
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24">
+          <text x="20" y="56">TPP-H</text>
+          <rect x="90" y="42" width="366" height="20" rx="3" fill="#C27D14"/><rect x="456" y="42" width="119" height="20" rx="3" fill="#9a3a22"/>
+          <text x="580" y="57" fill="#6E6456">62.3M single + 20.2M full</text>
+          <text x="20" y="90">TPP-G</text>
+          <rect x="90" y="76" width="104" height="20" rx="3" fill="#5A61B4"/>
+          <text x="204" y="91" fill="#6E6456">17.7M single + 0 full</text>
+          <text x="20" y="124">Demeter</text>
+          <rect x="90" y="110" width="55" height="20" rx="3" fill="#2C8C7C"/>
+          <text x="155" y="125" fill="#6E6456">9.3M single + 0 full</text>
+        </g>
+        <line x1="20" y1="150" x2="740" y2="150" stroke="#E7DBC6"/>
+        <text x="20" y="176" font-family="JetBrains Mono" font-size="11" fill="#6E6456">Elapsed time (seconds)</text>
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24">
+          <text x="20" y="206">TPP-H</text>
+          <rect x="90" y="192" width="498" height="24" rx="4" fill="#C27D14"/><text x="600" y="209" fill="#6E6456">896.35s</text>
+          <text x="20" y="244">TPP-G</text>
+          <rect x="90" y="230" width="197" height="24" rx="4" fill="#5A61B4"/><text x="300" y="247" fill="#6E6456">353.91s</text>
+          <text x="20" y="282">Demeter</text>
+          <rect x="90" y="268" width="167" height="24" rx="4" fill="#2C8C7C"/><text x="270" y="285" fill="#6E6456">299.57s</text>
+        </g>
+        <text x="20" y="320" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">Demeter: 47% fewer flushes and 15% faster than TPP-G · TPP-H: 4.7× more flushes and 2.5× slower than TPP-G</text>
+      </svg>
+      <figcaption><b>Read it as a chain:</b> moving tracking from hypervisor (EPT scan, no gVA) to guest (GPT scan, has gVA) alone cuts flushes 4.7× and time 2.5×. Swapping GPT scanning for EPT-friendly PEBS inside the guest cuts flushes a further 47% and time a further 15%. (Paper, Table 1 &amp; §2.3.1)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → two insights → guest pipeline + host provisioning → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Hypervisor sees only gPA/hPA → forced into destructive full TLB flushes for PTE.A/D scanning</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Insight 1</div><div class="nd">Guest sees real gVA → cheap single-address invalidation, undisturbed locality</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Insight 2</div><div class="nd">EPT-friendly PEBS (v5) now safe, isolated, and usable only from inside the guest</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Guest TMM</div><div class="nd">PEBS sampling → range-based segment-tree classifier → balanced relocation</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Host TMP</div><div class="nd">Double balloon: NUMA-exposed, page-granular, async, QoS-capable</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">Up to 2× vs hypervisor-based · +28% avg vs best guest alternative</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Seven everyday pictures</div>
+      <h2>How to think about Demeter</h2>
+      <p class="sub">Read in any order. Each ends with where the picture stops being literally true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="30" width="46" height="50" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2.5"/>
+          <circle cx="37" cy="20" r="7" fill="#F7E1D8" stroke="#C0563B" stroke-width="2.5"/>
+          <path d="M30 82 q40 8 76 -30" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3" fill="none"/>
+          <rect x="86" y="34" width="40" height="46" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2.5"/>
+          <circle cx="106" cy="24" r="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2.5"/>
+          <path d="M96 50 l6 6 l12 -14" stroke="#2C8C7C" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg></div>
+        <span class="term">The core split · Guest vs. host</span>
+        <h3>Asking a neighbor to guess your grocery list</h3>
+        <p>Your neighbor (the hypervisor) can watch you come and go, but can only guess what you bought by peeking at your trash — indirect, laggy, and it requires disturbing your bins every time (a TLB flush). You (the guest) simply know your own list. Demeter's move: stop guessing from outside, let each guest report its own needs directly.</p>
+        <div class="breaks"><b>Where it breaks:</b> the guest is untrusted in a real cloud — Demeter still needs the host to enforce resource bounds and per-tier limits (§7.3), it just doesn't need the host to <i>track</i>.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="60" width="100" height="16" rx="3" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <path d="M30 60 v-14 M50 60 v-14 M70 60 v-14 M90 60 v-14 M110 60 v-14" stroke="#C0563B" stroke-width="2" stroke-linecap="round"/>
+          <path d="M30 30 h90" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="2 3"/>
+          <text x="70" y="24" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">wipe everything</text>
+        </svg></div>
+        <span class="term">Full vs. single TLB flush</span>
+        <h3>Repainting the whole hallway to update one room number</h3>
+        <p>Update one door's number and you only need to repaint that door — that's a single-address TLB flush. But if you don't know <i>which</i> door changed (no gVA), the only safe option is repainting the entire hallway (a full EPT flush) so nobody follows a stale sign. That's the 4.7× flush-count gap between TPP-H and TPP-G in Table 1.</p>
+        <div class="breaks"><b>Where it breaks:</b> even single-address flushes aren't free — Demeter's further 47% reduction comes from avoiding TLB-flush-triggering PTE.A/D bits altogether via PEBS, not just aiming them better.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="16" width="42" height="64" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2.5"/>
+          <rect x="78" y="16" width="42" height="64" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2.5"/>
+          <path d="M41 80 v10 M99 80 v10" stroke="#332C24" stroke-width="2"/>
+          <circle cx="41" cy="94" r="2.5" fill="#332C24"/><circle cx="99" cy="94" r="2.5" fill="#332C24"/>
+          <path d="M62 48 h16" stroke="#C0563B" stroke-width="2.5" stroke-dasharray="4 3"/>
+          <text x="70" y="42" text-anchor="middle" font-family="monospace" font-size="7" fill="#9a3a22">locked</text>
+        </svg></div>
+        <span class="term">Isolation · EPT-friendly PEBS</span>
+        <h3>Each guest keeps a diary in their own locked drawer</h3>
+        <p>The long-standing fear was that enabling PEBS in guests would spill every VM's samples into one shared notebook the host could read. In fact each VM's PEBS buffer address is a guest-private VMCS field (vmcs.debugctl) — hardware switches to a fresh, private drawer on every VM entry. No cross-tenant leakage, no shared buffer.</p>
+        <div class="breaks"><b>Where it breaks:</b> isolation solved the leakage fear, but a separate, older bug (PEBS writes couldn't survive an EPT page fault) was the real reason PEBS looked broken — fixed only recently by PEBS v5 (§2.3.2).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="20" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <rect x="20" y="46" width="46" height="16" rx="3" fill="#FBEACB" stroke="#C27D14" stroke-width="2"/>
+          <rect x="74" y="46" width="46" height="16" rx="3" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <rect x="74" y="68" width="20" height="14" rx="2" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.6"/>
+          <rect x="100" y="68" width="20" height="14" rx="2" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.6"/>
+        </svg></div>
+        <span class="term">Classification · Range splitting</span>
+        <h3>Zooming a map, not surveying every house</h3>
+        <p>A country-level map (one big range) is cheap to draw but useless for finding a hotspot. Zoom in only on the busy region, splitting it in half repeatedly until you've isolated a city block (2 MiB granularity) — while the quiet countryside stays one big, coarse range. Demeter's segment tree does exactly this: split hot ranges, decay and merge cold ones, reaching TiB-scale spaces with under 50 tracked ranges.</p>
+        <div class="breaks"><b>Where it breaks:</b> a map's regions are static; Demeter's ranges continuously decay (halved access counts each epoch) and can re-merge, so the "map" is constantly being redrawn every 500 ms.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <ellipse cx="45" cy="60" rx="24" ry="16" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2.5"/>
+          <ellipse cx="95" cy="60" rx="24" ry="16" fill="#FBEACB" stroke="#C27D14" stroke-width="2.5"/>
+          <path d="M45 44 v-20 M95 44 v-20" stroke="#332C24" stroke-width="2" stroke-linecap="round"/>
+          <path d="M38 24 h14 M88 24 h14" stroke="#332C24" stroke-width="2" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">Elastic capacity · Double ballooning</span>
+        <h3>Two separate air-pressure dials, not one</h3>
+        <p>A conventional balloon is one dial for "how much memory total" — it can't tell FMEM from SMEM, so squeezing it can accidentally deflate the fast tier a workload desperately needs. Demeter gives each guest NUMA node (FMEM, SMEM) its <i>own</i> dial, adjustable page-by-page rather than in 128 MiB/1 GiB blocks, so the host can shrink SMEM without ever touching FMEM.</p>
+        <div class="breaks"><b>Where it breaks:</b> two independent dials still need policy — Demeter deliberately leaves the actual QoS rebalancing policy unspecified (§3.3), providing only the plumbing.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="40" height="40" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <rect x="80" y="30" width="40" height="40" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <path d="M62 40 h16 M62 60 h16" stroke="#5A61B4" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <defs><marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#5A61B4"/></marker></defs>
+        </svg></div>
+        <span class="term">Migration · Balanced relocation</span>
+        <h3>Swapping seats directly, no spare chair needed</h3>
+        <p>Older migration schemes free a temporary "spare chair" in FMEM, seat the new arrival, then move the displaced person to the vacated slow-tier seat — extra shuffling that can trigger a fire-drill (kernel reclamation) if seats run short. Demeter instead pairs one promotion with one demotion and swaps their contents directly, no spare seat ever allocated.</p>
+        <div class="breaks"><b>Where it breaks:</b> the one-to-one pairing assumes promotion and demotion lists are equal length by construction — it works because Demeter deliberately truncates both lists to length 𝑚, not because swaps are always naturally balanced.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="18" width="46" height="60" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <circle cx="30" cy="30" r="3" fill="#2C8C7C"/><circle cx="30" cy="44" r="3" fill="#2C8C7C"/><circle cx="30" cy="58" r="3" fill="#2C8C7C"/>
+          <rect x="76" y="18" width="46" height="60" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <circle cx="86" cy="26" r="2" fill="#C0563B"/><circle cx="102" cy="30" r="2" fill="#C0563B"/><circle cx="92" cy="44" r="2" fill="#C0563B"/><circle cx="110" cy="52" r="2" fill="#C0563B"/><circle cx="84" cy="62" r="2" fill="#C0563B"/><circle cx="108" cy="68" r="2" fill="#C0563B"/>
+        </svg></div>
+        <span class="term">Why virtual, not physical address space</span>
+        <h3>Your bookshelf vs. the moving truck</h3>
+        <p>On your bookshelf (virtual address space), related books sit together — you organized them that way. Pack them into a moving truck (physical address space) loaded in whatever order boxes arrived, and that spatial order is gone; box #40 might be next to box #3 purely by coincidence of arrival time. Figure 4's heat maps show exactly this: gVA hotspots are tight and contiguous, gPA hotspots are scattered.</p>
+        <div class="breaks"><b>Where it breaks:</b> file-backed page cache has no guest virtual address at all (it's kernel-managed), so this trick doesn't extend to it — an explicit limitation the paper flags (§3.4.2).</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, following the guest TMM pipeline and the host's elastic provisioning.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem — tracking from the wrong side of the boundary</h3>
+      <p>Hypervisor-based systems (RAMinate, HeteroOS, vTMM) scan <span class="mem-chip chip-sat">PTE.A/D bits</span> in EPT or GPT from the host. Because the host only sees gPA/hPA, it cannot target single-address TLB invalidation and must fall back to destructive full flushes. Measured on a GUPS workload (126 GiB footprint, 36 threads): a hypervisor variant of TPP (TPP-H) issues 4.7× more TLB flush instructions than the same code run in-guest (TPP-G), and runs 2.5× slower.</p>
+      <div class="callout note"><span class="ic">🔬</span><div><b>Concretely:</b> TPP-H = 62.3M single + 20.2M full flushes, 896.35s. TPP-G = 17.7M single + 0 full, 353.91s. Same tracking logic, different vantage point — that gap <i>is</i> the cost of the virtualization boundary.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · EPT-friendly PEBS — removing the last excuse</h3>
+      <p>PEBS was believed structurally incompatible with guest VMs. The real cause was an architectural bug: a PEBS write to memory couldn't tolerate being interrupted by an EPT page fault (which happens under memory overcommitment, where guest pages are lazily mapped) without risking machine malfunction. <b>PEBS version 5</b> removes this defect. Separately, isolation was never actually broken — the sample buffer lives in a guest-private VMCS field (<code>vmcs.debugctl</code>), switched per-VM by hardware automatically.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why this matters structurally:</b> even if the host <i>could</i> intercept guest PEBS, the samples only contain gVAs — meaningless to a hypervisor without expensive, continuous GPT snooping (§7.5). PEBS is not just hard for the host to use; it's the wrong side of the boundary entirely.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Range-based hotness classification (§3.2.1)</h3>
+      <p>Demeter tracks hotness over contiguous virtual-address ranges rather than individual pages, using a segment-tree-like structure seeded with two ranges: the heap (growing up from <code>start_brk</code>) and the mmap region (growing down from <code>mmap_base</code>). Code, data, and stack are excluded — small and inherently hot.</p>
+      <pre class="sketch"><span class="cm">// every epoch (t_split), for each leaf range vs. its neighbors:</span>
+<span class="hl">α = Δaccess / (τ_split · vcpu)</span>
+<span class="kw">if</span> α exceeds threshold <span class="kw">and</span> range ≥ 2×split_granularity(2MiB):
+    split range in half, divide access count evenly
+<span class="cm">// every epoch: halve every range's access count (decay)</span>
+<span class="cm">// after τ_merge idle epochs at zero: merge back with neighbor</span></pre>
+      <p>After splitting, ranges are ranked by hotness frequency (accesses ÷ size), ties broken by creation age (younger favored — temporal locality). Chosen defaults: epoch <b>500 ms</b>, α threshold <b>2</b>, split threshold <b>τ<sub>split</sub>=15</b>, minimum granularity <b>2 MiB</b>.</p>
+      <div class="callout takeaway"><span class="ic">🌾</span><div><b>Scale check:</b> reaching a 2 MiB hotspot inside a 64 TiB address space takes ~24 splits — about 12 seconds at 500 ms/epoch — creating fewer than 50 ranges total, since the guest's sparse address space keeps most of the tree large and cold.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Scalable EPT-friendly PEBS sampling (§3.2.2)</h3>
+      <p>Unlike HeMem/Memtis, which record physical addresses and must walk the page table to translate every PEBS sample, Demeter feeds gVA samples directly to the range classifier — no translation per sample. Two design choices avoid wasting CPU: a <b>fixed</b> (not dynamically adjusted) sample frequency of <b>1-in-4093</b> events, and draining the PEBS buffer at <b>process context-switch</b> time rather than via a dedicated polling thread — eliminating both idle-polling overhead and PMI storms from buffer overshoot.</p>
+      <p>The PEBS trigger event is <code>MEM_TRANS_RETIRED.LOAD_LATENCY</code> — media-agnostic (works for PMEM and CXL alike, unlike cache-miss events that need per-media variants) — filtered via <code>MSR_PEBS_LD_LAT_THRESHOLD</code> set to <b>64 ns</b>, comfortably between the measured 53.6 ns cache-hit latency and 68.7 ns best-case DRAM read latency (Table 2), so cache hits are effectively filtered out rather than masquerading as memory accesses.</p>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Balanced page relocation (§3.2.3)</h3>
+      <pre class="sketch"><span class="cm">// f = largest index such that ranges [0, f) fit in FMEM</span>
+promotion_list = pages in hot ranges [0, f) currently in SMEM   <span class="cm">// length m</span>
+demotion_list  = coldest m pages currently in FMEM (reverse scan)
+<span class="kw">for</span> (p, d) in zip(promotion_list, demotion_list):
+    unmap(p); unmap(d)
+    swap contents directly (no temporary buffer)
+    remap(p → FMEM); remap(d → SMEM)</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why no temp buffer matters:</b> sequential demote-then-promote schemes can trigger kernel page reclamation (kswapd or direct reclaim) under memory pressure, causing unwanted cascading demotions of other hot pages. One-to-one direct swapping sidesteps this entirely.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>6 · Elastic provisioning — NUMA exposure + Demeter balloon (§3.3)</h3>
+      <p>The host exposes FMEM and SMEM as two virtual NUMA nodes via ACPI (with NUMA distance conveying relative latency), so the guest OS needs zero new abstractions. Capacity control comes from the <b>Demeter balloon</b>: one dedicated, page-granular balloon per NUMA node (vs. 128 MiB/1 GiB block granularity in conventional hot-plug), each sized up to 100% of total memory, letting the FMEM:SMEM ratio slide smoothly from all-fast to all-slow. The whole thing is asynchronous — requests flow over VirtIO queues, guest-side work runs on the kernel workqueue, and completion is signaled back via <code>epoll()</code> on event-fd descriptors — so provisioning never blocks the critical path.</p>
+    </div>
+
+    <!-- INTERACTIVE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: scale up VMs, watch tracking overhead diverge</div>
+      <div class="viz-kicker">CPU cores wasted on access tracking alone, out of a 36-core host (Fig. 2 shape)</div>
+      <div class="part-viz">
+        <div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">concurrent VMs:</span>
+            <input type="range" min="0" max="5" value="5" id="vmRange">
+            <span class="mono" id="vmRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">9</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-vm="0">1 VM</button>
+            <button class="tbtn" data-vm="3">4 VMs</button>
+            <button class="tbtn" data-vm="5">9 VMs</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">TPP (PTE.A/D)<b id="pTpp">—</b></div>
+            <div class="pstat">Memtis (PEBS, naive in-VM)<b id="pMemtis">—</b></div>
+            <div class="pstat">Demeter (EPT-friendly PEBS)<b id="pDemeter">—</b></div>
+          </div>
+          <div class="pverdict sub" id="pVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>What you'll find:</b> TPP's page-table-walk cost per VM compounds almost linearly; Demeter's context-switch-time draining stays nearly flat. (Curve shapes illustrative, anchored to the paper's stated 9-VM values: TPP &gt;4.5 cores, Memtis ≈1.25 cores, Demeter &lt;0.2 cores, all system-wide across the concurrent guests — Fig. 2.)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations, traced from the paper's own tables, connecting straight to the metrics you'd use to judge any tiering system.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The TLB-flush chain: hypervisor → guest → guest+PEBS (Table 1)</h3>
+      <p style="color:var(--ink-soft)">Verify the paper's headline ratios from the raw flush counts and elapsed times.</p>
+      <ol class="seq">
+        <li><b>Total flushes, TPP-H:</b> 62,289,626 single + 20,214,840 full = <b>82,504,466</b>.</li>
+        <li><b>Total flushes, TPP-G:</b> 17,707,154 single + 0 full = <b>17,707,154</b>.</li>
+        <li><b>Ratio TPP-H / TPP-G</b> = 82,504,466 ÷ 17,707,154 ≈ <b>4.66×</b> — matches the paper's "4.7× TLB flush instructions."</li>
+        <li><b>Elapsed-time ratio:</b> 896.35 ÷ 353.91 ≈ <b>2.53×</b> — matches "2.5× total execution time."</li>
+        <li><b>Demeter vs. TPP-G, single flushes:</b> (17,707,154 − 9,305,363) ÷ 17,707,154 ≈ <b>47.5%</b> fewer — matches "47% reduction."</li>
+        <li><b>Demeter vs. TPP-G, elapsed time:</b> (353.91 − 299.57) ÷ 353.91 ≈ <b>15.4%</b> faster — matches "15% improvement."</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🌾</span><div><b>Insight:</b> two separate architectural moves stack multiplicatively — crossing the virtualization boundary (host→guest) buys 4.7×/2.5×; then swapping bit-scanning for PEBS buys a further 1.9×/1.18× on top.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Access-tracking primitive overhead (Table 3, pure DRAM)</h3>
+      <p style="color:var(--ink-soft)">Compare three raw tracking primitives, isolated from the rest of the TMM pipeline.</p>
+      <ol class="seq">
+        <li><b>EPT-friendly PEBS (Demeter):</b> 5.937s, 0.64% CPU.</li>
+        <li><b>PTE.A/D bits (TPP-H style):</b> 27.814s, 3.08% CPU.</li>
+        <li><b>PML-based (vTMM style):</b> 135.410s, 14.61% CPU.</li>
+        <li><b>PML vs. PTE.A/D:</b> 14.61 ÷ 3.08 ≈ <b>4.74×</b> more overhead — matches the paper's "4.7× higher overhead than PTE.A/D bit scanning."</li>
+        <li><b>PEBS vs. PTE.A/D:</b> 27.814 ÷ 5.937 ≈ <b>4.7×</b> faster; <b>PEBS vs. PML:</b> 135.410 ÷ 5.937 ≈ <b>22.8×</b> faster.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>PML's fixed 512-entry buffer forces frequent VM-exits regardless of workload — a rigid, fixed-frequency cost that PEBS's flexible, tunable sampling avoids.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ CPU cost of scaling to nine VMs (Fig. 2)</h3>
+      <p style="color:var(--ink-soft)">Turn "cores wasted" into a fraction of a 36-core host — the number a cloud operator actually bills against.</p>
+      <ol class="seq">
+        <li><b>TPP</b> wastes &gt;4.5 of 36 cores ⇒ &gt;<b>12.5%</b> of the whole host spent just tracking accesses.</li>
+        <li><b>Memtis</b> wastes ≈1.25 of 36 cores ⇒ ≈<b>3.5%</b> of the host.</li>
+        <li><b>Demeter</b> stays under 0.2 of 36 cores ⇒ under <b>0.56%</b> of the host.</li>
+        <li><b>Headroom reclaimed vs. TPP:</b> roughly 12.5 − 0.56 ≈ <b>12 percentage points</b> of host CPU returned to paying tenants — pure TCO, not performance.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is the number that matters for anyone designing a multi-tenant tiering monitor: overhead must scale with number of guests, not just look cheap in a single-VM microbenchmark — the same scalability concern behind sampling-based monitors like UMON/DSS in cache partitioning work.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ From memory latency to real workload speedup</h3>
+      <p style="color:var(--ink-soft)">Ground the "why bother tiering at all" question in Table 2's raw numbers, then connect to the paper's end-to-end results.</p>
+      <ol class="seq">
+        <li><b>DRAM read (best case):</b> 68.7 ns, 88,156.5 MB/s. <b>PMEM read:</b> 176.6 ns, 21,414.5 MB/s.</li>
+        <li><b>Latency penalty of a cold page:</b> 176.6 ÷ 68.7 ≈ <b>2.57×</b> slower per access than a hot one.</li>
+        <li><b>Bandwidth penalty:</b> 88,156.5 ÷ 21,414.5 ≈ <b>4.12×</b> — worse than the latency gap, since PMEM bandwidth degrades faster under contention.</li>
+        <li><b>End-to-end payoff of getting placement right:</b> Demeter reaches up to <b>2×</b> over hypervisor-based approaches and <b>28%</b> average (geomean) over the next-best guest-based alternative (TPP) across seven real workloads — consistent with the intended mechanism of keeping more of that 2.57–4.12× gap on the DRAM side of the line, though the paper doesn't isolate placement quality precisely enough to attribute the full end-to-end speedup directly to that gap alone.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🌾</span><div><b>Insight:</b> every tiering paper's speedup number is ultimately bounded by this latency/bandwidth ratio between tiers — CXL.mem narrows this gap versus PMEM (§5.5), which is exactly why the paper calls CXL.mem "a more challenging environment" for a tiering system to show gains in.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one names the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Why can't a hypervisor-based access tracker use single-address TLB invalidation, even in principle?</div>
+      <details><summary>Show answer</summary><div class="ans">Because the hypervisor only ever observes guest physical addresses (gPA) and host physical addresses (hPA) through EPT/GPT — it never sees the guest virtual address (gVA) that originated the access. Single-address invalidation needs a gVA to target; without one, the only safe option is a full invalidation of the entire EPT mapping.<span class="mis">Misconception: that this is an implementation oversight fixable with better host-side code. It's structural — the information (gVA) simply doesn't cross the virtualization boundary in PTE.A/D-based designs.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Table 1 gives TPP-H: 62,289,626 single + 20,214,840 full flushes, 896.35s elapsed. TPP-G: 17,707,154 single + 0 full, 353.91s elapsed. Compute the total-flush ratio and the elapsed-time ratio, and note which grows faster.</div>
+      <details><summary>Show answer</summary><div class="ans">Total flushes: TPP-H = 82,504,466; TPP-G = 17,707,154; ratio ≈ 4.66×. Elapsed time ratio: 896.35/353.91 ≈ 2.53×. The flush-count gap (4.66×) is nearly double the time gap (2.53×) — flushes don't translate 1:1 into wall-clock time, since some of that extra flushing overlaps with other work or hits caches that were already partially cold.<span class="mis">Misconception: assuming flush-count ratio and slowdown ratio must match. They're correlated but not equal — flush cost also depends on how much useful work was already in flight.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 3 · easy</span>
+      <div class="qtext">True or false: Demeter turns off PEBS on the host and only enables it in guests.</div>
+      <details><summary>Show answer</summary><div class="ans">Misleading framing — PEBS was never usable by the host <i>for guest memory</i> in the first place, due to the architectural bug and the fact that host-side PEBS samples wouldn't even correspond to guest addresses. Demeter doesn't disable anything on the host; it enables PEBS <i>inside</i> guests, made safe by PEBS v5, and isolated per-VM via vmcs.debugctl.<span class="mis">Misconception: thinking of this as a toggle moved from one place to another. It's closer to "a capability was unlocked where it was always meant to run."</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 4 · medium</span>
+      <div class="qtext">A range covering 8 MiB has accumulated far more accesses than its neighbors. Walk through what happens to it over the next few epochs under Demeter's range-splitting scheme (τ_split=15, split granularity=2 MiB).</div>
+      <details><summary>Show answer</summary><div class="ans">If its significance factor α = Δaccess/(τ_split·vcpu) exceeds the threshold, the range is split in half (4 MiB + 4 MiB), each inheriting half the access count. If one half remains hot, it keeps splitting in subsequent epochs — 4→2→2 MiB — until it hits the 2 MiB minimum granularity, at which point splitting stops even if it's still hot. Meanwhile every epoch, all ranges' access counts are halved (decay), so a half that stops being accessed will cool toward zero and eventually merge back with a cold neighbor after τ_merge idle epochs.<span class="mis">Misconception: assuming splitting continues indefinitely toward per-page granularity. It's capped at 2 MiB specifically to avoid destroying the TLB-coverage benefit of hugepages (§3.4.1).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 5 · hard</span>
+      <div class="qtext">Why does Demeter's balanced page relocation avoid a temporary buffer, and what failure mode does that specifically prevent?</div>
+      <details><summary>Show answer</summary><div class="ans">By pairing exactly one promotion candidate with one demotion candidate (both lists truncated to the same length m) and swapping their contents directly, Demeter never needs to allocate a free page mid-migration. Sequential approaches that first demote into a scratch free page, then promote into the vacated slot, can trigger the kernel's page reclamation machinery (kswapd or direct reclaim) if free pages run short — and that reclamation can cascade into evicting other, unrelated hot pages that had nothing to do with the current migration.<span class="mis">Misconception: thinking "no temp buffer" is just an optimization for fewer memcpy operations. Its real purpose is avoiding memory-pressure side effects that corrupt unrelated hot data.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 6 · medium</span>
+      <div class="qtext">A cloud operator points a conventional VirtIO balloon at a VM and asks it to shrink SMEM by 20%. What goes wrong, per §5.2.1's finding?</div>
+      <details><summary>Show answer</summary><div class="ans">A conventional balloon has no tier awareness — it's a single dial for "total memory," not two dials for FMEM and SMEM. Its inflation mechanism conflicts with the Linux allocator's own preferences and ends up prioritizing FMEM reservation regardless of which tier was actually targeted, resulting in severe FMEM under-provisioning rather than the intended SMEM shrink. Demeter balloon's dedicated per-NUMA-node balloons avoid this by construction.<span class="mis">Misconception: that "the balloon just reclaims free pages" is tier-neutral. Free-page selection is governed by the guest allocator's own tier preferences, which a tier-blind balloon can't override.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">§5.4 reports Demeter underperforms hypervisor-based TPP-H on PageRank by 60%, its only loss out of seven workloads. What property of PageRank's access pattern plausibly explains this, based on how Demeter classifies hotness?</div>
+      <details><summary>Show answer</summary><div class="ans">The paper describes graph workloads (graph500, PageRank) as having power-law, scattered access patterns — a small subset of vertices/edges is hot, but their addresses are interleaved fine-grained across the whole memory space rather than sitting in contiguous ranges. Demeter's classifier gets its efficiency from range-based (contiguous) grouping; a workload whose hot data is scattered single-word-scale across a huge span defeats that assumption, forcing many small ranges and reducing classification accuracy relative to a scheme not relying on spatial contiguity.<span class="mis">Misconception: assuming Demeter is strictly better on every access pattern. Its core efficiency trick (range contiguity) is also its Achilles' heel on genuinely scattered, fine-grained-hot workloads.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 8 · easy</span>
+      <div class="qtext">Does Demeter manage file page cache the same way it manages heap/mmap memory?</div>
+      <details><summary>Show answer</summary><div class="ans">No — file page cache is managed by the kernel in physical address space and has no corresponding guest virtual address, so Demeter's gVA-based range classification doesn't apply to it (§3.4.2). The paper argues this limitation is softened because even naive (non-hotness-aware) placement of file-backed data in SMEM still beats frequent disk I/O.<span class="mis">Misconception: assuming a gVA-space-based system is a universal solution for all guest memory. It explicitly excludes anything without a guest virtual address.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Twelve questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly does "guest delegation" mean?<span class="chev">▾</span></summary><div class="a">Running the entire tiered-memory-management pipeline — access tracking, hotness classification, and page migration — inside the guest kernel, instead of in the hypervisor. The host is left with only tiered memory provisioning: making elastic FMEM/SMEM capacity available, without deciding which pages go where.</div></details>
+      <details><summary><span class="q">Q2</span>Isn't delegating management to an untrusted guest a security risk?<span class="chev">▾</span></summary><div class="a">Demeter treats all guest code as untrusted by design (§7.3). PEBS state is hardware-isolated per VM and cleared on VM-exit; each balloon has a VM-private VirtIO channel; the host enforces hard per-tier resource bounds regardless of what the guest requests; and the host retains authority to terminate anomalous VMs. The guest decides <i>placement</i>, never total resource limits.</div></details>
+      <details><summary><span class="q">Q3</span>Why was guest PEBS thought to be unusable for years?<span class="chev">▾</span></summary><div class="a">An architectural bug meant a PEBS buffer write couldn't survive being interrupted by an EPT page fault without risking a machine hang — and EPT faults are common under memory overcommitment, where guest pages are lazily mapped on first touch. This created a real blind spot until PEBS version 5 fixed the underlying defect.</div></details>
+      <details><summary><span class="q">Q4</span>Could the hypervisor just read the guest's PEBS samples itself?<span class="chev">▾</span></summary><div class="a">Structurally, no — even setting isolation aside, PEBS samples contain guest virtual addresses, which carry no meaning to the hypervisor's page-migration logic without continuously snooping or trapping guest page table updates, which would defeat the entire point of hardware-assisted virtualization (§7.5).</div></details>
+      <details><summary><span class="q">Q5</span>Why classify hotness in virtual address space instead of physical?<span class="chev">▾</span></summary><div class="a">The kernel's physical page allocator optimizes for reduced fragmentation and lazily maps pages in the order they're first touched — not their spatial relationship. This scrambles locality: Figure 4's heat maps show gVA hotspots concentrated in small contiguous regions, while the same accesses in gPA space appear scattered across the entire usable memory.</div></details>
+      <details><summary><span class="q">Q6</span>How does the range classifier avoid becoming a huge data structure?<span class="chev">▾</span></summary><div class="a">It only refines (splits) ranges that are actually hot, down to a 2 MiB floor, and merges cold ranges back together after they've decayed to zero access count for τ_merge epochs. Because most of a real application's address space is sparse and cold, the tree stays small — under 50 ranges even for a 64 TiB space.</div></details>
+      <details><summary><span class="q">Q7</span>What's the double balloon, and how is it different from a normal memory balloon?<span class="chev">▾</span></summary><div class="a">A normal balloon has one dial for total VM memory and no tier awareness. Demeter gives each guest NUMA node (FMEM, SMEM) its own dedicated balloon, with page-level (not 128 MiB/1 GiB block-level) granularity, so the host can resize either tier independently without accidentally starving the other.</div></details>
+      <details><summary><span class="q">Q8</span>Does Demeter work with CXL.mem, or only PMEM?<span class="chev">▾</span></summary><div class="a">Both — the paper evaluates DRAM+real-PMEM and DRAM+emulated-CXL.mem configurations. The PEBS trigger event chosen (memory load latency, not a media-specific cache-miss event) is deliberately media-agnostic, so it works unchanged as new tiers like CXL.mem appear.</div></details>
+      <details><summary><span class="q">Q9</span>How much CPU overhead does Demeter's monitoring actually cost?<span class="chev">▾</span></summary><div class="a">Under 0.2 CPU cores system-wide even at nine concurrent VMs on a 36-core host (Fig. 2) — versus over 4.5 cores for a naive PTE.A/D approach (TPP) and about 1.25 cores for an optimized PEBS design run the conventional way (Memtis). The saving comes from context-switch-time sample draining instead of dedicated polling threads.</div></details>
+      <details><summary><span class="q">Q10</span>Does Demeter beat hypervisor-based approaches on every workload?<span class="chev">▾</span></summary><div class="a">No — it wins on 6 of 7 real workloads (up to 2× on dynamic hotspot patterns, 20% on static hotspots, 10% on uniform access), but underperforms on PageRank by 60%, likely due to that workload's fine-grained scattered (power-law) access pattern working against range-based contiguous classification.</div></details>
+      <details><summary><span class="q">Q11</span>Does this work for bare-metal cloud instances too?<span class="chev">▾</span></summary><div class="a">Yes, and arguably more naturally — bare-metal VMs expose physical memory directly to tenants with a stripped-down or offloaded hypervisor, which makes hypervisor-based tiering impossible in the first place. Since Demeter's TMM lives entirely in the guest kernel, it does not require hypervisor-side TMM to function — though the full system still depends on host-side provisioning and tier-exposure mechanisms (§7.4).</div></details>
+      <details><summary><span class="q">Q12</span>What did the paper leave for future work?<span class="chev">▾</span></summary><div class="a">Concrete QoS/fairness policies on top of the exposed telemetry (the architecture is deliberately policy-agnostic), finer intra-hugepage hotness detection below 2 MiB, and extending range-based classification to file-backed page cache, which currently falls outside gVA-space management.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, results at a glance, and where the numbers came from.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Guest delegation</b><span>Running the full TMM pipeline (tracking, classification, migration) inside the guest kernel instead of the hypervisor.</span></div>
+      <div class="term-def"><b>EPT-friendly PEBS</b><span>PEBS enabled safely inside a guest VM under PEBS v5, without the older EPT-page-fault interrupt bug.</span></div>
+      <div class="term-def"><b>Range-based hotness classification</b><span>Segment-tree-like tracking of contiguous virtual-address ranges, splitting hot ones and merging cold ones over time.</span></div>
+      <div class="term-def"><b>Balanced page relocation</b><span>One-to-one promotion/demotion pairing with direct content swap — no temporary buffer, no reclamation trigger.</span></div>
+      <div class="term-def"><b>Demeter balloon</b><span>Page-granular, per-tier (FMEM/SMEM) memory balloon exposed as virtual NUMA nodes, operated fully asynchronously via VirtIO.</span></div>
+      <div class="term-def"><b>Significance factor (α)</b><span>α = Δaccess / (τ_split · vcpu) — the trigger condition for splitting a hot range.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>PTE.A/D bits</b><span>Hardware-set Access/Dirty bits in a page table entry; the traditional (TLB-flush-heavy) access-tracking signal.</span></div>
+      <div class="term-def"><b>PML</b><span>Page Modification Logging — logs dirtied gPAs into a fixed 512-entry buffer, triggering a VM-exit when full; used by vTMM.</span></div>
+      <div class="term-def"><b>Full vs. single-address TLB flush</b><span>invept wipes all mappings for a guest; invvpid/invlpg-style flushes remove just one gVA's cached mapping.</span></div>
+      <div class="term-def"><b>NUMA-based tier exposure</b><span>Presenting FMEM and SMEM as two virtual NUMA nodes via ACPI so the guest OS needs no new abstraction.</span></div>
+      <div class="term-def"><b>GUPS (hotset variant)</b><span>A skewed random-access microbenchmark; the hot region receives 10× the accesses of the cold region.</span></div>
+      <div class="term-def"><b>Weighted / geomean speedup</b><span>The paper reports averages via geometric mean across the seven real-world workloads.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What Demeter buys</div>
+      <div class="viz-kicker">headline numbers from the evaluation · higher bar = larger reported improvement</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">vs. hypervisor-based<small>best case</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="100"><span>up to 2× (+100%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">vs. best guest alt.<small>avg, geomean</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="28"><span>+28%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">vs. hypervisor-based<small>avg, geomean</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="16"><span>+16%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">TLB flush cut<small>Demeter vs. TPP-G</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="47"><span>−47%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">P99 latency cut<small>Silo, vs. TPP</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="23"><span>−23%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">TPP-H CPU waste<small>weaker baseline, 9 VMs</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="12.5"><span>12.5% of host (4.5/36 cores)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 100%</p>
+      <figcaption>All bars are directly from the paper's abstract, §2.3.1, §5.4, and §5.6, except the last row, which is a cost (lower would be better) shown for contrast against Demeter's &lt;0.6% (§5.2.2).</figcaption>
+    </figure>
+
+    <div class="callout note reveal">
+      <span class="ic">📎</span>
+      <div><b>Source notes.</b> <b>From the paper:</b> all numbers in the bars above, Tables 1–3, Figure 2's core-overhead figures, the range-splitting parameters (§3.2.1), PEBS parameters (§3.2.2), and every workload speedup figure in Worked Examples/Practice. <b>My framing:</b> the seven analogies, the "quick glossary" phrasing, the illustrative interpolated curve in the How It Works slider (anchored only at the paper's stated 1-VM and 9-VM endpoints), and all connections to cache-partitioning-style sampling monitors (UMON/DSS) or general DRAM/NVM/CXL tiering research — these are my bridges to adjacent work, not claims made by this paper.</div>
+    </div>
+
+    <div class="subhead">Related work</div>
+    <div class="read-item reveal"><h4>TPP: Transparent Page Placement <span class="diff med">medium</span></h4><div class="meta">Maruf et al. · ASPLOS '23</div><p>The kernel-based baseline Demeter converts into both TPP-H (hypervisor) and TPP-G (guest) for its controlled TLB-flush comparison in §2.3.1.</p></div>
+    <div class="read-item reveal"><h4>Memtis: Dynamic Page Classification &amp; Sizing <span class="diff med">medium</span></h4><div class="meta">Lee et al. · SOSP '23</div><p>The strongest prior PEBS-based kernel design; Demeter's 16× reduction in tracking CPU time is measured directly against it.</p></div>
+    <div class="read-item reveal"><h4>HeMem: Scalable Tiered Memory for Big Data &amp; Real NVM <span class="diff med">medium</span></h4><div class="meta">Raybuck et al. · SOSP '21</div><p>Pioneered PEBS as a high-fidelity hotness source on bare metal; used physical-address tracking with per-sample translation, which Demeter avoids.</p></div>
+    <div class="read-item reveal"><h4>vTMM: Tiered Memory Management for VMs <span class="diff hard">hard</span></h4><div class="meta">Sha et al. · EuroSys '23</div><p>Hypervisor-based approach using PML-logged GPT scanning; Demeter isolates and benchmarks its PML primitive directly in Table 3.</p></div>
+    <div class="read-item reveal"><h4>Pond: CXL-Based Memory Pooling for Cloud Platforms <span class="diff hard">hard</span></h4><div class="meta">Li et al. · ASPLOS '23</div><p>Source of the CXL.mem emulation methodology (remote NUMA memory) Demeter follows in §5.5.</p></div>
+    <div class="read-item reveal"><h4>Nomad: Non-Exclusive Memory Tiering <span class="diff med">medium</span></h4><div class="meta">Xiang et al. · OSDI '24</div><p>Reduces migration thrashing via shadow copies; evaluated as a guest-based alternative across all of Demeter's real-workload experiments.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Hu, Hu, Wu &amp; Yang, "Demeter: A Scalable and Elastic Tiered Memory Solution for Virtualized Cloud via Guest Delegation" (SOSP '25)</span>
+    <span><b>Source:</b> paper text as supplied in conversation</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* VM overhead scaling slider — illustrative curve anchored at paper's 1-VM/9-VM endpoints (Fig. 2) */
+  var vmCounts   = [1,2,3,4,6,9];
+  var tppCores   = [0.5,1.0,1.6,2.2,3.2,4.6];
+  var memtisCores= [0.15,0.3,0.45,0.6,0.9,1.3];
+  var demeterCores=[0.05,0.08,0.1,0.12,0.15,0.2];
+  function setVm(idx){
+    var range = document.getElementById('vmRange'); if(!range) return;
+    idx = Math.max(0, Math.min(5, idx));
+    range.value = idx;
+    document.getElementById('vmRangeVal').textContent = vmCounts[idx];
+    document.getElementById('pTpp').textContent = tppCores[idx].toFixed(2)+' cores';
+    document.getElementById('pMemtis').textContent = memtisCores[idx].toFixed(2)+' cores';
+    document.getElementById('pDemeter').textContent = demeterCores[idx].toFixed(2)+' cores';
+    var verd = document.getElementById('pVerdict');
+    var ratio = (tppCores[idx]/Math.max(demeterCores[idx],0.01)).toFixed(0);
+    verd.className = idx >= 4 ? 'pverdict opt' : 'pverdict sub';
+    verd.textContent = 'At '+vmCounts[idx]+' VM(s): TPP wastes ~'+ratio+'× more CPU than Demeter on tracking alone.';
+  }
+  var vmRange = document.getElementById('vmRange');
+  if(vmRange){
+    vmRange.addEventListener('input', function(){ setVm(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-vm]').forEach(function(b){ b.addEventListener('click', function(){ setVm(parseInt(b.dataset.vm,10)); }); });
+    setVm(5);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
