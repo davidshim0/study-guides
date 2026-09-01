@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<!-- DEAR field guide — Dynamic Error-Aware Refresh for 3D NAND read-disturb (MICRO'25, Lee et al.).
+     Built in the "friendly field guide" house style (see learn/sessions/2026-08-13-thp/study-guide.html).
+     Source-grounded (paper-radar/_paper_txt/dear-improving-performance-and-lifetime.txt) — all
+     numbers recomputed against the source text; conceptual/illustrative framing is flagged inline
+     and in the Reference tab's Source notes.
+     Semantic colors (repurposed from the THP guide's 4 palette slots for THIS paper):
+     teal (--huge)  = C^WL_max — the real, per-wordline read budget DEAR reclaims (the win)
+     honey(--honey) = accumulating read-disturb error — CFBC / bit errors building up as reads happen
+     indigo(--mech) = DEAR/SEE machinery — SAM, FEM, BPM, the WL Pointer, the reference table
+     terracotta(--cost) = the RR tax — migration writes, WAF, tail-latency spikes (worst when RR fires too early) -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Refresh the Wordline, Not the Block — DEAR, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — reused verbatim from the THP field guide) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --huge:#2C8C7C; --huge-soft:#DCEFE9;       /* teal   = C^WL_max — the reclaimed per-WL read budget */
+  --mech:#5A61B4; --mech-soft:#E6E6F6;       /* indigo = DEAR/SEE machinery (SAM, FEM, BPM, WP)      */
+  --cost:#C0563B; --cost-soft:#F7E1D8;       /* terracotta = the RR tax (migration, WAF, tail latency) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:19ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--huge);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--mech);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--huge);font-weight:600}
+.rule-plaque .wo{color:var(--cost);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:64ch}
+
+/* PROSE / CARDS */
+.prose{max-width:76ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--mech-soft);color:var(--mech);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--huge-soft);border-left:3px solid var(--huge);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--cost)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-huge{background:var(--huge-soft);color:#1f5b51}
+.chip-base{background:var(--honey-soft);color:#6e4a09}
+.chip-mech{background:var(--mech-soft);color:#3a409a}
+.chip-cost{background:var(--cost-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--huge-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--cost-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-huge{border-color:#9fd2c7;background:var(--huge-soft)}
+.node.n-mech{border-color:#bcbfe8;background:var(--mech-soft)}
+.node.n-cost{border-color:#e3b4a5;background:var(--cost-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--huge-soft)}
+.tbl .best:hover td{background:#cfeae2}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-base{background:linear-gradient(90deg,#eab657,#C27D14)}
+.bf-mid{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-huge{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-giga{background:linear-gradient(90deg,#2f6f64,#1f5147)}
+
+/* COLLAPSE / WL EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.cells{display:grid;grid-template-columns:repeat(32,1fr);gap:3px;margin:8px 0}
+.cell{aspect-ratio:1/1;border-radius:3px;background:var(--paper-2);border:1px solid var(--line);transition:background .15s,border-color .15s}
+.cell.touched{background:var(--honey);border-color:var(--honey-deep)}
+.cell.filled{background:var(--huge);border-color:#1f5b51}
+.cell.waste{background:repeating-linear-gradient(45deg,#e9c9be,#e9c9be 3px,#f7e1d8 3px,#f7e1d8 6px);border-color:#e3b4a5}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls label{font-family:var(--mono);font-size:.8rem;color:var(--ink-soft);font-weight:700}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--mech)}
+.part-controls input[type=number]{width:74px;font-family:var(--mono);padding:6px 8px;border:1.5px solid var(--line-strong);border-radius:8px}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--huge-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--cost-soft);color:#9a3a22;border:1px solid #e3b4a5}
+.pverdict.off{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--mech);color:var(--mech)}
+
+/* WL-row widget (this paper's own small addition) */
+.wlgrid{display:flex;flex-direction:column;gap:10px}
+.wlgrid-row{display:grid;grid-template-columns:112px repeat(8,1fr);gap:6px;align-items:center}
+.wlgrid-row .rowlabel{font-family:var(--mono);font-size:.78rem;font-weight:700;color:var(--ink-soft)}
+.wlcell{aspect-ratio:1/1;border-radius:6px;border:1.5px solid var(--line-strong);transition:background .2s,border-color .2s;position:relative}
+.wlcell .wv{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;color:rgba(0,0,0,.45)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--huge-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--cost-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--cost);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--huge-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--cost-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}.cells{grid-template-columns:repeat(16,1fr)}.wlgrid-row{grid-template-columns:80px repeat(8,1fr)}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>3D NAND Flash Reliability · A Field Guide</span>
+    <h1>Refresh the <span class="swash">one wordline</span> that's failing — not the whole block, just in case</h1>
+    <p class="lede">Every SSD read softly disturbs its neighbors. NAND flash's fix — <strong>read refresh (RR)</strong> — has always fired on one fixed, worst-case threshold sized for the weakest wordline in the weakest block. <strong>DEAR</strong> instead watches each wordline's real, run-time error status and lets everyone else keep the read budget they already earned.</p>
+    <div class="hero-meta">
+      <span>💾 3D NAND SSDs · read-disturb & read-refresh (RR)</span>
+      <span>🎓 Assumes flash basics: ECC, P/E cycles, FTL, page/block/wordline hierarchy</span>
+      <span>⏱ ~40 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🎯</div>
+      <p>Trigger refresh from <span class="ro">each wordline's own measured error status</span>, not one <span class="wo">worst-case, block-wide threshold</span> — because in the very same block, the worst wordline's real budget can be a fraction of the best one's.<br><em style="font-size:.9rem">DEAR = MICRO'25's answer: monitor cheaply (SEE), refresh precisely (per WL), never lose data (a proven-safe margin).</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Nine ideas DEAR builds on</h2>
+      <p class="sub">You know memory systems; you may not have lived inside a flash controller. These primers cover just the NAND-specific mechanics DEAR leans on — cell/WL/block structure, why reads themselves damage data, and why the existing fix is so wasteful. Tap any open; read in order the first time.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--huge)"></i> C<sup>WL</sup><sub>max</sub> — the real per-WL read budget DEAR reclaims</span>
+      <span><i style="background:var(--honey-deep)"></i> accumulating read-disturb error (CFBC / bit errors)</span>
+      <span><i style="background:var(--mech)"></i> DEAR/SEE machinery (SAM, FEM, BPM, WP)</span>
+      <span><i style="background:var(--cost)"></i> the RR tax — migration, WAF, tail latency</span>
+    </div>
+
+    <div class="primer-grid">
+
+      <details class="primer" open>
+        <summary><span class="pnum">1</span>The 3D flash hierarchy: cells, wordlines, blocks, h-layers<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A flash <b>cell</b> stores charge; cells in a vertical string share a <b>bitline (BL)</b>, and many BLs (e.g., 16&nbsp;KB) make a <b>block</b>. Cells at the same height across the block share a <b>wordline (WL)</b> — they're read together. In 3D NAND, a block is stacked in <b>h-layers</b> (horizontal layers) along the height of the chip; each h-layer bundles a small group of WLs (four, in the paper's running example: WL1–WL4) separated by select-line transistors.</p>
+          <p>Why this geometry matters: the etching process that drills the vertical channel holes proceeds top-to-bottom, so channel-hole diameter and shape vary <i>by h-layer</i> — cells in the same h-layer share almost identical physical characteristics; cells in different h-layers don't.</p>
+          <div class="ready"><b>Now you're ready:</b> "block-level" vs "WL-level" management is a real granularity choice — a block bundles thousands of WLs across dozens to hundreds of h-layers, and DEAR's whole argument is that treating them as identical is the bug.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">2</span>Multi-level cells and Vth states<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A cell encodes bits as its threshold voltage (V<sub>th</sub>). <b>m</b>-bit multi-level cells (MLC=2, TLC=3, QLC=4) use 2<sup>m</sup> distinct V<sub>th</sub> states to pack more bits per cell. TLC has 8 states: <b>ER</b> (erased, lowest V<sub>th</sub>) through <b>P1–P7</b>. Reading a page compares each cell's V<sub>th</sub> against reference voltages (V<sup>1</sup><sub>REF</sub>…V<sup>7</sup><sub>REF</sub>) that sit between adjacent states.</p>
+          <p>Higher <i>m</i> packs the states closer together — smaller margins between neighboring states, so a given amount of V<sub>th</sub> drift is far more likely to push a cell across a reference voltage and flip a bit.</p>
+          <div class="ready"><b>Now you're ready:</b> this is <i>why</i> QLC is so much more read-disturb-fragile than TLC or MLC — smaller state margins, not a different physical failure mode.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">3</span>The read-disturb mechanism<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To read one WL, flash applies a high <b>pass-through voltage (V<sub>pass</sub>, &gt;6&nbsp;V)</b> to every <i>other</i> WL in the block so their cells act as pass-transistors. V<sub>pass</sub> is far below the program voltage (&gt;20&nbsp;V), but it still "softly programs" those non-target cells — nudging V<sub>th</sub> upward. One read's nudge is negligible; millions of reads to the same WL accumulate into real bit errors on its <i>neighbors</i> — <b>read-disturb error</b>.</p>
+          <p>The paper quantifies this with the Fowler–Nordheim tunneling relation: <b>Error<sub>RD</sub> ∝ V<sub>pass</sub>² · exp(−1/V<sub>pass</sub>) · T<sub>read</sub> · N<sub>read</sub></b> — error grows with pass-voltage stress, how long each read holds that stress (T<sub>read</sub>), and how many reads happen (N<sub>read</sub>).</p>
+          <div class="ready"><b>Now you're ready:</b> read-disturb is a <i>side effect of reading itself</i>, not writing — which is why "just refresh before it's too late" (RR) is the only lever, and why bigger blocks / slower reads (T<sub>read</sub>) make it worse.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">4</span>Read Refresh (RR) — the existing fix, and its price<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Before accumulated read-disturb errors exceed what the ECC engine can correct, the SSD performs <b>RR</b>: read every valid page in the threatened block and rewrite ("migrate") it to a fresh block. That's extra internal reads <i>and</i> writes competing with host I/O, and extra program/erase cycles that raise <b>WAF (Write Amplification Factor)</b> — directly shortening the drive's usable lifetime.</p>
+          <p>The paper's own 11-SSD study makes the price concrete: a 1-TB 3D&nbsp;QLC SSD (Q-176-A) accumulates ~8.2&nbsp;TiB of RR-induced writes after 30&nbsp;TiB of reads, enough to cut its projected lifetime from a 5-year warranty to roughly 77 days under sustained read-heavy load.</p>
+          <div class="ready"><b>Now you're ready:</b> RR is non-optional for data integrity — the entire paper is about firing it <i>only when actually needed</i>, not about avoiding it.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">5</span>The conventional trigger: one fixed, worst-case C<sub>max</sub><span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Existing schemes pick a single constant <b>C<sub>max</sub></b> — the minimum, over every block <i>B</i>, of C<sup>B</sup><sub>max</sub> (the most reads that block can tolerate) — and fire RR for a block the instant its read count hits that number. It is, by construction, tuned to the single weakest block's weakest wordline in the whole SSD.</p>
+          <p>That single number then governs every block and every WL, regardless of how much healthier most of them actually are.</p>
+          <div class="ready"><b>Now you're ready:</b> "block-level, fixed-threshold" is the entire target DEAR is replacing with "WL-level, measured."</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">6</span>Process variation: why blocks and WLs aren't identical<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>3D NAND manufacturing (the channel-hole etch, from primer 1) is imprecise enough that tolerance to read-disturb varies substantially — both <i>between</i> blocks and <i>within</i> a single block, between WLs. The paper's motivational characterization (11 commercial SSDs) found the worst block's C<sub>max</sub> up to 69.7% lower than the best block's, and within one block, the best WL tolerated 2.23× more reads than the worst WL.</p>
+          <p>A deeper 160-chip characterization (3,686,400 WLs) sharpens this further: at a fresh 0K P/E cycles, the best-vs-worst WL gap in one block averages 1.42×; by 2K P/E cycles (an aged drive), that gap widens to 4.14×.</p>
+          <div class="ready"><b>Now you're ready:</b> "worst-case" isn't a small safety margin here — it's throwing away up to 4× of most WLs' real capability, and the problem gets <i>worse</i>, not better, as the SSD ages.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">7</span>ECC and the error budget (ECC<sub>CAP</sub>)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An ECC engine can correct up to some number of bit errors per unit of data — call that ceiling <b>ECC<sub>CAP</sub></b> (the paper uses 60 bits per 1&nbsp;KiB in its characterization). RR must fire <i>before</i> a WL's accumulated read-disturb errors reach ECC<sub>CAP</sub>, or the SSD loses data outright — this is the hard reliability floor everything else in the paper has to respect.</p>
+          <p>Read-disturb errors aren't spread evenly across a WL's 8 V<sub>th</sub> states either: they concentrate heavily in the lowest states — the erased (<b>ER</b>) state alone accounts for 67% of total read-disturb errors after 2000K reads, with P1 a distant second and the higher states barely moving.</p>
+          <div class="ready"><b>Now you're ready:</b> this concentration in the ER state is exactly what DEAR's error estimator (SEE) will exploit — you don't need to inspect every state to know a WL is in trouble.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">8</span>The FTL side: migration and garbage collection<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>RR's "rewrite to a new block" step goes through the normal Flash Translation Layer (FTL) path: read the valid pages, write them elsewhere, invalidate the old locations, and update the logical-to-physical mapping table. Blocks left partially invalidated by RR aren't a special case — they're reclaimed by ordinary <b>garbage collection (GC)</b>, which already selects victim blocks and compacts valid data independently of why those blocks became fragmented.</p>
+          <div class="ready"><b>Now you're ready:</b> anything that changes <i>when</i> or <i>at what granularity</i> RR fires doesn't need to touch GC at all — a useful fact for judging how invasive DEAR really is.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">9</span>Why "just check every WL after every read" doesn't work<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The obvious fix — continuously measure each WL's real error status — collides with latency. Conventional error checking means reading a WL and running it through the ECC decoder, which for a TLC page means multiple sensing operations per page (LSB, CSB, MSB) plus decode time. Scaled up to a modern 120-MiB block, one full round of "read everything and check" can take up to 337&nbsp;ms — utterly incompatible with servicing host I/O.</p>
+          <div class="ready"><b>Now you're ready:</b> DEAR's real engineering contribution isn't "monitor per WL" (the idea is simple) — it's making that monitoring cheap enough to run online. That's the job of SEE, covered in How It Works.</div>
+        </div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>DEAR in a nutshell</h2>
+      <p class="sub">The mismatch it fixes, the mechanism that makes fixing it cheap, and the guardrail that keeps it safe.</p>
+    </div>
+    <div class="prose">
+      <p>Modern high-capacity 3D NAND has a structural problem: as blocks grow (page count per block is up roughly 20× in the last decade, and block size up roughly 40×) and cells get denser (TLC → QLC), <span class="mem-chip chip-cost">read-disturb error</span> gets both more frequent (more reads land in each block) and more dangerous (narrower margins between V<sub>th</sub> states). Every existing defense manages this with one number: a fixed <span class="mem-chip chip-cost">C<sub>max</sub></span>, set to whatever the single worst wordline in the single worst block can tolerate, applied uniformly to every block. Because 3D flash manufacturing has real process variation, that worst-case number throws away most of the fleet's actual reliability headroom — the paper measures the best wordline in a block tolerating up to <b>4.14×</b> more reads than the worst, in the very same block, on aged flash.</p>
+      <p><strong>DEAR (Dynamic Error-Aware Refresh)</strong> replaces the single fixed threshold with a per-wordline one, <span class="mem-chip chip-huge">C<sup>WL</sup><sub>max</sub></span> — the actual number of reads <i>this</i> WL can tolerate before its real, measured error rate would exceed the ECC engine's correction capacity. Refresh (RR) then fires at <b>wordline granularity</b>, only for the WLs whose measured error has actually crossed the line — not for an entire block just because one of its many WLs is weak.</p>
+      <p>The catch: measuring "real, current error status" for every WL, continuously, is exactly the expensive thing primer&nbsp;9 ruled out. DEAR's answer is <span class="mem-chip chip-mech">SEE (Swift Error Estimator)</span>, three stacked optimizations — check only a representative WL per h-layer (<b>SAM</b>, ×4 fewer checks), estimate error from a single fast sensing instead of a full ECC read (<b>FEM</b>, ~7× cheaper per check), and check only periodically rather than after every read (<b>BPM</b>, with a provably safe interval). Combined, DEAR turns a per-WL check from a multi-hundred-millisecond ECC operation into a ~28&nbsp;µs sensing op, cheap enough to interleave with normal host reads at well under 1.3% overhead.</p>
+      <p><strong>The result</strong> is not a new reliability risk dressed up as an optimization: DEAR proactively sets its trigger threshold (E<sub>TH</sub>) below ECC<sub>CAP</sub> by a margin sized so that, given the measurement interval, no WL can silently cross ECC<sub>CAP</sub> between checks. Reported system-level gains (Section&nbsp;7, against the paper's Baseline and prior state-of-the-art Cocktail scheme): RR-induced writes down 64.2% on average (up to 86.8%), 99.9th-percentile read latency down by tens of percent, and SSD lifetime (via lower WAF) extended by 36.7%.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>The mismatch: one fixed, worst-case <b>C<sub>max</sub></b> is applied to every block and WL, even though real per-WL tolerance (<b>C<sup>WL</sup><sub>max</sub></b>) can differ by over 4× within a single block.</li>
+        <li>DEAR's fix: move refresh from <b>block granularity</b> to <b>wordline granularity</b>, gated on each WL's own measured error, not a shared worst-case number.</li>
+        <li><b>SEE</b> makes per-WL monitoring cheap via three stacked tricks: SAM (check 1-in-4 WLs, exploiting h-layer similarity), FEM (1 sensing instead of ~7 plus ECC decode, using CFBC(ER) as a proxy), and BPM (check every C<sub>INT</sub> reads, not every read).</li>
+        <li>Safety isn't traded away: DEAR sets its trigger (E<sub>TH</sub>) below ECC<sub>CAP</sub> with a margin engineered to survive a full monitoring interval — the paper proves this, it isn't a hand-wave.</li>
+        <li>Headline results: <b>64.2%</b> average fewer RR-induced writes, up to <b>54.6%</b> lower average p99.9 read latency (at 2K P/E cycles vs Baseline), and <b>36.7%</b> longer SSD lifetime — for well under <b>1.3%</b> monitoring overhead.</li>
+        <li>DEAR is complementary to prior data-placement defenses (e.g., Cocktail): combined as <b>DEAR+</b>, RR-invocation reduction rises to 75.6% on average.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE: block-wide vs wordline-level trigger -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole idea in one picture: who gets refreshed, and when</div>
+      <div class="viz-kicker">rebuilt from Figure 10 — 3 blocks × 4 wordlines, same physical flash, two trigger policies</div>
+      <div class="legend">
+        <span><i style="background:var(--honey)"></i> still healthy — read count below this WL's own limit</span>
+        <span><i style="background:var(--cost)"></i> refreshed (RR fires)</span>
+        <span><i style="background:var(--mech)"></i> DEAR's per-WL error check</span>
+      </div>
+      <svg class="full" viewBox="0 0 780 330" role="img" aria-label="Conventional scheme refreshes all 12 wordlines across 3 blocks the instant the read count hits the fixed worst-case Cmax of 100. DEAR runs the same wordlines to a read count of 300 and refreshes only the 4 wordlines whose own measured error actually crossed the line.">
+        <text x="20" y="28" font-family="Fraunces" font-size="15" font-weight="600" fill="#9a3a22">Conventional: fixed, block-wide C_max</text>
+        <text x="20" y="46" font-family="JetBrains Mono" font-size="11" fill="#6E6456">read count reaches 100 → ALL 12 wordlines forced to refresh, regardless of real error</text>
+        <!-- Row 1: conventional, all cost -->
+        <g>
+          <!-- Block A -->
+          <g transform="translate(20,60)">
+            <text x="68" y="-6" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">Block A</text>
+            <rect x="0" y="0" width="34" height="34" rx="6" fill="#C0563B"/><rect x="40" y="0" width="34" height="34" rx="6" fill="#C0563B"/>
+            <rect x="0" y="40" width="34" height="34" rx="6" fill="#C0563B"/><rect x="40" y="40" width="34" height="34" rx="6" fill="#C0563B"/>
+          </g>
+          <!-- Block B -->
+          <g transform="translate(180,60)">
+            <text x="68" y="-6" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">Block B</text>
+            <rect x="0" y="0" width="34" height="34" rx="6" fill="#C0563B"/><rect x="40" y="0" width="34" height="34" rx="6" fill="#C0563B"/>
+            <rect x="0" y="40" width="34" height="34" rx="6" fill="#C0563B"/><rect x="40" y="40" width="34" height="34" rx="6" fill="#C0563B"/>
+          </g>
+          <!-- Block C -->
+          <g transform="translate(340,60)">
+            <text x="68" y="-6" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">Block C</text>
+            <rect x="0" y="0" width="34" height="34" rx="6" fill="#C0563B"/><rect x="40" y="0" width="34" height="34" rx="6" fill="#C0563B"/>
+            <rect x="0" y="40" width="34" height="34" rx="6" fill="#C0563B"/><rect x="40" y="40" width="34" height="34" rx="6" fill="#C0563B"/>
+          </g>
+          <text x="520" y="80" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">RC = 100</text>
+          <text x="520" y="98" font-family="JetBrains Mono" font-size="10" fill="#6E6456" width="200">most of these 12 WLs</text>
+          <text x="520" y="112" font-family="JetBrains Mono" font-size="10" fill="#6E6456">could safely tolerate</text>
+          <text x="520" y="126" font-family="JetBrains Mono" font-size="10" fill="#6E6456">2–4× more reads first</text>
+        </g>
+
+        <line x1="20" y1="165" x2="760" y2="165" stroke="var(--line-strong)" stroke-width="1.2" stroke-dasharray="4 4"/>
+
+        <text x="20" y="196" font-family="Fraunces" font-size="15" font-weight="600" fill="#1f5b51">DEAR: per-wordline, error-measured C^WL_max</text>
+        <text x="20" y="214" font-family="JetBrains Mono" font-size="11" fill="#6E6456">read count reaches 300 → SEE has checked every WL along the way; only 4 actually crossed their own line</text>
+        <g>
+          <g transform="translate(20,228)">
+            <text x="68" y="-6" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">Block A</text>
+            <rect x="0" y="0" width="34" height="34" rx="6" fill="#C0563B"/><rect x="40" y="0" width="34" height="34" rx="6" fill="#E8A33D"/>
+            <rect x="0" y="40" width="34" height="34" rx="6" fill="#E8A33D"/><rect x="40" y="40" width="34" height="34" rx="6" fill="#E8A33D"/>
+          </g>
+          <g transform="translate(180,228)">
+            <text x="68" y="-6" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">Block B</text>
+            <rect x="0" y="0" width="34" height="34" rx="6" fill="#E8A33D"/><rect x="40" y="0" width="34" height="34" rx="6" fill="#C0563B"/>
+            <rect x="0" y="40" width="34" height="34" rx="6" fill="#E8A33D"/><rect x="40" y="40" width="34" height="34" rx="6" fill="#E8A33D"/>
+          </g>
+          <g transform="translate(340,228)">
+            <text x="68" y="-6" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">Block C</text>
+            <rect x="0" y="0" width="34" height="34" rx="6" fill="#E8A33D"/><rect x="40" y="0" width="34" height="34" rx="6" fill="#E8A33D"/>
+            <rect x="0" y="40" width="34" height="34" rx="6" fill="#C0563B"/><rect x="40" y="40" width="34" height="34" rx="6" fill="#C0563B"/>
+          </g>
+          <text x="520" y="248" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">RC = 300</text>
+          <text x="520" y="266" font-family="JetBrains Mono" font-size="10" fill="#6E6456">3× the reads served</text>
+          <text x="520" y="280" font-family="JetBrains Mono" font-size="10" fill="#6E6456">before ANY refresh,</text>
+          <text x="520" y="294" font-family="JetBrains Mono" font-size="10" fill="#6E6456">and only 4/12 WLs touched</text>
+        </g>
+      </svg>
+      <figcaption><b>Same flash, two policies.</b> The top row is what every prior scheme does: the instant the read count hits the fixed, worst-case C<sub>max</sub> (100 reads here), every wordline in every block is forced through RR — including the ones with plenty of real headroom left. The bottom row is DEAR: SEE has been cheaply checking each WL's actual error along the way, so by read count 300 (3× further), only the 4 wordlines whose measured error genuinely crossed their own line get refreshed. (Illustrative reconstruction of Figure 10's RC=0/100/…/300 walkthrough; exact per-WL positions are for clarity, not measured data.)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">mismatch → cheap per-WL measurement → precise trigger → guardrail → the win</div>
+      <div class="flow-row">
+        <div class="node n-cost"><div class="nt">Problem</div><div class="nd">One fixed C_max, sized for the worst WL in the worst block, ignores up to 4.14× intra-block variation</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">SEE</div><div class="nd">SAM (×4) + FEM (~×7) + BPM: a ~28&nbsp;µs per-WL error read instead of a full ECC decode</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">DEAR</div><div class="nd">Compares each WL's CFBC(ER) to a threshold; refreshes only that WL's h-layer</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-mech"><div class="nt">Guardrail</div><div class="nd">E_TH set below ECC_CAP with a margin sized to survive a full BPM interval — no data loss, by construction</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-huge"><div class="nt">Win</div><div class="nd">64.2% fewer RR-induced writes, lower p99.9 latency, 36.7% longer lifetime</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Tax kept small</div><div class="nd">&lt;1.3% IOPS/latency overhead even at a 15-read monitoring interval</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about DEAR</h2>
+      <p class="sub">Each picture stands alone — read in any order. Every card ends with an honest note on where the analogy stops being accurate.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="10" y="20" width="120" height="56" rx="5" fill="#fff" stroke="#9A8E7C" stroke-width="1.5"/>
+          <g fill="#C0563B"><rect x="16" y="26" width="20" height="20" rx="2"/><rect x="40" y="26" width="20" height="20" rx="2"/><rect x="64" y="26" width="20" height="20" rx="2"/><rect x="88" y="26" width="20" height="20" rx="2"/><rect x="112" y="26" width="12" height="20" rx="2"/></g>
+          <text x="70" y="86" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">everyone, worst-case</text>
+        </svg></div>
+        <span class="term">The old policy · fixed C_max</span>
+        <h3>One evacuation order for the whole building</h3>
+        <p>A fire marshal sets one evacuation rule sized for the single weakest stairwell in the single weakest wing of the building, then applies it to every floor. Most floors have far sturdier stairwells and could safely wait — but the rule doesn't know that, so everyone evacuates together, every time, at the pace of the worst case.</p>
+        <div class="breaks"><b>Where it breaks:</b> a fire marshal's rule is static by necessity (no time to inspect during an actual fire); DEAR's whole point is that flash <i>can</i> be cheaply "inspected" in real time, so the worst-case shortcut is no longer necessary.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="14" width="24" height="68" rx="3" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.5"/>
+          <rect x="46" y="14" width="24" height="68" rx="3" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.5" opacity="0.35"/>
+          <rect x="76" y="14" width="24" height="68" rx="3" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.5" opacity="0.35"/>
+          <rect x="106" y="14" width="24" height="68" rx="3" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.5" opacity="0.35"/>
+          <circle cx="28" cy="30" r="5" fill="#5A61B4"/>
+          <path d="M34 30 h70" stroke="#5A61B4" stroke-width="1.2" stroke-dasharray="3 2"/>
+          <text x="70" y="90" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#3a409a">check 1, infer 3</text>
+        </svg></div>
+        <span class="term">Optimization 1 · SAM</span>
+        <h3>Sampling one plant from the same greenhouse tray</h3>
+        <p>Four seedlings grown in the same tray, same soil, same light get watered and fertilized identically — check one for wilting and you've effectively checked all four. SAM does this for the four WLs in an h-layer: because the manufacturing etch gives them near-identical physical characteristics, measuring the leading WL's error tells you the other three's, for free.</p>
+        <div class="breaks"><b>Where it breaks:</b> the tray analogy assumes perfect uniformity; SAM's real guarantee is empirical (Δ&lt;0.85% variation across 921,600 tested h-layers) rather than architectural — it's a very strong correlation, not a law of physics.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="40" cy="48" r="26" fill="none" stroke="#C27D14" stroke-width="2"/>
+          <path d="M40 48 l-10 -20 M40 48 l6 -22 M40 48 l14 -14 M40 48 l18 -4 M40 48 l16 10" stroke="#C27D14" stroke-width="1.4"/>
+          <circle cx="40" cy="48" r="3" fill="#C27D14"/>
+          <path d="M78 48 h14" stroke="#9A8E7C" stroke-width="1.6"/>
+          <rect x="98" y="40" width="26" height="16" rx="3" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.5"/>
+          <text x="111" y="51" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">1×</text>
+        </svg></div>
+        <span class="term">Optimization 2 · FEM</span>
+        <h3>Taking a pulse instead of running a full blood panel</h3>
+        <p>A full diagnostic workup (an ECC-based error check — 3 page reads, ~7 sensing operations, plus decode) tells you everything, but it's slow. A single pulse reading — CFBC(ER), one sensing at V<sup>1</sup><sub>REF</sub> — is a fast, well-correlated proxy: on its own it doesn't diagnose everything, but it reliably tells you whether this WL needs the full workup (a refresh) right now.</p>
+        <div class="breaks"><b>Where it breaks:</b> a pulse can miss something a blood panel would catch; FEM's proxy is deliberately conservative (it maps to the <i>worst</i> observed error for a given CFBC reading) specifically so it never under-reacts, at the cost of occasionally refreshing slightly early.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <line x1="14" y1="70" x2="126" y2="70" stroke="#9A8E7C" stroke-width="1.5"/>
+          <g fill="#5A61B4"><circle cx="30" cy="70" r="4"/><circle cx="55" cy="70" r="4"/><circle cx="80" cy="70" r="4"/><circle cx="105" cy="70" r="4"/></g>
+          <path d="M30 70 v-30 M55 70 v-30 M80 70 v-30 M105 70 v-30" stroke="#5A61B4" stroke-width="1" stroke-dasharray="2 2"/>
+          <text x="30" y="34" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">✓</text>
+          <text x="55" y="34" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">✓</text>
+          <text x="80" y="34" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">✓</text>
+        </svg></div>
+        <span class="term">Optimization 3 · BPM</span>
+        <h3>Factory QC sampling every Nth unit, not every unit</h3>
+        <p>Inspecting every single unit off a production line is thorough but far too slow to keep up with the line speed. Quality control instead samples every N<sup>th</sup> unit, with N chosen conservatively enough that a defect can't slip through undetected between samples. BPM checks a block's WLs every C<sub>INT</sub> reads, with C<sub>INT</sub> derived so error can't cross ECC<sub>CAP</sub> between two consecutive checks.</p>
+        <div class="breaks"><b>Where it breaks:</b> a factory's defect rate is roughly constant over time; flash's error accumulation is cumulative and read-count-driven, so BPM's "safe N" isn't a fixed constant — it shrinks as the drive ages (more P/E cycles → smaller safety margin → shorter C<sub>INT</sub>).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="16" width="100" height="18" rx="4" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.5"/>
+          <text x="70" y="29" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">ECC_CAP (data loss)</text>
+          <rect x="20" y="42" width="100" height="14" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="1"/>
+          <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#6E6456">margin</text>
+          <rect x="20" y="62" width="100" height="18" rx="4" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.5"/>
+          <text x="70" y="75" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">E_TH (trigger RR here)</text>
+        </svg></div>
+        <span class="term">The guardrail · E_TH margin</span>
+        <h3>The smoke detector, not the fire alarm's legal limit</h3>
+        <p>Building code defines a smoke-density threshold that constitutes a genuine hazard. A smoke detector is calibrated to trip well <i>before</i> that legal limit, leaving enough buffer that people can react before the real danger arrives. DEAR's E<sub>TH</sub> plays that role against ECC<sub>CAP</sub>: it's not the failure point, it's a deliberately-earlier alarm sized to survive one full monitoring interval.</p>
+        <div class="breaks"><b>Where it breaks:</b> a smoke detector's margin is a fixed safety convention; DEAR's margin (ECC<sub>CAP</sub> − E<sub>TH</sub>) is explicitly computed per configuration — tighter E<sub>TH</sub> (e.g., 5%) buys more usable WL lifetime but demands more frequent checks (shorter C<sub>INT</sub>); the trade-off is tunable, not fixed by convention.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="18" width="50" height="60" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="1.5"/>
+          <g fill="#C0563B"><rect x="20" y="24" width="38" height="12" rx="2"/><rect x="20" y="40" width="38" height="12" rx="2"/><rect x="20" y="56" width="38" height="12" rx="2"/></g>
+          <path d="M70 48 h14" stroke="#9A8E7C" stroke-width="1.6"/>
+          <rect x="88" y="18" width="38" height="60" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="1.5"/>
+          <rect x="94" y="24" width="26" height="12" rx="2" fill="var(--honey-soft)" stroke="#C27D14"/>
+          <rect x="94" y="40" width="26" height="12" rx="2" fill="#C0563B"/>
+          <rect x="94" y="56" width="26" height="12" rx="2" fill="var(--honey-soft)" stroke="#C27D14"/>
+        </svg></div>
+        <span class="term">The mechanism · block-wide vs WL-level RR</span>
+        <h3>Recalling one bad batch, not the whole product line</h3>
+        <p>A manufacturer that finds one contaminated batch of a product recalls <i>that batch</i>, not every unit of that product ever made. DEAR's WL-level RR is the same instinct applied to flash: refresh the specific wordline (and its h-layer siblings, per SAM) that measured unsafe, and leave the rest of the block's healthy WLs alone.</p>
+        <div class="breaks"><b>Where it breaks:</b> a partial recall doesn't fragment the warehouse; a partial (WL-level) refresh does leave the block partially invalidated. The paper's answer is that this fragmentation is harmless — ordinary garbage collection reclaims it exactly as it would any other partially-invalid block.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Section by section</div>
+      <h2>How DEAR actually works</h2>
+      <p class="sub">The mismatch, precisely → SEE's three stacked optimizations → the RR-invocation flow in DearSSD → what it costs. Numbers are the paper's unless flagged as illustrative.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The mismatch, precisely</h3>
+      <p>Every prior read-disturb defense (data reallocation, V<sub>pass</sub> scaling, buffer management) still gates RR on the same primitive: a single, fixed <b>C<sub>max</sub></b>, defined as the minimum C<sup>B</sup><sub>max</sub> over every block <i>B</i> — itself the worst wordline in that block. Applied uniformly, it is by definition sized for the single weakest wordline on the entire drive. The paper's 160-chip characterization (3,686,400 WLs across 19,200 blocks) shows just how much this throws away: at 0K P/E cycles the average gap between the best and worst block is ~250K reads, and even <i>within one block</i>, the best WL tolerates 1.42× more reads than the worst — widening to <b>4.14×</b> at 2K P/E cycles as the drive ages and margins shrink further.</p>
+      <div class="callout why"><span class="ic">◆</span><div><b>The governing move (memorize this).</b> Replace the shared, worst-case threshold C<sub>max</sub> with a per-wordline, measured one, C<sup>WL</sup><sub>max</sub> — the actual number of reads <i>this</i> WL can take before its real error rate would exceed ECC<sub>CAP</sub>. Everything else in DEAR (SEE's three optimizations, the DearSSD integration) exists to make measuring C<sup>WL</sup><sub>max</sub> at runtime cheap enough to be worth doing.</div></div>
+
+      <h3>2 · SEE optimization 1 — Similarity-Aware Monitoring (SAM)</h3>
+      <p>A 3D block's h-layers each bundle a small group of WLs (four, in the paper's setup) that share near-identical physical characteristics because of how the vertical channel hole was etched and because they share a common WL gate during reads. Real-device measurement confirms this: across 921,600 tested h-layers, the maximum error-count variation among the four WLs in an h-layer is under 0.85%, regardless of aging (P/E cycles). SAM exploits this directly — measure only the <i>leading</i> WL of each h-layer, and infer the same error status for its siblings, cutting the number of WLs that need checking by <b>4×</b> (and further, to 1/<i>m</i>, if future flash packs more WLs per h-layer).</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">SAM: one measurement, four wordlines' worth of answer</div>
+        <div class="viz-kicker">rebuilt from Figure 11 — error counts by wordline, across h-layers</div>
+        <div class="legend">
+          <span><i style="background:var(--mech)"></i> measured (leading WL of the h-layer)</span>
+          <span><i style="background:var(--honey)"></i> inferred, not measured (siblings)</span>
+        </div>
+        <svg class="full" viewBox="0 0 760 220" role="img" aria-label="Four h-layers, each with four wordlines showing nearly identical error counts within the layer; SAM measures only the first wordline of each layer and infers the rest">
+          <g font-family="JetBrains Mono" font-size="11" fill="#6E6456">
+            <text x="20" y="24">h-layer 1</text><text x="20" y="74">h-layer 2</text><text x="20" y="124">h-layer 3</text><text x="20" y="174">h-layer N</text>
+          </g>
+          <!-- rows of 4 wl cells: layer1 errs ~97,96,99,98 ; layer2 88,86,88,87 ; layer3 79,77,78,78 ; layerN 58,58,57,58 -->
+          <g transform="translate(110,6)">
+            <rect x="0" y="0" width="34" height="26" rx="4" fill="#5A61B4"/><text x="17" y="17" text-anchor="middle" fill="#fff" font-family="JetBrains Mono" font-size="10">97</text>
+            <rect x="42" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="59" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">96</text>
+            <rect x="84" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="101" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">99</text>
+            <rect x="126" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="143" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">98</text>
+          </g>
+          <g transform="translate(110,56)">
+            <rect x="0" y="0" width="34" height="26" rx="4" fill="#5A61B4"/><text x="17" y="17" text-anchor="middle" fill="#fff" font-family="JetBrains Mono" font-size="10">88</text>
+            <rect x="42" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="59" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">86</text>
+            <rect x="84" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="101" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">88</text>
+            <rect x="126" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="143" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">87</text>
+          </g>
+          <g transform="translate(110,106)">
+            <rect x="0" y="0" width="34" height="26" rx="4" fill="#5A61B4"/><text x="17" y="17" text-anchor="middle" fill="#fff" font-family="JetBrains Mono" font-size="10">79</text>
+            <rect x="42" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="59" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">77</text>
+            <rect x="84" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="101" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">78</text>
+            <rect x="126" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="143" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">78</text>
+          </g>
+          <g transform="translate(110,156)">
+            <rect x="0" y="0" width="34" height="26" rx="4" fill="#5A61B4"/><text x="17" y="17" text-anchor="middle" fill="#fff" font-family="JetBrains Mono" font-size="10">58</text>
+            <rect x="42" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="59" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">58</text>
+            <rect x="84" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="101" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">57</text>
+            <rect x="126" y="0" width="34" height="26" rx="4" fill="#E8A33D"/><text x="143" y="17" text-anchor="middle" fill="#6e4a09" font-family="JetBrains Mono" font-size="10">58</text>
+          </g>
+          <g font-family="JetBrains Mono" font-size="9.5" fill="#9A8E7C">
+            <text x="127" y="200">WL1 (checked)</text><text x="242" y="200">WL2</text><text x="326" y="200">WL3</text><text x="410" y="200">WL4</text>
+          </g>
+          <text x="480" y="20" font-family="JetBrains Mono" font-size="11" fill="#6E6456" width="260">Error counts (illustrative, matching</text>
+          <text x="480" y="35" font-family="JetBrains Mono" font-size="11" fill="#6E6456">Figure 11's pattern) barely differ</text>
+          <text x="480" y="50" font-family="JetBrains Mono" font-size="11" fill="#6E6456">within a row — but differ a lot</text>
+          <text x="480" y="65" font-family="JetBrains Mono" font-size="11" fill="#6E6456">between rows (h-layers).</text>
+          <text x="480" y="95" font-family="JetBrains Mono" font-size="11" fill="#3a409a">Result: 1 measurement</text>
+          <text x="480" y="110" font-family="JetBrains Mono" font-size="11" fill="#3a409a">stands in for 4 — a 4×</text>
+          <text x="480" y="125" font-family="JetBrains Mono" font-size="11" fill="#3a409a">reduction in WL checks.</text>
+        </svg>
+        <figcaption>Error counts are near-identical within an h-layer (WL1–WL4 in the same row) but differ substantially between h-layers — exactly the pattern SAM exploits. (Values reproduce the illustrative pattern of Figure 11(a); the paper's real measurement backing this is the Δ&lt;0.85% variation statistic, not these specific numbers.)</figcaption>
+      </figure>
+
+      <h3>3 · SEE optimization 2 — Fail-bit-assisted Error Monitoring (FEM)</h3>
+      <p>Most read-disturb error concentrates in the erased (<b>ER</b>) V<sub>th</sub> state (67% of total, per primer 7), so FEM doesn't bother reading the whole WL — it measures only the fail-bit count in the ER state, <b>CFBC(ER)</b>, via a single sensing at V<sup>1</sup><sub>REF</sub>. A full conventional check reads the WL's LSB (2 sensings), CSB (3 sensings), and MSB pages — 7 sensings total, plus ECC decode — so FEM's one sensing is a <b>~7×</b> reduction on the sensing side alone.</p>
+      <p>To turn a raw CFBC(ER) count into a trustworthy trigger, DEAR uses an offline-built correlation model, MRBER(CFBC) — the <i>maximum</i> observed bit-error count ever seen for a given CFBC(ER) reading — and conservatively maps: <b>C<sup>TH</sup><sub>FBC</sub> = min{ CFBC | MRBER(CFBC) ≥ E<sub>TH</sub> }</b> (Eq. 2). A WL refreshes once its CFBC(ER) reaches C<sup>TH</sup><sub>FBC</sub>. Because the mapping uses the worst case observed for each CFBC value, some WLs may refresh a little before their <i>true</i> error hits E<sub>TH</sub> — a deliberate, safe over-estimate, not an accuracy failure.</p>
+
+      <h3>4 · SEE optimization 3 — Block-wise Periodic Monitoring (BPM)</h3>
+      <p>Checking after every single read is still too frequent to be free, so DEAR checks a block's WLs only every <b>C<sub>INT</sub></b> reads. The size of C<sub>INT</sub> isn't arbitrary: it's set to the minimum number of reads any WL could take to accumulate error from E<sub>TH</sub> up to ECC<sub>CAP</sub>, guaranteeing that if a WL was safely under E<sub>TH</sub> at one check, it cannot silently exceed ECC<sub>CAP</sub> before the next one. A tighter E<sub>TH</sub> (smaller safety margin, e.g. 5%) buys much higher RR efficiency — the paper reports the average C<sup>WL</sup><sub>max</sub> reachable under E<sub>TH</sub>(5) is 2.8× the fixed C<sub>max</sub> at 2K P/E cycles, versus only 1.2× under a looser E<sub>TH</sub>(20) — but it demands a shorter, more frequent C<sub>INT</sub>.</p>
+      <p>Even amortized, monitoring an entire large block at once is slow (up to 6.42&nbsp;ms for a 321-h-layer, 120-MiB block, even with SAM+FEM). DearSSD therefore <b>interleaves</b> the work: rather than checking every h-layer at once every C<sub>INT</sub> reads, it checks exactly one h-layer every C<sup>WL</sup><sub>INT</sub> = C<sub>INT</sub> / (number of h-layers) reads — e.g., 19.3K / 321 ≈ 60 reads — spreading the monitoring cost thinly across ordinary host reads instead of bursting it.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">RR invocation flow inside DearSSD</div>
+        <div class="viz-kicker">rebuilt from Figure 19 — what happens on every block read</div>
+        <svg class="full" viewBox="0 0 760 210" role="img" aria-label="On every block read DearSSD checks whether the read count is a multiple of the per-wordline monitoring interval; if so it measures the fail bit count of the wordline pointed to by the WL pointer and compares it against the threshold, refreshing that wordline and its h-layer siblings if the threshold is exceeded, then advancing the pointer">
+          <g font-family="JetBrains Mono" font-size="11">
+            <rect x="10" y="20" width="140" height="50" rx="8" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.5"/>
+            <text x="80" y="42" text-anchor="middle" fill="#3a409a">block read;</text><text x="80" y="58" text-anchor="middle" fill="#3a409a">RC % C^WL_INT == 0?</text>
+            <path d="M150 45 h30" stroke="#9A8E7C" stroke-width="1.6" fill="none"/>
+            <rect x="182" y="20" width="150" height="50" rx="8" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.5"/>
+            <text x="257" y="38" text-anchor="middle" fill="#3a409a">sense V1_REF on WL</text><text x="257" y="54" text-anchor="middle" fill="#3a409a">pointed by WP; count CFBC(ER)</text>
+            <path d="M332 45 h30" stroke="#9A8E7C" stroke-width="1.6" fill="none"/>
+            <rect x="364" y="20" width="150" height="50" rx="8" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.5"/>
+            <text x="439" y="38" text-anchor="middle" fill="#6e4a09">CFBC(ER)</text><text x="439" y="54" text-anchor="middle" fill="#6e4a09">≥ C^TH_FBC ?</text>
+            <path d="M514 45 h30" stroke="#9A8E7C" stroke-width="1.6" fill="none"/>
+            <rect x="546" y="20" width="150" height="50" rx="8" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.5"/>
+            <text x="621" y="38" text-anchor="middle" fill="#9a3a22">refresh this WL +</text><text x="621" y="54" text-anchor="middle" fill="#9a3a22">its h-layer siblings</text>
+          </g>
+          <path d="M439 70 v20 h182 v-20" stroke="#9A8E7C" stroke-width="1.4" fill="none"/>
+          <text x="530" y="106" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">migrate valid pages; FTL updates mapping</text>
+          <g font-family="JetBrains Mono" font-size="11">
+            <rect x="182" y="130" width="150" height="50" rx="8" fill="var(--paper-2)" stroke="var(--line-strong)" stroke-width="1.5"/>
+            <text x="257" y="148" text-anchor="middle" fill="var(--ink-soft)">advance per-block</text><text x="257" y="164" text-anchor="middle" fill="var(--ink-soft)">WL Pointer (WP)</text>
+          </g>
+          <path d="M257 130 v-40" stroke="#9A8E7C" stroke-width="1.4" fill="none" marker-end="url(#arrDear)"/>
+          <path d="M182 155 h-40 v-90 h40" stroke="#9A8E7C" stroke-width="1.4" fill="none" stroke-dasharray="3 3"/>
+          <text x="20" y="140" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">no →</text>
+          <text x="20" y="90" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">skip check,</text>
+          <text x="20" y="104" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">serve the read</text>
+          <defs><marker id="arrDear" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#9A8E7C"/></marker></defs>
+        </svg>
+        <figcaption>C<sup>WL</sup><sub>INT</sub> and C<sup>TH</sup><sub>FBC</sub> are pre-characterized offline per P/E-cycle range and loaded into a small reference table at runtime — the online path is just a modulo check, one sensing, one comparison, and (rarely) a migration.</figcaption>
+      </figure>
+
+      <h3>5 · System integration: cheap enough to be free</h3>
+      <p>DearSSD measures CFBC(ER) using two existing NAND features rather than new hardware: because data is randomized before programming, each V<sub>th</sub> state is uniformly populated (e.g., 16K cells in TLC), so CFBC(ER) is just "16K minus the number of '1' bits" after a V<sup>1</sup><sub>REF</sub> sensing — and an on-chip 1s-counter returns that count directly, bypassing the ECC engine entirely. Total: <b>28&nbsp;µs</b> (20&nbsp;µs sensing + 8&nbsp;µs counting, via existing GET/SET FEATURE commands). New state is minimal: a 2-byte per-block WL Pointer (WP) and a small offline-characterized reference table of (C<sup>WL</sup><sub>INT</sub>, C<sup>TH</sup><sub>FBC</sub>) pairs, one row per P/E-cycle range. Partial, WL-level RR fragments blocks somewhat, but that fragmentation is reclaimed by ordinary GC — no GC changes are needed.</p>
+      <div class="callout note"><span class="ic">◇</span><div><b>What DearSSD is compared against.</b> <b>Baseline</b>: priority-aware I/O scheduling + a fixed, block-level C<sub>max</sub>. <b>Cocktail</b>: Baseline plus a prior state-of-the-art technique that spreads read-hot pages across blocks to delay future RR. <b>DEAR</b>: WL-level, error-measured RR (this paper). <b>DEAR+</b>: DEAR combined with Cocktail's data placement — the two are complementary (one changes <i>where</i> data lives, the other changes <i>when/at what granularity</i> RR fires).</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Put real numbers on it</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Five calculations recomputed from the paper's own numbers, then an interactive widget for the core trigger comparison. Anything I derived rather than quoted directly is labeled.</p>
+    </div>
+
+    <div class="card">
+      <h3>Example 1 — the naive monitoring cost, and why it's a non-starter</h3>
+      <p>A modern 3D block can exceed <b>120&nbsp;MiB</b> (Section 6). Suppose checking one WL the conventional way (read + ECC decode) takes on the order of tens of microseconds per page across a WL's LSB/CSB/MSB pages, scaled across every WL in the block.</p>
+      <ol class="seq">
+        <li>The paper states this directly: "one round of error monitoring for all WLs in a block may take up to <b>337&nbsp;ms</b>" using the conventional (full ECC-based) approach.</li>
+        <li>Compare to a single 4-KiB random read at, e.g., a 40&nbsp;µs base read latency (Table 3's t<sub>R</sub>): 337&nbsp;ms is over <b>8,000×</b> a single read's latency (337,000&nbsp;µs / 40&nbsp;µs ≈ 8,425×) — utterly incompatible with servicing host I/O between checks.</li>
+      </ol>
+      <div class="callout warn" style="margin-top:6px"><span class="ic">▲</span><div><b>Takeaway:</b> "just measure every WL's real error" is the right idea and the wrong plan — it's SEE's job (SAM+FEM+BPM) to make the <i>same idea</i> cheap.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 2 — SAM × FEM: the paper's own before/after, sanity-checked</h3>
+      <p>With SAM and FEM applied, the paper reports monitoring a single 120-MiB, 321-h-layer block drops from 337&nbsp;ms to <b>6.42&nbsp;ms</b>.</p>
+      <ol class="seq">
+        <li><b>Measured reduction:</b> 337&nbsp;ms / 6.42&nbsp;ms ≈ <b>52.5×</b>.</li>
+        <li><b>Naive back-of-envelope estimate</b> <em>(my calculation, not stated in the paper)</em>: SAM cuts the number of WLs checked by 4× (checking 321 h-layer leaders instead of 1,284 physical WLs); FEM cuts each check's sensing cost by ~7× (1 sensing vs. 7). Combined: 4 × 7 = <b>28×</b>.</li>
+        <li>28× falls well short of the observed 52.5×. The remaining ~1.9× gap is consistent with — but not explicitly quantified by — the paper's description of conventional monitoring as needing full <i>ECC decoding</i> on top of the 7 sensings; decode latency is not free, and its removal (FEM bypasses the ECC engine entirely) plausibly accounts for more of the saving than the sensing-count ratio alone suggests.</li>
+      </ol>
+      <div class="callout warn" style="margin-top:6px"><span class="ic">▲</span><div><b>Misconception it kills:</b> "the paper's reduction factors should multiply out exactly." Real systems have overheads (like ECC decode latency) that don't show up as a clean, separately-stated ratio — a healthy reminder to sanity-check reported numbers rather than assume every headline figure decomposes cleanly.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 3 — the interleaved monitoring interval, C<sup>WL</sup><sub>INT</sub></h3>
+      <p>The paper's own worked case (Section 6): a block with <b>321 h-layers</b> and a block-wide monitoring interval C<sub>INT</sub> of <b>19.3K</b> reads (the value the paper derives for E<sub>TH</sub>(5) at 2K P/E cycles, Figure 16(c)).</p>
+      <ol class="seq">
+        <li><b>C<sup>WL</sup><sub>INT</sub> = C<sub>INT</sub> / (number of h-layers) = 19,300 / 321 ≈ 60.1</b>, matching the paper's stated "checks only one WL every 60 reads."</li>
+        <li><em>My extrapolation, not stated in the paper:</em> Table 3's evaluation SSD instead reports C<sup>WL</sup><sub>INT</sub> directly — 261, 212, and 108 reads at 0.5K, 1K, and 2K P/E cycles. That SSD has 176 stacked WLs ÷ 4 WLs/h-layer = <b>44 h-layers</b>. Multiplying back out gives an <i>implied</i> C<sub>INT</sub> of 44×261=11,484, 44×212=9,328, and 44×108=4,752 reads at those three P/E points — a different block geometry from the 321-h-layer example above, so these numbers shouldn't be compared directly to the 19.3K figure, but the trend (C<sub>INT</sub> shrinking as P/E cycles rise) matches Figure 16(c)'s described behavior.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> as flash ages, the safety margin shrinks, so DEAR must check more often — that's expected and accounted for, not a flaw. The reference table (primer/How-It-Works) is exactly the mechanism that adapts C<sup>WL</sup><sub>INT</sub> as P/E cycles climb.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 4 — monitoring overhead vs. a plain read</h3>
+      <p>Table 3: base read latency t<sub>R</sub> = 40&nbsp;µs; the paper's CFBC(ER) check costs 28&nbsp;µs (20&nbsp;µs sensing + 8&nbsp;µs counting).</p>
+      <ol class="seq">
+        <li>At C<sup>WL</sup><sub>INT</sub> = 60 reads, the "budget" of ordinary reads between checks is 60 × 40&nbsp;µs = <b>2,400&nbsp;µs</b>.</li>
+        <li>Overhead fraction = 28 / 2,400 ≈ <b>1.17%</b> — matching the paper's own statement of "less than 1.2% overhead."</li>
+        <li>Even pushed to a much more aggressive C<sup>WL</sup><sub>INT</sub> = 15 reads (15×40&nbsp;µs = 600&nbsp;µs budget; 28/600 ≈ 4.7% by this simple ratio), the paper's actual measured system-level impact is only <b>0.7%</b> IOPS drop and <b>1.3%</b> latency increase — lower than the naive ratio suggests, because interleaving spreads the 28&nbsp;µs check across many in-flight requests rather than blocking one read outright.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> a simple "check cost ÷ interval" ratio is a useful upper bound, but real queued/pipelined I/O absorbs some of it — measured overhead came in below the naive estimate at the tight interval.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 5 — memory footprint of DEAR's new state</h3>
+      <p>Two new structures: a 2-byte per-block WL Pointer (WP), and an 8-byte-per-entry reference table.</p>
+      <ol class="seq">
+        <li><b>WP overhead:</b> for a 1-TiB SSD built from 88-MiB blocks (matching the paper's own example — and Table 1's 2022 QLC row: 176 layers, 5,632 pages/block, 88&nbsp;MiB): 1&nbsp;TiB / 88&nbsp;MiB ≈ 11,915 blocks × 2&nbsp;bytes ≈ <b>23.3&nbsp;KiB</b> — matching the paper's stated "about 24-KiB."</li>
+        <li><b>Reference table:</b> one 8-byte entry per 100 P/E-cycle range, up to a 2,000-cycle limit → 2,000/100 = 20 entries × 8&nbsp;bytes = <b>160 bytes</b> total, exactly as the paper states.</li>
+      </ol>
+      <div class="callout takeaway" style="margin-top:6px"><span class="ic">●</span><div><b>Takeaway:</b> DEAR's entire new metadata footprint for a 1-TiB drive is on the order of 24&nbsp;KiB — vanishingly small next to the terabytes of writes it avoids.</div></div>
+
+      <p style="margin-top:20px">Now explore the core mechanism directly:</p>
+
+      <!-- INTERACTIVE: block-wide vs per-WL RR trigger -->
+      <figure class="viz" id="rrFig" style="box-shadow:var(--shadow-sm);margin-top:10px">
+        <div class="viz-title">Block-wide trigger vs. per-wordline trigger</div>
+        <div class="viz-kicker">8 representative WLs in one block · drag the read count, toggle aging</div>
+        <div class="legend">
+          <span><i style="background:var(--honey)"></i> still healthy — below this WL's own limit</span>
+          <span><i style="background:var(--cost)"></i> refreshed (RR fires)</span>
+        </div>
+        <div class="part-viz">
+          <div class="wlgrid" id="wlGrid">
+            <div class="wlgrid-row"><div class="rowlabel">Baseline</div><div id="baseCells" style="display:contents"></div></div>
+            <div class="wlgrid-row"><div class="rowlabel">DEAR</div><div id="dearCells" style="display:contents"></div></div>
+          </div>
+          <div class="part-controls">
+            <label for="rcRange">block read count (K reads): <span id="rcVal">0</span></label>
+            <input type="range" id="rcRange" min="0" max="420" step="2" value="0">
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-ratio="1.42">Fresh flash · 0K P/E · 1.42× spread</button>
+            <button class="tbtn" data-ratio="4.14">Aged flash · 2K P/E · 4.14× spread</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">Baseline refreshed<b id="sBase">0 / 8</b></div>
+            <div class="pstat">DEAR refreshed<b id="sDear">0 / 8</b></div>
+            <div class="pstat">WL-refreshes saved<b id="sSaved">0</b></div>
+            <div class="pstat">headroom Baseline wastes<b id="sWasteRR">0K reads</b></div>
+          </div>
+          <div class="pverdict off" id="rrVerdict">…</div>
+        </div>
+        <figcaption>Each of the 8 cells is a WL with its own real C<sup>WL</sup><sub>max</sub>, spread between a fixed floor (100K reads — the value every WL is guaranteed to tolerate) and that floor times the aging-dependent spread ratio (1.42× fresh, per Figure 9 at 0K P/E; 4.14× aged, at 2K P/E). Baseline uses one shared threshold (the floor) for all 8 WLs at once; DEAR fires independently per WL. The specific 8 values are a constructed illustration of the paper's reported ratios, not measured per-WL data.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Check yourself</div>
+      <h2>Practice</h2>
+      <p class="sub">Work the answer before opening it. Each answer ends with the misconception the question is designed to catch.</p>
+    </div>
+
+    <div class="prob">
+      <span class="ptag easy">Warm-up</span>
+      <div class="qtext">Table 3 gives t<sub>R</sub> = 40&nbsp;µs and DEAR's CFBC(ER) check costs 28&nbsp;µs. If C<sup>WL</sup><sub>INT</sub> is set to 60 reads, what is the monitoring overhead as a fraction of the reads served in one interval?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Budget per interval = 60 × 40&nbsp;µs = 2,400&nbsp;µs. Overhead = 28 / 2,400 ≈ <b>1.17%</b>, matching the paper's "less than 1.2%."
+        <span class="mis">Catches: assuming any "runtime monitoring" must be expensive by nature. Here it's under 1.2% precisely because SEE was engineered (SAM + FEM) to make each individual check nearly free.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">Why can't DEAR simply check every WL's ECC status after every single read, instead of building SAM, FEM, and BPM?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Because a full, ECC-based check of every WL in a modern (~120-MiB) block can take up to <b>337&nbsp;ms</b> — over 8,000× a single 40&nbsp;µs read. Doing that after <i>every</i> read would dwarf host I/O latency entirely. SAM (4× fewer WLs), FEM (~7× cheaper per check, no ECC decode), and BPM (check every C<sub>INT</sub> reads, not every read) are three independent, stacked ways of collapsing that cost to something interleavable with normal reads.
+        <span class="mis">Catches: treating "per-wordline monitoring" as a design decision with no cost. The paper's real engineering contribution is making that idea's cost negligible — the idea itself (check individually, not worst-case) is simple.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">DEAR reduces RR-induced writes by 64.2% on average — but the paper reports only about 3–5% for YCSB-A and YCSB-F. What's different about those two workloads?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        YCSB-A and YCSB-F are read/write-<i>mixed</i> workloads (roughly 50% writes) rather than read-intensive. When writes are frequent, garbage collection reclaims blocks (because they accumulate invalid pages from overwrites) before those blocks' read counts ever get close to needing RR — so there's little RR-induced writing left for DEAR to eliminate in the first place. DEAR's benefit scales with how much of a workload's internal writes actually come from RR versus GC.
+        <span class="mis">Catches: assuming DEAR's percentage improvement is a fixed workload-independent property of the technique. It's conditional on RR actually being the dominant source of internal writes — true for read-heavy workloads, not for write-heavy ones.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">The paper shows the average C<sup>WL</sup><sub>max</sub> reachable is 2.8× the fixed C<sub>max</sub> under E<sub>TH</sub>(5) but only 1.2× under E<sub>TH</sub>(20), at 2K P/E cycles. Does choosing E<sub>TH</sub>(5) mean DEAR is running closer to a reliability edge than E<sub>TH</sub>(20)?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        No — both are equally safe by construction. E<sub>TH</sub> only sets <i>where</i> the trigger sits relative to ECC<sub>CAP</sub>; BPM independently derives C<sub>INT</sub> (the check frequency) so that no WL can cross ECC<sub>CAP</sub> between two checks, <i>whatever</i> E<sub>TH</sub> is chosen. A tighter margin (E<sub>TH</sub>(5)) just means DEAR must check more often (a shorter C<sub>INT</sub>) to keep that same guarantee — it trades monitoring frequency for RR efficiency, not safety for efficiency.
+        <span class="mis">Catches: conflating "closer to the failure threshold" with "less safe." The paper's BPM analysis is exactly the mechanism that decouples those two — safety is guaranteed at any E<sub>TH</sub> by adjusting C<sub>INT</sub> accordingly.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">DEAR and Cocktail attack the RR problem from different angles. Cocktail spreads read-hot pages across blocks to delay future RR; DEAR refreshes precisely at WL granularity when needed. Why does combining them (DEAR+) outperform either alone (75.6% average RR-invocation reduction vs. 64.2% for DEAR and 16.3% for Cocktail)?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        They act on different variables. Cocktail changes the <i>data placement</i> — reducing how quickly any given block's read count grows by not concentrating hot pages together — which pushes RR further into the future but still triggers it on a fixed, worst-case threshold once it does fire. DEAR changes the <i>trigger condition itself</i> — letting each WL use its real, measured capacity rather than the worst-case one — regardless of how reads are distributed. Because one shifts <i>when pressure builds</i> and the other raises <i>the ceiling before RR is needed</i>, their gains compound rather than overlap.
+        <span class="mis">Catches: assuming two RR-reduction techniques must be redundant with each other. They're complementary exactly because they intervene on different parts of the pipeline (placement vs. trigger), which is also why the paper frames DEAR as something existing techniques can adopt, not a replacement for them.</span>
+      </div></details>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Loose ends</div>
+      <h2>Frequently asked</h2>
+      <p class="sub">The questions that come up once the mechanism clicks.</p>
+    </div>
+    <div class="faq">
+
+      <details><summary><span class="q">Q</span>Does DEAR need new flash chip hardware?<span class="chev">▾</span></summary>
+        <div class="a">No. DearSSD's CFBC(ER) measurement uses two features that already exist in commercial NAND — data randomization (which makes each V<sub>th</sub> state's population predictable) and an on-chip 1s-counter — both exposed through existing GET/SET FEATURE commands. The paper is explicit that this requires "only minor changes to conventional SSD [firmware]," not chip redesign.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does refreshing individual wordlines instead of whole blocks break garbage collection?<span class="chev">▾</span></summary>
+        <div class="a">No. Partial, WL-level RR does leave some blocks more fragmented (more invalid pages scattered through them) than whole-block RR would, but GC already reclaims blocks based on invalid-page ratios using its existing victim-selection policy — it doesn't care <i>why</i> a block became fragmented. The paper states DEAR "does not require any modifications to standard GC operations."</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>If DEAR delays refresh compared to the old fixed threshold, how do we know it never loses data?<span class="chev">▾</span></summary>
+        <div class="a">Because the trigger threshold E<sub>TH</sub> is set strictly below ECC<sub>CAP</sub>, and BPM's monitoring interval C<sub>INT</sub> is derived (not guessed) as the minimum number of reads any WL could take to go from E<sub>TH</sub> to ECC<sub>CAP</sub>. So even in the worst case — a WL just under E<sub>TH</sub> right after a check, accumulating error as fast as physically observed — it cannot reach ECC<sub>CAP</sub> before the next scheduled check catches it. This is a designed invariant, not an empirical hope.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>What's the actual difference between DEAR and Cocktail (the paper's prior state-of-the-art baseline)?<span class="chev">▾</span></summary>
+        <div class="a">Cocktail changes <i>where</i> data lives — it spreads frequently-read ("read-hot") pages across more blocks so no single block's read count climbs as fast, delaying when a fixed-threshold RR would fire. DEAR changes <i>when and at what granularity</i> RR fires — it doesn't touch data placement at all, but replaces the fixed worst-case trigger with a per-WL, measured one. They're independent levers; combined (DEAR+), their effects compound (see Practice).</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Why does DEAR help so much less on write-heavy workloads (YCSB-A, YCSB-F)?<span class="chev">▾</span></summary>
+        <div class="a">Because DEAR only reduces the writes that come from <i>RR</i>. Write-heavy workloads generate a lot of internal writes from garbage collection regardless (blocks fill with invalidated overwritten pages and get reclaimed well before RR would ever trigger), so RR was never the dominant cost there. DEAR's ~3–5% improvement on those workloads is real but small precisely because there wasn't much RR-induced writing to remove in the first place.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does the E<sub>TH</sub>/E<sub>CCCAP</sub> margin or C<sub>INT</sub> change as the SSD ages?<span class="chev">▾</span></summary>
+        <div class="a">Yes — this is central to the design, not an afterthought. DEAR's reference table stores a distinct (C<sup>WL</sup><sub>INT</sub>, C<sup>TH</sup><sub>FBC</sub>) pair for each P/E-cycle range (characterized offline, e.g. every 100 cycles up to a 2,000-cycle limit), and DearSSD loads the row matching the drive's current aging status at runtime. As P/E cycles climb and the flash's error margin narrows, the safety margin shrinks and monitoring must happen more often — the table is exactly what lets DEAR track that automatically.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Would DEAR still work as flash moves beyond QLC (e.g., PLC)?<span class="chev">▾</span></summary>
+        <div class="a"><i>Conceptual — extrapolated beyond what the paper directly tested.</i> The paper argues DEAR should scale: it measured negligible overhead (0.7% IOPS, 1.3% latency) even at an aggressive C<sup>WL</sup><sub>INT</sub> of 15 reads, and explicitly frames this as evidence DEAR should remain practical for "emerging QLC NAND flash" (~3× lower C<sub>max</sub> than TLC) and for even larger future block sizes. It does not present PLC-specific data, so treat the further extrapolation to PLC as a reasonable expectation stated by the authors, not a measured result.</div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Reference</h2>
+      <p class="sub">Glossary, a dated summary card, further reading, and the honest provenance notes.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Read-disturb error</b><span>Bit errors on non-target wordlines caused by the pass-through voltage (V<sub>pass</sub>) applied during reads to a neighboring WL, accumulating with read count (N<sub>read</sub>).</span></div>
+      <div class="term-def"><b>Read Refresh (RR)</b><span>The recovery procedure: read all valid pages in a threatened block and migrate them to a new block before errors exceed ECC<sub>CAP</sub>.</span></div>
+      <div class="term-def"><b>C<sub>max</sub></b><span>The conventional, fixed, block-level trigger threshold — the minimum C<sup>B</sup><sub>max</sub> over every block, i.e. sized for the worst wordline in the worst block.</span></div>
+      <div class="term-def"><b>C<sup>WL</sup><sub>max</sub></b><span>DEAR's per-wordline analogue: the actual number of reads <i>this specific</i> WL can tolerate before its real error would exceed ECC<sub>CAP</sub>.</span></div>
+      <div class="term-def"><b>DEAR</b><span>Dynamic Error-Aware Refresh — the paper's scheme: trigger RR at WL granularity, based on each WL's measured error status.</span></div>
+      <div class="term-def"><b>SEE</b><span>Swift Error Estimator — DEAR's low-latency, per-WL error estimation mechanism (SAM + FEM + BPM).</span></div>
+      <div class="term-def"><b>SAM</b><span>Similarity-Aware Monitoring — check only the leading WL of each h-layer; infer the other ~4 WLs' status from it.</span></div>
+      <div class="term-def"><b>FEM</b><span>Fail-bit-assisted Error Monitoring — estimate error from a single CFBC(ER) sensing instead of a full ECC-based read.</span></div>
+      <div class="term-def"><b>BPM</b><span>Block-wise Periodic Monitoring — check every C<sub>INT</sub> reads (not every read), with C<sub>INT</sub> sized to guarantee safety between checks.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>ECC<sub>CAP</sub></b><span>The hard reliability ceiling: the maximum bit errors the ECC engine can correct (60 bits/1&nbsp;KiB in the paper's characterization).</span></div>
+      <div class="term-def"><b>E<sub>TH</sub></b><span>DEAR's trigger threshold, set below ECC<sub>CAP</sub> with a margin sized to survive one full monitoring interval.</span></div>
+      <div class="term-def"><b>CFBC / CFBC(ER)</b><span>Fail-bit count; CFBC(ER) is the fail-bit count specifically in the erased state, FEM's low-cost error proxy.</span></div>
+      <div class="term-def"><b>C<sup>TH</sup><sub>FBC</sub></b><span>The CFBC(ER) value at which DEAR refreshes a WL, derived conservatively from the worst-case MRBER(CFBC) correlation (Eq. 2).</span></div>
+      <div class="term-def"><b>C<sub>INT</sub> / C<sup>WL</sup><sub>INT</sub></b><span>The block-wide monitoring interval, and its per-h-layer, interleaved equivalent (C<sub>INT</sub> ÷ number of h-layers).</span></div>
+      <div class="term-def"><b>h-layer / v-layer</b><span>A 3D block's horizontal layer (a small bundle of WLs, e.g. 4, sharing similar physical characteristics) vs. its vertical layer (stacked WLs in one string).</span></div>
+      <div class="term-def"><b>WP (WL Pointer)</b><span>A 2-byte per-block data structure recording which WL/h-layer should be checked next.</span></div>
+      <div class="term-def"><b>WAF</b><span>Write Amplification Factor — extra physical writes per logical write; RR raises it, DEAR lowers it by cutting RR-induced writes.</span></div>
+      <div class="term-def"><b>Baseline / Cocktail / DEAR+</b><span>The paper's comparison points: fixed-C<sub>max</sub> scheme; prior state-of-the-art data-placement scheme; and DEAR combined with Cocktail.</span></div>
+      <div class="term-def"><b>DearSSD / NVMeVirt</b><span>The DEAR-enabled SSD design, implemented by extending NVMeVirt, a software-defined NVMe SSD emulator, with heterogeneous read-disturb modeling.</span></div>
+    </div>
+
+    <div class="card" style="background:var(--mech-soft);border-color:#bcbfe8;margin-top:26px">
+      <h3 style="color:#3a409a">📌 Summary card <span style="font-family:var(--mono);font-size:.7rem;font-weight:500;color:#5A61B4">· as of 2026-08-30 · MICRO'25</span></h3>
+      <ul style="margin:0;padding-left:20px;color:#3a409a">
+        <li><b>What:</b> DEAR triggers SSD read refresh (RR) per wordline, based on each WL's real measured error, instead of one fixed, block-wide, worst-case threshold.</li>
+        <li><b>Why:</b> process variation means a block's worst WL can need refresh up to 4.14× sooner than its best WL (2K P/E cycles) — the fixed threshold wastes most WLs' real headroom.</li>
+        <li><b>How it's made cheap:</b> SEE stacks three tricks — SAM (check 1-in-4 WLs via h-layer similarity), FEM (1 sensing + on-chip counter instead of a full ECC read, ~7×), BPM (check every C<sub>INT</sub> reads, not every read).</li>
+        <li><b>The guardrail:</b> E<sub>TH</sub> sits below ECC<sub>CAP</sub> with a margin sized so C<sub>INT</sub> provably can't let any WL cross ECC<sub>CAP</sub> between checks.</li>
+        <li><b>Headline results:</b> 64.2% average (up to 86.8%) fewer RR-induced writes; lower p99/p99.9 read latency (tens of percent, growing with P/E cycles); 36.7% longer SSD lifetime; DEAR+ (with Cocktail) reaches 75.6% average RR-invocation reduction.</li>
+        <li><b>Cost:</b> ~28&nbsp;µs per WL check; well under 1.3% IOPS/latency overhead even at an aggressive 15-read interval; ~24&nbsp;KiB metadata for a 1-TiB drive.</li>
+        <li><b>Sweet spot:</b> read-intensive workloads (RR dominates internal writes). <b>Diminishes for:</b> write-heavy, mixed workloads where GC reclaims blocks before RR would fire anyway.</li>
+        <li><b>Not a replacement for</b> data-placement defenses like Cocktail — complementary, and shown to compose (DEAR+).</li>
+        <li><b>Implementation cost:</b> no new flash-chip hardware; reuses existing GET/SET FEATURE commands and on-chip counters; no GC changes.</li>
+      </ul>
+    </div>
+
+    <div class="subhead">Further reading</div>
+    <div class="read-item">
+      <h4>DEAR: Improving Performance and Lifetime of SSDs Using Dynamic Error-Aware Refresh <span class="diff easy">primary</span></h4>
+      <div class="meta">Lee, Kim, Chun, Kim, Kim — MICRO '25 (this guide's source)</div>
+      <p>The paper this guide is built from. Sections 3 (motivation/characterization), 5 (SEE validation) and 7 (evaluation) carry the numbers cited throughout.</p>
+    </div>
+    <div class="read-item">
+      <h4>Cocktail: Mixing Data with Different Characteristics to Reduce Read Reclaims for NAND Flash Memory <span class="diff med">contrast</span></h4>
+      <div class="meta">Zhang et al., IEEE TCAD 2022 — the paper's prior state-of-the-art baseline</div>
+      <p>The data-placement approach DEAR is compared against and composed with (DEAR+). Read to see the "change where data lives" strategy this paper's "change when/how RR triggers" strategy complements.</p>
+    </div>
+    <div class="read-item">
+      <h4>NVMeVirt: A Versatile Software-Defined Virtual NVMe Device <span class="diff med">tooling</span></h4>
+      <div class="meta">Kim et al., FAST 2023 — the emulator DearSSD extends</div>
+      <p>Useful if you want to understand the evaluation infrastructure: how a software SSD emulator can be extended with per-WL, per-P/E-cycle read-disturb models.</p>
+    </div>
+    <div class="read-item">
+      <h4>Wear-out-aware placement in tiered memory systems <span class="diff hard">your world</span></h4>
+      <div class="meta">Conceptual bridge to OS-managed DRAM/NVM/CXL tiering — not from this paper</div>
+      <p>DEAR's core move — replace a single worst-case device-health threshold with per-unit, runtime-measured state — rhymes with how tiering systems increasingly want per-page/per-region wear and access telemetry (rather than device-wide constants) to drive placement and migration decisions across DRAM/NVM/CXL tiers. Worth asking: what would a "C<sup>WL</sup><sub>max</sub>-style" per-region, runtime-measured threshold look like for page migration policy instead of flash refresh?</p>
+    </div>
+
+    <div class="subhead">Source notes — provenance &amp; honesty</div>
+    <div class="card" style="border-color:var(--line-strong)">
+      <p style="font-size:.96rem"><b>Kind:</b> paper-grounded field guide, built from the full text of <code>dear-improving-performance-and-lifetime.txt</code> (MICRO '25). All figures, equations, and Section/Table references cited throughout are quoted or paraphrased from that source unless explicitly marked otherwise.</p>
+      <p style="font-size:.96rem"><b>Grounded &amp; directly stated (high confidence):</b> the read-disturb mechanism and FN-tunneling relation (Eq. 1); the fixed-C<sub>max</sub> definition and its per-block/per-WL variation statistics (69.7%, 2.23×, 250K-read gap, 1.42×/4.14×); SAM/FEM/BPM mechanics and their stated speedups (4×, ~7×, 337&nbsp;ms→6.42&nbsp;ms, 28&nbsp;µs, 60-read C<sup>WL</sup><sub>INT</sub>, Table 3's 261/212/108); the E<sub>TH</sub>/ECC<sub>CAP</sub> safety argument and Eq. 2; the memory-overhead figures (24&nbsp;KiB, 160 bytes); all headline Section 7 results (64.2%/86.8% RR-write reduction, WAF −72.2%/−70%, p99/p99.9 latency reductions by P/E cycle, 0.7%/1.3% monitoring overhead).</p>
+      <p style="font-size:.96rem"><b>My derivations, clearly labeled inline (recomputed from the paper's numbers, not quoted verbatim):</b> the SAM×FEM naive-multiplier sanity check (28× vs. observed 52.5×) and its proposed explanation (ECC-decode overhead); the back-derivation of implied C<sub>INT</sub> from Table 3's C<sup>WL</sup><sub>INT</sub> values; the 8,000× "a single check vs. a single read" ratio; the note that the abstract's headline 44.9%/36.7% figures don't trivially reconcile with Section 7's more granular per-P/E-cycle averages (see below).</p>
+      <p style="font-size:.96rem"><b>Illustrative, not measured (clearly labeled):</b> the signature figure's specific 12-cell layout (Big Idea) and the Worked Examples' 8-WL interactive widget use constructed values that match the paper's <i>reported ratios</i> (1.42×, 4.14×) but are not the paper's actual raw per-WL measurements, which aren't published at that granularity.</p>
+      <p style="font-size:.96rem"><b>A discrepancy worth flagging:</b> the Abstract/Conclusion state DEAR improves p99.9 read latency by 44.9% and lifetime by 36.7% "compared to state-of-the-art techniques," while Section 7.3's own per-P/E-cycle breakdown (vs. Baseline) gives p99.9 reductions of 46.7%/50.9%/54.6% at 0.5K/1K/2K P/E cycles, and Section 7.4's WAF reduction is 72.2%/70% (vs. Baseline/Cocktail) at 2K P/E cycles specifically. The headline and granular numbers are each directly stated in the paper, but the exact aggregation behind the headline figures (which workload subset, which P/E cycles, which comparison point) isn't fully spelled out — treat the headline percentages as reported top-line claims, and the per-section numbers as the more precisely scoped ones.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> DEAR: Improving Performance and Lifetime of SSDs Using Dynamic Error-Aware Refresh (MICRO '25)</span>
+    <span><b>Built from:</b> paper-radar/_paper_txt/dear-improving-performance-and-lifetime.txt · house style in learn/sessions/2026-08-13-thp</span>
+    <span><b>Provenance:</b> paper-grounded (see Source notes) · derivations and illustrative numbers labeled inline</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- BLOCK-WIDE vs PER-WL RR TRIGGER EXPLORER ---- */
+  var N = 8, FLOOR = 100; // 8 representative WLs, each guaranteed to tolerate at least 100K reads
+  var baseGrid = document.getElementById('baseCells');
+  var dearGrid = document.getElementById('dearCells');
+  var currentRatio = 1.42;
+
+  function buildCells(container){
+    var html = '';
+    for(var i=0;i<N;i++){ html += '<div class="wlcell" data-i="'+i+'"><span class="wv"></span></div>'; }
+    container.innerHTML = html;
+    return Array.prototype.slice.call(container.querySelectorAll('.wlcell'));
+  }
+  var baseCells = baseGrid ? buildCells(baseGrid) : [];
+  var dearCells = dearGrid ? buildCells(dearGrid) : [];
+
+  function wlValues(ratio){
+    var vals = [];
+    for(var i=0;i<N;i++){ vals.push(Math.round(FLOOR + i*(FLOOR*(ratio-1))/(N-1))); }
+    return vals;
+  }
+
+  function render(rc, ratio){
+    var vals = wlValues(ratio);
+    var minV = vals[0], maxV = vals[vals.length-1];
+    var rcRange = document.getElementById('rcRange');
+    if(rcRange){ rcRange.max = maxV; if(rc > maxV) rc = maxV; }
+
+    var baselineOn = rc >= minV;
+    var baseCount = baselineOn ? N : 0;
+    var dearOnArr = vals.map(function(v){ return rc >= v; });
+    var dearCount = dearOnArr.filter(Boolean).length;
+    var saved = baseCount - dearCount;
+    var wastedHeadroom = 0;
+    if(baselineOn){ vals.forEach(function(v){ wastedHeadroom += Math.max(0, v - minV); }); }
+
+    baseCells.forEach(function(c,i){
+      c.style.background = baselineOn ? 'var(--cost)' : 'var(--honey)';
+      c.style.borderColor = baselineOn ? '#9a3a22' : '#C27D14';
+      c.querySelector('.wv').textContent = vals[i];
+    });
+    dearCells.forEach(function(c,i){
+      var on = dearOnArr[i];
+      c.style.background = on ? 'var(--cost)' : 'var(--honey)';
+      c.style.borderColor = on ? '#9a3a22' : '#C27D14';
+      c.querySelector('.wv').textContent = vals[i];
+    });
+
+    document.getElementById('rcVal').textContent = rc;
+    document.getElementById('sBase').textContent = baseCount + ' / ' + N;
+    document.getElementById('sDear').textContent = dearCount + ' / ' + N;
+    document.getElementById('sSaved').textContent = saved;
+    document.getElementById('sWasteRR').innerHTML = wastedHeadroom + 'K reads';
+
+    var v = document.getElementById('rrVerdict');
+    if(rc < minV){ v.className='pverdict off'; v.innerHTML='All 8 wordlines still healthy — read count hasn\'t reached even the weakest WL\'s limit ('+minV+'K) yet.'; }
+    else if(dearCount < N){ v.className='pverdict opt'; v.innerHTML='✓ <b>Baseline just force-refreshed all 8 WLs</b> at '+minV+'K reads. DEAR has refreshed only '+dearCount+' — the other '+(N-dearCount)+' are still using their own, larger budget. Headroom Baseline threw away: '+wastedHeadroom+'K reads worth.'; }
+    else { v.className='pverdict sub'; v.innerHTML='At '+rc+'K reads (≥ the strongest WL\'s own limit, '+maxV+'K), DEAR has now refreshed all 8 too — but it got there '+(maxV-minV)+'K reads later than Baseline, one WL at a time, instead of all at once.'; }
+  }
+
+  var rcRange = document.getElementById('rcRange');
+  function update(){ render(parseInt(rcRange.value,10)||0, currentRatio); }
+  if(rcRange){
+    rcRange.addEventListener('input', update);
+    document.querySelectorAll('[data-ratio]').forEach(function(b){
+      b.addEventListener('click', function(){ currentRatio = parseFloat(b.dataset.ratio); update(); });
+    });
+    update();
+  }
+
+  /* ---- INIT ---- */
+  runReveals();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+<script src="../rate.js"></script>
+</body>
+</html>

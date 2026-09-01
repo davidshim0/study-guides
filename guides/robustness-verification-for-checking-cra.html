@@ -1,0 +1,1120 @@
+<!DOCTYPE html>
+<!-- Field guide — Robustness Verification for Checking Crash Consistency of Non-volatile Memory
+     (Zhilei Han & Fei He, ASPLOS'25). Source-grounded (kind:source-paper) — every number, definition,
+     and table figure below is drawn from _paper_txt/robustness-verification-for-checking-cra.txt;
+     connections to CXL/tiering are explicitly marked as the author's framing, not the paper's claims.
+     Semantic colors (repurposed from house palette):
+     honey    = Recovery Observer & Observed State (REC, rrf, s_o — the post-crash snapshot)
+     teal     = Persist Order & NVM machinery (nvo, flush, dtpo, DPTSO, Px86)
+     indigo   = Visibility Order / Memory Consistency (hb, rf, co, ppo, x86-TSO, the SMT encoding)
+     terracotta = Violations & Verification Cost (non-robust, UNKNOWN/timeout, state explosion) -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Crash That Reaches Back — Robustness Verification for NVM, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --huge:#2C8C7C; --huge-soft:#DCEFE9;       /* teal   = persist order & NVM machinery (nvo, flush, dtpo)  */
+  --mech:#5A61B4; --mech-soft:#E6E6F6;       /* indigo = visibility order / memory consistency (hb, rf, co) */
+  --cost:#C0563B; --cost-soft:#F7E1D8;       /* terracotta = violations & verification cost (non-robust)   */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:19ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--huge);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--mech);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--huge);font-weight:600}
+.rule-plaque .wo{color:var(--cost);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:64ch}
+
+/* PROSE / CARDS */
+.prose{max-width:76ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--mech-soft);color:var(--mech);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--huge-soft);border-left:3px solid var(--huge);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--cost)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-huge{background:var(--huge-soft);color:#1f5b51}
+.chip-base{background:var(--honey-soft);color:#6e4a09}
+.chip-mech{background:var(--mech-soft);color:#3a409a}
+.chip-cost{background:var(--cost-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--huge-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--cost-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-huge{border-color:#9fd2c7;background:var(--huge-soft)}
+.node.n-mech{border-color:#bcbfe8;background:var(--mech-soft)}
+.node.n-cost{border-color:#e3b4a5;background:var(--cost-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--huge-soft)}
+.tbl .best:hover td{background:#cfeae2}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-base{background:linear-gradient(90deg,#eab657,#C27D14)}
+.bf-mid{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-huge{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-giga{background:linear-gradient(90deg,#2f6f64,#1f5147)}
+
+/* COLLAPSE EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.cells{display:grid;grid-template-columns:repeat(32,1fr);gap:3px;margin:8px 0}
+.cell{aspect-ratio:1/1;border-radius:3px;background:var(--paper-2);border:1px solid var(--line);transition:background .15s,border-color .15s}
+.cell.touched{background:var(--honey);border-color:var(--honey-deep)}
+.cell.filled{background:var(--huge);border-color:#1f5b51}
+.cell.waste{background:repeating-linear-gradient(45deg,#e9c9be,#e9c9be 3px,#f7e1d8 3px,#f7e1d8 6px);border-color:#e3b4a5}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls label{font-family:var(--mono);font-size:.8rem;color:var(--ink-soft);font-weight:700}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--mech)}
+.part-controls input[type=number]{width:74px;font-family:var(--mono);padding:6px 8px;border:1.5px solid var(--line-strong);border-radius:8px}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--huge-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--cost-soft);color:#9a3a22;border:1px solid #e3b4a5}
+.pverdict.off{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--mech);color:var(--mech)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--huge-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--cost-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--cost);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--huge-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--cost-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}.cells{grid-template-columns:repeat(16,1fr)}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>Persistent Memory Verification · A Field Guide</span>
+    <h1>The order stores actually land in — <span class="swash">proven safe, not just tested</span></h1>
+    <p class="lede">Write-back caches commit stores to non-volatile memory in whatever order the cache coherence protocol likes — not the order your program wrote them. This paper turns "did my program survive every possible crash?" into a graph-cycle question an SMT solver can answer, <strong>with no test inputs and no user annotations</strong>.</p>
+    <div class="hero-meta">
+      <span>📄 Han &amp; He, Tsinghua · ASPLOS'25</span>
+      <span>💾 Intel-x86 NVM · PMDK pmemobj benchmarks</span>
+      <span>🎓 Assumes memory consistency models &amp; SAT/SMT basics</span>
+      <span>⏱ ~40 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🔁</div>
+      <p>A program is <span class="ro">robust</span> iff every non-volatile state a crash could leave behind is also a state reachable by simply <span class="ro">running the program forward, crash-free, under x86-TSO</span> — turned into a graph-cycle check, this lets you <span class="wo">verify crash consistency without ever executing the program</span>.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Nine ideas this paper builds on</h2>
+      <p class="sub">You know DRAM/NVM tiering and the Linux memory stack; this paper lives one layer down, in formal concurrency/persistency semantics and SMT-based verification. These primers build the ladder from "NVM stores commit out of order" up to "an SMT solver can prove that's safe." Tap any open; read in order the first time.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--honey)"></i> Recovery Observer &amp; Observed State (REC, rrf, s₀)</span>
+      <span><i style="background:var(--huge)"></i> Persist Order &amp; NVM machinery (nvo, flush, dtpo, DPTSO)</span>
+      <span><i style="background:var(--mech)"></i> Visibility Order / Memory Consistency (hb, rf, co, x86-TSO)</span>
+      <span><i style="background:var(--cost)"></i> Violations &amp; Verification Cost</span>
+    </div>
+
+    <div class="primer-grid">
+
+      <details class="primer" open>
+        <summary><span class="pnum">1</span>Why NVM stores land out of order — the crash gap<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Intel-x86 NVM systems use a three-layer hierarchy: instructions issue to a thread-local <b>store buffer</b>, propagate to a global <b>persistent buffer</b> (the write-back caches — still volatile!), and only later get committed to NVM. A store becomes <i>visible</i> to other threads when it leaves the store buffer, but it isn't <i>persistent</i> until it leaves the cache — two different moments, two different orders.</p>
+          <p>The paper's running example: a single thread executes <code>a = 1; b = 1;</code> then the system crashes. Upon recovery it is entirely possible to observe <code>a = 0; b = 1</code> — the <i>later</i> store (<code>b</code>) persisted while the <i>earlier</i> one (<code>a</code>) was still sitting in a volatile cache line when power was lost.</p>
+          <div class="ready"><b>Now you're ready:</b> "persist order" (<span class="mem-chip chip-huge">nvo</span>) and "visibility order" (<span class="mem-chip chip-mech">hb</span>) are two separate orders over the same stores, and NVM's whole correctness problem lives in the gap between them.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">2</span>Flush/fence instructions, and x86-TSO in one page<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To constrain persist order, Intel-x86 gives you three cache-line write-back instructions: <code>clflush</code> (strongest — reorders only with earlier loads), <code>clflushopt</code> and <code>clwb</code> (weaker — can reorder with stores/flushes to <i>other</i> cache lines; <code>clwb</code> additionally keeps the line cached instead of invalidating it). Two fences tighten ordering further: <code>mfence</code> (total barrier) and <code>sfence</code> (still lets later loads slip ahead).</p>
+          <p>Visibility order itself is governed by standard <b>x86-TSO</b>: a global happens-before order <code>hb</code> over events, built from <b>preserved program order</b> <code>ppo</code> (program order minus the one relaxation x86 allows — a store or flush can be reordered <i>after</i> a later read), plus cross-thread reads-from (<code>rfe</code>), a per-variable coherence order (<code>co</code>), and the derived from-read order (<code>fr</code>). An execution is valid iff <code>hb = (ppo ∪ rfe ∪ co ∪ fr)⁺</code> is acyclic.</p>
+          <div class="ready"><b>Now you're ready:</b> everything the paper calls "valid" or "reachable" reduces to acyclicity of some such <code>hb</code>-like graph. That's the computational core the whole method rides on.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">3</span>Persist order (nvo) and "reachable non-volatile state"<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Definition 1 (Persist Order).</b> Given a fixed visibility order, the persist order <code>nvo</code> is a total order over all stores and flushes satisfying two axioms: (1) it agrees with visibility order between stores to the <i>same</i> variable; (2) if a store is visibility-ordered before a flush to the same variable, it must persist before any store visibility-ordered after that flush.</p>
+          <p>At any moment only a <i>prefix</i> of <code>nvo</code> has actually persisted; if a crash hits there, the surviving prefix induces a <b>non-volatile state</b> (last-persisted value per location). If that prefix contains <i>all</i> flush events, the state is called a <b>reachable non-volatile state</b> — a legitimate thing a crash could leave behind.</p>
+          <div class="ready"><b>Now you're ready:</b> "which non-volatile states are reachable" is a question about <span class="mem-chip chip-huge">nvo</span>-prefixes, and it's the object the whole verification problem is quantifying over.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">4</span>Crash consistency vs. Robustness — why decouple them<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Crash consistency</b> says: from whatever state a crash leaves behind, the program can resume correctly (no crashes, no corruption). Checking that directly needs to reason about a huge space of crash points, and most prior tools (XFDetector, PMTest, PMDebugger) require developers to hand-annotate commit variables or ordering constraints to avoid false alarms.</p>
+          <p><b>Robustness</b> (Gorjiara et al., PLDI'22, adapted here) sidesteps annotation entirely: <b>Definition 6</b> — a program is robust iff every reachable non-volatile state is <i>also</i> reachable by some ordinary (crash-free) execution under x86-TSO. If so, crash consistency reduces to the well-studied problem of proving the program correct under weak memory consistency — no reasoning about crashes required at all.</p>
+          <div class="ready"><b>Now you're ready:</b> robustness is a <i>bridge</i>: prove it once, and you may reuse any existing x86-TSO correctness verifier unmodified. (Note: this paper's Definition 6 is deliberately reformulated from the original PLDI'22 definition, which used strict persistency instead of state-reachability — Primer 9 of the FAQ picks this up.)</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">5</span>Event Order Graphs (EOG) — the formal substrate<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An execution is represented as an <b>EOG</b> <code>G = (E, E₀, po, rf)</code>: a set of events (reads <code>R(x,v)</code>, writes <code>W(x,v)</code>, flushes <code>FL(x)</code>, fences <code>F</code>), initialization events <code>E₀</code>, program order <code>po</code> (total per thread), and reads-from <code>rf</code> (which write a read observes). From these, coherence order <code>co</code> (a per-variable total order over writes) and <code>fr = rf⁻¹;co</code> are derived, and <code>hb</code> is built as in Primer 2.</p>
+          <p>This is the same declarative-semantics toolkit used across the weak-memory verification literature — it's what lets "is this execution valid" become "is this specific graph acyclic," a problem with decades of efficient tooling behind it.</p>
+          <div class="ready"><b>Now you're ready:</b> every later construction (recovery observer, dtpo, DPTSO) is just <i>more relations added to an EOG</i>, checked for cycles the same way.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">6</span>The Recovery Observer — a hypothetical crash camera<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To enumerate candidate post-crash states, the paper instruments the program with a virtual extra thread <code>Pᵣ</code> — the <b>recovery observer</b> — containing one read per shared variable, deliberately left <i>unordered</i> with everything else (including with each other). As the observer's reads interleave with the real threads in every possible way, they sweep through every possible combination of "last surviving value per variable."</p>
+          <p>The projection of <code>rf</code> onto the observer's reads is written <code>rrf</code> (recovery read-from), and it directly induces an observed non-volatile state <code>s₀</code>: whatever the observer's read of <code>x</code> saw becomes <code>s₀(x)</code>.</p>
+          <div class="ready"><b>Now you're ready:</b> the <span class="mem-chip chip-base">recovery observer</span> turns "enumerate all crash states" into "enumerate all ways an extra unordered thread could read" — a search problem the same machinery from Primer 5 already handles.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">7</span>dtpo &amp; DPTSO — turning a crash question into a cycle check<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The central trick: reachability of a post-crash state under Px86 (the formal x86 persistency model) is known to be <i>decidable</i> but no algorithm was known for it. The paper reduces it to validity-checking instead, via a derived order <b>dtpo</b> (from Khyzha &amp; Lahav's DPTSO): if the observer's read <code>rrf</code> saw an old value <code>w′</code>, then any flush on that variable must be ordered <i>before</i> every store that is coherence-ordered <i>after</i> <code>w′</code> — otherwise that later store should have persisted, overwriting what the observer saw.</p>
+          <p><b>Theorem 1</b>: for an execution valid under x86-TSO, the observed state <code>s₀</code> is reachable under it iff the execution is valid under <b>DPTSO</b> (x86-TSO's <code>hb</code> plus <code>dtpo</code> edges) — i.e., iff <code>hb ∪ dtpo</code> stays acyclic.</p>
+          <div class="ready"><b>Now you're ready:</b> "is this a real crash state" is now the exact same kind of question as "is this a valid execution" — just with one extra relation (<span class="mem-chip chip-huge">dtpo</span>) added to the graph.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">8</span>Partial executions and the search algorithm<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A crash can happen mid-flight, before every event has even propagated — so the algorithm must reason about <b>partial executions</b>: prefix-closed subsets of events (per <code>po ∪ rf</code>) rather than the full event set. <b>Algorithm 1</b> explores all partial (instrumented) executions <code>G</code>; whenever <code>consDPTSO(G)</code> holds, it further checks whether some "alternation" of <code>G</code> (same events, same <code>rrf</code>, but other reads-from possibly rearranged) is valid under plain x86-TSO. If <i>none</i> is, a robustness violation is reported. If <code>consDPTSO(G)</code> fails, the algorithm prunes — blocking every expansion of <code>G</code>, since adding more ordering constraints can't resurrect an already-invalid execution.</p>
+          <div class="ready"><b>Now you're ready:</b> the search is exhaustive but prunable — the <span class="mem-chip chip-huge">DPTSO</span> check is a cheap first filter before the more expensive x86-TSO reachability check ever runs.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">9</span>SMT encoding &amp; DPLL(T) — why it still hits state explosion<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The prototype <b>PMVerify</b> instantiates Algorithm 1 by encoding the program (in SSA form) plus Boolean variables for every ordering relation (<code>enabled(e)</code>, coherence <code>ws</code>, reads-from <code>rf</code>) into one SMT formula, solved via the <b>DPLL(T)</b> framework: a SAT solver proposes an assignment, and a dedicated theory solver checks it against ordering-consistency theory (essentially an incremental cycle detector), returning conflict clauses that prune the search.</p>
+          <p>This is far more efficient than brute-force enumeration of executions — but it is still, ultimately, an exhaustive search over an exponential space. Keep that in mind for the Worked Examples and Practice tabs, where you'll see runtimes measured in <i>thousands of seconds</i> even on small (500-LOC-scale) programs.</p>
+          <div class="ready"><b>Now you're ready:</b> you have the full pipeline — <span class="mem-chip chip-mech">visibility order</span> → <span class="mem-chip chip-huge">persist order</span> → <span class="mem-chip chip-base">recovery observer</span> → <span class="mem-chip chip-huge">dtpo/DPTSO</span> → search → <span class="mem-chip chip-mech">SMT encoding</span>. The rest of this guide fills in each stage with the paper's own figures and numbers.</div>
+        </div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Robustness verification in a nutshell</h2>
+      <p class="sub">The crash-order problem, the reduction that makes it tractable, the search algorithm, and what the evaluation actually found.</p>
+    </div>
+    <div class="prose">
+      <p>NVM devices are byte-addressable and persistent, but the caches that sit in front of them are not: a crash can lose any store still sitting in a volatile write-back cache. Because <span class="mem-chip chip-huge">persist order</span> (when stores actually reach NVM) can differ from <span class="mem-chip chip-mech">visibility order</span> (when they become visible to other threads), a crash can expose a state that never "made program sense" — like observing <code>a=0;b=1</code> after <code>a=1;b=1</code> ran to completion. Developers are supposed to insert <code>clflush</code>/<code>clflushopt</code>/<code>clwb</code>/fences to prevent this, and getting it wrong is exactly the kind of error most existing detection tools need hand-written annotations to catch.</p>
+      <p><strong>Robustness</strong> reframes the problem: instead of asking "is every post-crash state <i>correct</i>," ask "is every post-crash state one that could have arisen anyway, from a normal crash-free run?" If yes, the program is <i>robust</i>, and crash-consistency checking collapses into ordinary weak-memory-consistency checking — a problem with mature tooling. The paper's technical core is showing that <i>reachability of a post-crash state</i> — a genuinely hard question about persist orders — can be reduced to <i>validity of an execution</i> under an augmented model, <b>DPTSO</b>, that simply adds one extra derived ordering relation, <span class="mem-chip chip-huge">dtpo</span>, to the familiar x86-TSO graph. A <span class="mem-chip chip-base">recovery observer</span> (a virtual thread of unordered reads) is used to enumerate every candidate crash state in the first place.</p>
+      <p>Algorithm 1 wraps this into a search: explore partial executions; cheaply filter with the <code>DPTSO</code> cycle check; only for survivors, run the more expensive x86-TSO reachability check across "alternations" of the same execution; report a <span class="mem-chip chip-cost">robustness violation</span> the moment a state is found reachable by the crash but by nothing else. The whole thing is implemented as a dedicated theory solver inside a <b>DPLL(T)</b> SMT framework, in a prototype called <b>PMVerify</b> (built on the Deagle verifier and the CBMC bounded model checker).</p>
+      <p><strong>The result:</strong> on 26 PMDK <code>pmemobj</code> example programs, PMVerify detected 12 robustness violations — 6 more than the dynamic tool PSan found — and proved one program (and, after manual instrumentation, six more) fully robust, something no dynamic tool can ever do. The cost is verification time measured in tens of minutes to hours per program, versus PSan's seconds — a soundness/speed tradeoff that's the recurring theme of the Worked Examples tab.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li><b>The gap:</b> persist order (<code>nvo</code>) and visibility order (<code>hb</code>) over the same stores can legitimately disagree — that gap is the entire NVM crash-consistency problem.</li>
+        <li><b>Robustness (Def. 6):</b> a program is robust iff every reachable non-volatile state is also reachable under x86-TSO — no user annotation needed.</li>
+        <li><b>The reduction (Thm. 1):</b> checking if a crash state is reachable ⟺ checking if the execution, augmented with a derived order <code>dtpo</code>, stays acyclic (<code>consDPTSO</code>).</li>
+        <li><b>The trick that makes states enumerable:</b> a recovery observer — a virtual thread of unordered reads — turns "which crash states exist" into "which reads-from assignments exist."</li>
+        <li><b>Search (Algorithm 1):</b> explore partial executions, prune on <code>DPTSO</code> failure, escalate to x86-TSO reachability only on survivors, report violation only if <i>no</i> alternation is x86-TSO-valid.</li>
+        <li><b>Implementation:</b> SSA + Boolean ordering encoding, solved via DPLL(T) with a dedicated ordering-consistency theory solver — prototype tool <b>PMVerify</b>, built atop Deagle/CBMC.</li>
+        <li><b>Headline result:</b> 12 violations found (vs. PSan's 6) across 26 PMDK programs, plus 7 robustness <i>proofs</i> that no dynamic tool could produce — at a real cost of ~46&nbsp;minutes average runtime per program.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole idea in one picture: reducing a crash question to a cycle check</div>
+      <div class="viz-kicker">Theorem 1 — reachability under a crash (Px86, hard) ⟺ validity under DPTSO (a graph cycle check, well-studied)</div>
+      <div class="legend">
+        <span><i style="background:var(--cost)"></i> the hard question (persist order / Px86)</span>
+        <span><i style="background:var(--huge)"></i> the bridge (dtpo)</span>
+        <span><i style="background:var(--mech)"></i> the tractable question (x86-TSO-style cycle check)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 360" role="img" aria-label="Reachability of a post-crash state under Px86 is reduced via dtpo to validity checking under DPTSO, a cycle-detection problem">
+        <rect x="20" y="30" width="290" height="130" rx="14" fill="var(--cost-soft)" stroke="#e3b4a5" stroke-width="1.6"/>
+        <text x="165" y="58" text-anchor="middle" font-family="Fraunces" font-size="16" font-weight="600" fill="#9a3a22">Is state s₀ reachable</text>
+        <text x="165" y="78" text-anchor="middle" font-family="Fraunces" font-size="16" font-weight="600" fill="#9a3a22">after a crash?</text>
+        <text x="165" y="104" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">∃ persist order nvo whose</text>
+        <text x="165" y="120" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">prefix induces s₀ ?</text>
+        <text x="165" y="142" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">decidable [Abdulla et al. 2021] —</text>
+        <text x="165" y="155" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">but no algorithm was known</text>
+
+        <rect x="450" y="30" width="290" height="130" rx="14" fill="var(--huge-soft)" stroke="#9fd2c7" stroke-width="1.6"/>
+        <text x="595" y="58" text-anchor="middle" font-family="Fraunces" font-size="16" font-weight="600" fill="#1f5b51">Is the execution valid</text>
+        <text x="595" y="78" text-anchor="middle" font-family="Fraunces" font-size="16" font-weight="600" fill="#1f5b51">under DPTSO?</text>
+        <text x="595" y="104" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">hb = (ppo ∪ rfe ∪ co ∪ fr ∪ dtpo)⁺</text>
+        <text x="595" y="120" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">irreflexive?</text>
+        <text x="595" y="142" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">= reuse any x86-TSO-style</text>
+        <text x="595" y="155" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">cycle-detection algorithm</text>
+
+        <path d="M312 95 h136" stroke="var(--huge)" stroke-width="2.4" fill="none" marker-end="url(#arrHuge)"/>
+        <text x="380" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="#1f5b51">Theorem 1</text>
+        <text x="380" y="112" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">bridged by dtpo</text>
+
+        <!-- concrete dtpo example strip -->
+        <text x="20" y="205" font-family="JetBrains Mono" font-size="11" fill="var(--ink-faint)">CONCRETE INSTANCE — dtpo from Definition (Section 3.2)</text>
+        <rect x="20" y="220" width="150" height="44" rx="8" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.4"/>
+        <text x="95" y="238" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">flush x</text>
+        <text x="95" y="253" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">(enabled)</text>
+        <path d="M170 242 h60" stroke="var(--cost)" stroke-width="2" stroke-dasharray="5 3" fill="none" marker-end="url(#arrCost)"/>
+        <text x="200" y="232" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">dtpo</text>
+        <rect x="230" y="220" width="150" height="44" rx="8" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.4"/>
+        <text x="305" y="238" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">x = 1</text>
+        <text x="305" y="253" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">(a store)</text>
+        <path d="M380 236 q-70 -55 -140 -8" stroke="var(--ink-faint)" stroke-width="2" fill="none" marker-end="url(#arrGrey)"/>
+        <text x="310" y="180" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--ink-faint)">po (program order: x=1 before flush x)</text>
+        <rect x="430" y="220" width="300" height="70" rx="10" fill="var(--cost-soft)" stroke="#e3b4a5" stroke-width="1.4"/>
+        <text x="580" y="242" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">x=1 ≺po flush x  AND  flush x ≺dtpo x=1</text>
+        <text x="580" y="260" text-anchor="middle" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="#9a3a22">⇒ a 2-event cycle ⇒ hb not acyclic</text>
+        <text x="580" y="278" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">⇒ consDPTSO fails ⇒ state unreachable here</text>
+
+        <text x="20" y="330" font-family="JetBrains Mono" font-size="10.5" fill="var(--ink-faint)">This exact instance (the recovery observer reading x's initial value while flush x is still enabled) is worked step-by-step in Worked Examples, Ex. 2.</text>
+        <defs>
+          <marker id="arrHuge" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="var(--huge)"/></marker>
+          <marker id="arrCost" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="var(--cost)"/></marker>
+          <marker id="arrGrey" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="var(--ink-faint)"/></marker>
+        </defs>
+      </svg>
+      <figcaption><b>Read it left to right.</b> The question we actually care about (left, terracotta) is provably hard to compute directly. Theorem 1 shows it's <i>equivalent</i> to a much more tractable question (right, teal/indigo) once you add one derived relation, <code>dtpo</code>. The bottom strip shows the paper's own minimal example of a <code>dtpo</code> edge closing a 2-event cycle against program order — the mechanism, stripped to its essence.</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect: Algorithm 1's pipeline</div>
+      <div class="viz-kicker">instrument → explore → cheap filter (DPTSO) → expensive check (x86-TSO) → verdict</div>
+      <div class="flow-row">
+        <div class="node n-cost"><div class="nt">Problem</div><div class="nd">Persist order can diverge from visibility order; crash-consistency testing needs annotations</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">Instrument</div><div class="nd">Add recovery observer P<sub>r</sub>: one unordered read per shared variable</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">Explore</div><div class="nd">Search all partial instrumented executions G (prefix-closed)</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-huge"><div class="nt">Cheap filter</div><div class="nd">consDPTSO(G)? If not, prune — block all expansions of G</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">Expensive check</div><div class="nd">For each alternation G′≃G, does consTSO(atomic(G′)) hold?</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Verdict</div><div class="nd">Some G′ valid → keep exploring. None valid → robustness VIOLATION. Exhaustive with none found → ROBUST</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about robustness verification</h2>
+      <p class="sub">Each picture stands alone — read in any order. Every card ends with an honest note about where the analogy stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 30 h40 v18 h-40 z" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2"/>
+          <text x="40" y="43" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">seen</text>
+          <path d="M80 50 h40 v18 h-40 z" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="100" y="63" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">filed away</text>
+          <path d="M40 48 v-4" stroke="#9A8E7C" stroke-width="1.4"/>
+          <path d="M62 58 l14 -4" stroke="#C0563B" stroke-width="1.6" stroke-dasharray="3 2"/>
+          <text x="70" y="80" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#9a3a22">gap = crash risk</text>
+        </svg></div>
+        <span class="term">The core gap · Persist vs. visibility order</span>
+        <h3>Announcing news vs. archiving it</h3>
+        <p>A newsroom <i>announces</i> a story the moment a reporter files it (visible instantly). The archive department <i>files</i> the physical copy on its own schedule, sometimes hours later, in whatever order the filing clerk gets to it. If the building loses power before the archive catches up, you can find yesterday's late-breaking story filed, but this morning's "confirmed" story missing — the announcement order and the archive order aren't the same order at all.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real archive filing is unordered chaos; the paper's persist order (<code>nvo</code>) is a genuine <i>total order</i> constrained by two strict axioms (Definition 1) — it's not arbitrary, just different from visibility order.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="24" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="2"/>
+          <circle cx="45" cy="48" r="7" fill="#C27D14"/>
+          <path d="M45 48 l16 -10 M45 48 l-14 12 M45 48 l10 16" stroke="#C27D14" stroke-width="1.6"/>
+          <path d="M74 48 h30" stroke="#9A8E7C" stroke-width="1.6" stroke-dasharray="3 2"/>
+          <rect x="106" y="34" width="26" height="28" rx="3" fill="#fff" stroke="#5A61B4" stroke-width="1.6"/>
+          <text x="119" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">?</text>
+        </svg></div>
+        <span class="term">The instrumentation · Recovery Observer</span>
+        <h3>A security camera with amnesia between frames</h3>
+        <p>Imagine a camera that can snap a photo of every shelf in a warehouse simultaneously, at any instant you choose — but each snapshot is independent, unordered with respect to every other snapshot or event. Take enough snapshots at enough different instants and you'll eventually capture <i>every</i> combination of "what was on which shelf." That's the recovery observer: an extra unordered thread that reads every shared variable, sweeping through every possible post-crash memory image via its <code>rrf</code> reads.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real camera doesn't need a search algorithm; enumerating every valid combination of the observer's reads-from assignments is exactly the expensive part Algorithm 1 has to search over.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="20" width="50" height="20" rx="4" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="41" y="34" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">flush x</text>
+          <rect x="16" y="56" width="50" height="20" rx="4" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2"/>
+          <text x="41" y="70" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">x = 1</text>
+          <path d="M41 56 v-16" stroke="#9A8E7C" stroke-width="1.6" marker-end="url(#a1)"/>
+          <path d="M66 30 q30 20 -20 36" stroke="#C0563B" stroke-width="1.8" stroke-dasharray="4 2" fill="none" marker-end="url(#a2)"/>
+          <defs><marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#9A8E7C"/></marker>
+          <marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#C0563B"/></marker></defs>
+          <text x="100" y="50" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">2-cycle</text>
+        </svg></div>
+        <span class="term">The bridge · dtpo</span>
+        <h3>The alibi that contradicts the timeline</h3>
+        <p>A witness (the recovery observer) testifies they saw the old, unfiled version of a record. Detective logic says: if that's true, the record's later revision <i>must</i> have been filed strictly after your testimony's timestamp — otherwise you'd have seen the new version. Now suppose the case file's own timeline already says the revision happened <i>before</i> your testimony. Contradiction — the story can't be true. <code>dtpo</code> is exactly this logical constraint, made formal and checked for contradictions (cycles) automatically.</p>
+        <div class="breaks"><b>Where it breaks:</b> detectives resolve contradictions with more investigation; the algorithm just declares the specific execution invalid and moves on — it doesn't (and doesn't need to) explain the contradiction in narrative terms.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="24" width="112" height="48" rx="6" fill="#fff" stroke="var(--line-strong)" stroke-width="2"/>
+          <line x1="70" y1="24" x2="70" y2="72" stroke="var(--line-strong)" stroke-width="1.4" stroke-dasharray="3 2"/>
+          <text x="42" y="42" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">hard: crash</text>
+          <text x="42" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">reachability</text>
+          <text x="98" y="42" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">easy: cycle</text>
+          <text x="98" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">detection</text>
+          <path d="M62 48 h16" stroke="#5A61B4" stroke-width="2" marker-end="url(#a3)"/>
+          <defs><marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#5A61B4"/></marker></defs>
+          <text x="70" y="86" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">Theorem 1</text>
+        </svg></div>
+        <span class="term">The reduction · Theorem 1</span>
+        <h3>Translating a hard puzzle into a familiar one</h3>
+        <p>You can't directly tell whether a Sudoku-like arrangement has "a solution reachable by legal moves," but you <i>can</i> tell whether a graph has a cycle in linear time. Theorem 1 is a translation dictionary: it rewrites the hard, crash-specific question ("is this post-crash state reachable?") word-for-word into the easy, generic question ("is this graph, with one more relation added, acyclic?") — and proves the translation preserves the answer exactly.</p>
+        <div class="breaks"><b>Where it breaks:</b> the translation itself required a real proof (both directions, Section 3.2) — it's not a free lunch, just a one-time investment that pays off every time the algorithm runs afterward.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="20" width="30" height="56" rx="4" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2"/>
+          <rect x="52" y="20" width="30" height="56" rx="4" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2" opacity="0.55"/>
+          <rect x="90" y="20" width="30" height="56" rx="4" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="2" stroke-dasharray="4 3"/>
+          <text x="105" y="52" text-anchor="middle" font-family="monospace" font-size="16" fill="#9a3a22">✕</text>
+          <text x="29" y="86" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">kept</text>
+          <text x="67" y="86" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">not yet</text>
+          <text x="105" y="86" text-anchor="middle" font-family="monospace" font-size="7" fill="#9a3a22">pruned</text>
+        </svg></div>
+        <span class="term">The search discipline · Prefix-closed pruning</span>
+        <h3>A train that can only ever be coupled from the front</h3>
+        <p>A freight train's cars are coupled in order — you can never have car 5 attached without cars 1–4 already there. A "partial execution" is like a train halted mid-marshalling: whatever prefix of cars exists is complete and consistent, even though the rest never got attached. Algorithm 1 exploits exactly this shape: the moment a partial train (execution) is found already invalid, there is no point coupling on more cars — every longer train built from it inherits the same contradiction, so the search prunes the whole branch.</p>
+        <div class="breaks"><b>Where it breaks:</b> real trains couple in one fixed order; the search here explores many different interleavings of the "cars" (events) across threads simultaneously — the prefix-closure is about causal order, not physical sequencing.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="42" cy="48" r="24" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="2"/>
+          <text x="42" y="53" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#6e4a09">SAT</text>
+          <path d="M66 48 h24" stroke="#9A8E7C" stroke-width="1.8" marker-end="url(#a4)"/>
+          <circle cx="112" cy="48" r="22" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2"/>
+          <text x="112" y="53" text-anchor="middle" font-family="Fraunces" font-size="10" fill="#3a409a">referee</text>
+          <path d="M112 26 q40 22 0 44" stroke="#C0563B" stroke-width="1.6" stroke-dasharray="4 2" fill="none" marker-end="url(#a5)"/>
+          <defs><marker id="a4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#9A8E7C"/></marker>
+          <marker id="a5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#C0563B"/></marker></defs>
+        </svg></div>
+        <span class="term">The engine · DPLL(T)</span>
+        <h3>A quick guesser paired with a strict referee</h3>
+        <p>One player rapidly proposes candidate answers (the SAT solver, working on a simplified Boolean version of the problem). A specialist referee — the ordering-consistency theory solver — checks each candidate against the <i>real</i> rules (do these orderings actually form a cycle?), and whenever the guesser is wrong, hands back a precise reason ("these three choices conflict") so the guesser never repeats that exact mistake. Back and forth, the search converges far faster than either player working alone.</p>
+        <div class="breaks"><b>Where it breaks:</b> the guesser and referee in DPLL(T) share complete information at each round; human guess-and-check games rarely have such a crisp, complete "here's exactly why you're wrong" feedback channel.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Section by section</div>
+      <h2>How robustness verification actually works</h2>
+      <p class="sub">The persist/visibility split → formalizing validity → the recovery observer &amp; dtpo → partial executions &amp; the search → the SMT engine. Figures are rebuilt from the paper's own Figures 1–6.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The persist/visibility split (Section 2.1)</h3>
+      <p>Every store on this Intel-x86 NVM model passes through three layers: thread-local store buffer → global persistent buffer (write-back caches) → NVM. A store's <b>visibility</b> point (<code>S</code>) is when it leaves the store buffer; its <b>persist</b> point (<code>P</code>) is when it later leaves the cache and reaches NVM — a separate, independently-orderable event.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Two orders over the same two stores</div>
+        <div class="viz-kicker">rebuilt from Figure 1 — store a = 1; store b = 1; in a single thread</div>
+        <div class="legend">
+          <span><i style="background:var(--mech)"></i> visibility order (S<sub>a</sub>, S<sub>b</sub>)</span>
+          <span><i style="background:var(--huge)"></i> persist order (P<sub>a</sub>, P<sub>b</sub>)</span>
+          <span><i style="background:var(--cost)"></i> crash point</span>
+        </div>
+        <svg class="full" viewBox="0 0 700 220" role="img" aria-label="Store a becomes visible first but persists last; store b becomes visible second but persists first; a crash between the two persist points loses store a">
+          <line x1="60" y1="60" x2="640" y2="60" stroke="var(--mech)" stroke-width="2"/>
+          <text x="20" y="64" font-family="Fraunches" font-family="Fraunces" font-size="13" fill="#3a409a">visible</text>
+          <circle cx="180" cy="60" r="6" fill="#5A61B4"/><text x="180" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">S_a (store a visible)</text>
+          <circle cx="320" cy="60" r="6" fill="#5A61B4"/><text x="320" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">S_b (store b visible)</text>
+
+          <line x1="60" y1="150" x2="640" y2="150" stroke="var(--huge)" stroke-width="2"/>
+          <text x="20" y="154" font-family="Fraunces" font-size="13" fill="#1f5b51">persist</text>
+          <circle cx="420" cy="150" r="6" fill="#2C8C7C"/><text x="420" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">P_b (store b persists)</text>
+          <circle cx="560" cy="150" r="6" fill="#2C8C7C"/><text x="560" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">P_a (store a persists — too late)</text>
+
+          <line x1="480" y1="30" x2="480" y2="180" stroke="var(--cost)" stroke-width="2.4" stroke-dasharray="6 4"/>
+          <text x="480" y="200" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#9a3a22">✕ crash — a's store never made it to NVM</text>
+
+          <path d="M180 60 L560 150" stroke="var(--ink-faint)" stroke-width="1.2" stroke-dasharray="2 3"/>
+          <path d="M320 60 L420 150" stroke="var(--ink-faint)" stroke-width="1.2" stroke-dasharray="2 3"/>
+        </svg>
+        <figcaption>Store <code>a</code> is visible first (<code>S_a</code>) but its persist point (<code>P_a</code>) comes last; store <code>b</code> is visible second but persists first. A crash between <code>P_b</code> and <code>P_a</code> recovers <code>a=0; b=1</code> — a state that never made sense in program order. This is precisely the state the recovery observer (Section 3) is built to detect.</figcaption>
+      </figure>
+
+      <h3>2 · Formalizing validity: EOG, ppo, hb, x86-TSO (Section 2.2)</h3>
+      <p>Executions are Event Order Graphs <code>G=(E,E₀,po,rf)</code>. Preserved program order drops exactly the one relaxation x86 permits: <code>ppo ≜ {(e₁,e₂) ∈ po | e₁ ∈ W∪FL → e₂ ∉ R}</code> — a store or flush may be reordered <i>after</i> a later read, but never a later write. Coherence order <code>co</code> (per-variable, total over writes) and from-read <code>fr = rf⁻¹;co</code> complete the picture. <b>Definition 5</b>: <code>G</code> is valid under x86-TSO iff some <code>co</code> makes <code>hb=(ppo ∪ rfe ∪ co ∪ fr)⁺</code> irreflexive, and <code>fr;po</code> irreflexive (per-location coherence).</p>
+      <div class="callout why"><span class="ic">◆</span><div><b>Why this matters for everything downstream.</b> "Valid execution" is now purely graph-theoretic: pick a coherence order, build <code>hb</code>, check for cycles. Robustness verification's entire strategy is to keep reusing this exact check, just with extra relations spliced in.</div></div>
+
+      <h3>3 · The recovery observer &amp; dtpo (Section 3)</h3>
+      <p>The program is instrumented as <code>P' = P ∥ Pᵣ</code>, where <code>Pᵣ</code> has one read <code>aₓ = x</code> per shared variable <code>x</code>, deliberately unordered with everything (<code>REC</code> is never <code>po</code>-related to anything). The projected reads-from <code>rrf = rf|(W×REC)</code> induces the observed state <code>s₀</code>.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">The recovery observer on the paper's example program</div>
+        <div class="viz-kicker">rebuilt from Figures 2 &amp; 3 — a two-thread program plus recovery observer</div>
+        <div class="legend">
+          <span><i style="background:var(--mech)"></i> thread events</span>
+          <span><i style="background:var(--honey)"></i> recovery observer (REC)</span>
+          <span><i style="background:var(--huge)"></i> dtpo edge</span>
+        </div>
+        <svg class="full" viewBox="0 0 740 260" role="img" aria-label="Two threads run x=1; flush x; a=y; x=a and y=2; flush y; b=x; y=b while a recovery observer reads r1=x and r2=y">
+          <text x="40" y="26" font-family="JetBrains Mono" font-size="11" fill="#3a409a">Thread 1</text>
+          <g font-family="JetBrains Mono" font-size="11">
+            <rect x="20" y="34" width="90" height="26" rx="5" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.3"/><text x="65" y="51" text-anchor="middle" fill="#3a409a">x = 1</text>
+            <rect x="20" y="66" width="90" height="26" rx="5" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.3"/><text x="65" y="83" text-anchor="middle" fill="#1f5b51">flush x</text>
+            <rect x="20" y="98" width="90" height="26" rx="5" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.3"/><text x="65" y="115" text-anchor="middle" fill="#3a409a">a = y</text>
+            <rect x="20" y="130" width="90" height="26" rx="5" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.3"/><text x="65" y="147" text-anchor="middle" fill="#3a409a">x = a</text>
+          </g>
+          <path d="M65 60 v6 M65 92 v6 M65 124 v6" stroke="#9A8E7C" stroke-width="1.4"/>
+
+          <text x="260" y="26" font-family="JetBrains Mono" font-size="11" fill="#3a409a">Thread 2</text>
+          <g font-family="JetBrains Mono" font-size="11">
+            <rect x="240" y="34" width="90" height="26" rx="5" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.3"/><text x="285" y="51" text-anchor="middle" fill="#3a409a">y = 2</text>
+            <rect x="240" y="66" width="90" height="26" rx="5" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.3"/><text x="285" y="83" text-anchor="middle" fill="#1f5b51">flush y</text>
+            <rect x="240" y="98" width="90" height="26" rx="5" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.3"/><text x="285" y="115" text-anchor="middle" fill="#3a409a">b = x</text>
+            <rect x="240" y="130" width="90" height="26" rx="5" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.3"/><text x="285" y="147" text-anchor="middle" fill="#3a409a">y = b</text>
+          </g>
+          <path d="M285 60 v6 M285 92 v6 M285 124 v6" stroke="#9A8E7C" stroke-width="1.4"/>
+
+          <text x="500" y="26" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">Recovery observer P_r</text>
+          <rect x="460" y="60" width="90" height="26" rx="5" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.3"/><text x="505" y="77" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">r1 = x</text>
+          <rect x="460" y="100" width="90" height="26" rx="5" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.3"/><text x="505" y="117" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">r2 = y</text>
+          <text x="505" y="140" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--ink-faint)">r1, r2 unordered w.r.t.</text>
+          <text x="505" y="153" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--ink-faint)">everything, incl. each other</text>
+
+          <path d="M20 34 q-6 30 6 60" stroke="var(--honey)" stroke-width="1.8" stroke-dasharray="4 2" fill="none" marker-end="url(#a6)"/>
+          <text x="0" y="80" font-family="JetBrains Mono" font-size="9" fill="#6e4a09" transform="rotate(-90 12 80)">rrf: x₀=0</text>
+          <path d="M65 34 h420 v46 h-25" stroke="var(--huge)" stroke-width="2" fill="none" marker-end="url(#a7)"/>
+          <text x="600" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">dtpo: flush x ≺ x=1 (since rrf read x₀, co-before x=1)</text>
+          <defs><marker id="a6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--honey)"/></marker>
+          <marker id="a7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--huge)"/></marker></defs>
+
+          <rect x="20" y="190" width="700" height="55" rx="8" fill="var(--cost-soft)" stroke="#e3b4a5" stroke-width="1.2"/>
+          <text x="370" y="212" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">Because x=1 ≺po flush x already, adding flush x ≺dtpo x=1 closes a 2-event cycle.</text>
+          <text x="370" y="230" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">consDPTSO fails ⇒ in this (full) execution, x=0 is not a state the observer can validly see.</text>
+        </svg>
+        <figcaption>When the recovery observer reads <code>x</code>'s initial value (0) while <code>flush x</code> is still enabled, <code>dtpo</code> demands <code>flush x</code> precede <i>every</i> store coherence-ordered after that initial value — including <code>x=1</code>, which program order already placed <i>before</i> the flush. Two contradicting edges between the same pair of events is a cycle, so <code>consDPTSO</code> fails: this full execution does not witness <code>x=0</code> as reachable. (Worked Examples, Ex. 2, walks the partial-execution counterpart where this cycle disappears.)</figcaption>
+      </figure>
+
+      <h3>4 · Partial executions &amp; the search (Section 4)</h3>
+      <p>A crash can hit before propagation finishes, so the algorithm must search <b>partial executions</b> — prefix-closed (w.r.t. <code>po ∪ rf</code>) subsets of the full event set. Dropping <code>flush x; a=y; x=a</code> from Thread 1 above removes the only <code>flush x</code> event entirely, so no <code>dtpo</code> edge can target <code>x</code> at all — the paper shows this partial execution <i>is</i> valid under DPTSO, meaning <code>x=0; y=1</code> genuinely is a reachable non-volatile state for that crash point.</p>
+
+      <pre class="sketch"><span class="cm">// Algorithm 1 — Robustness Checking Framework (paraphrased)</span>
+<span class="kw">input</span>: program P running on NVM
+<span class="kw">output</span>: whether P is robust
+
+P' ← P ∥ P_r                         <span class="cm">// instrument with recovery observer</span>
+<span class="kw">while</span> hasNext(P'):
+  G ← next(P')                       <span class="cm">// next partial instrumented execution</span>
+  <span class="kw">if</span> consDPTSO(G):               <span class="cm">// cheap filter: is a crash state reachable here?</span>
+    <span class="kw">for each</span> G' ≃ G:              <span class="cm">// alternations: same events &amp; rrf, other rf may vary</span>
+      <span class="kw">if</span> consTSO(<span class="hl">atomic</span>(G')):     <span class="cm">// expensive check: reachable under x86-TSO too?</span>
+        <span class="kw">continue outer loop</span>       <span class="cm">// fine — keep exploring</span>
+    <span class="kw">return</span> <span class="hl">false</span>                    <span class="cm">// no alternation valid ⇒ ROBUSTNESS VIOLATION</span>
+  <span class="kw">else</span>:
+    block({G'' | G ≺ G''})           <span class="cm">// prune: nothing built on an invalid G can be valid</span>
+<span class="kw">return</span> <span class="hl">true</span>                        <span class="cm">// exhaustive, no violation ⇒ ROBUST (Theorem 2)</span></pre>
+      <div class="callout note"><span class="ic">◇</span><div><b><code>atomic(G′)</code> (Definition 9).</b> To check reachability under plain x86-TSO, the observer's <code>REC</code> reads are collapsed into one atomic fresh event <code>eᵣ</code> that inherits their combined reads-from — effectively treating "read the whole memory at once" as instantaneous, exactly as the recovery-observer idea originally intended (Section 3.1).</div></div>
+
+      <h3>5 · The SMT engine: DPLL(T) (Section 5)</h3>
+      <p>The program is compiled to SSA, and every ordering relation becomes a Boolean variable: <code>enabled(e)</code> (is event <code>e</code> in this partial execution), <code>wsⁱⱼˣ</code> (coherence order between stores <code>i,j</code> on <code>x</code>), <code>rfⱼᵢˣ</code> (read <code>i</code> takes its value from store <code>j</code>). Axioms tie these together (e.g. <code>ws</code> must be a total order over enabled stores; <code>rf</code> must match the value read; <code>enabled</code> must respect <code>ppo</code>-prefix-closure), plus derived rules for <code>fr</code> and <code>dtpo</code>.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">DPLL(T): SAT solver + dedicated theory solver</div>
+        <div class="viz-kicker">rebuilt from Figure 6</div>
+        <svg class="full" viewBox="0 0 700 200" role="img" aria-label="A SAT solver proposes a model for the Boolean skeleton of the formula; a theory solver checks it against ordering-consistency theory, looping with conflict clauses until satisfiable or proven unsatisfiable">
+          <rect x="30" y="70" width="180" height="60" rx="12" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.6"/>
+          <text x="120" y="105" text-anchor="middle" font-family="Fraunces" font-size="15" fill="#6e4a09">SAT solver</text>
+          <rect x="490" y="70" width="180" height="60" rx="12" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.6"/>
+          <text x="580" y="98" text-anchor="middle" font-family="Fraunces" font-size="14" fill="#3a409a">Theory solver</text>
+          <text x="580" y="116" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">(ordering consistency)</text>
+
+          <path d="M210 90 h270" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#a8)"/>
+          <text x="345" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--ink-soft)">model M for B(Ψ)</text>
+          <path d="M480 118 h-270" stroke="var(--cost)" stroke-width="1.8" fill="none" marker-end="url(#a9)"/>
+          <text x="345" y="135" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">M inconsistent ⇒ conflict clause</text>
+
+          <text x="120" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="var(--ink-faint)">B(Ψ) unsatisfiable ⇒ Ψ unsatisfiable</text>
+          <text x="580" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#1f5b51">M consistent ⇒ Ψ satisfiable</text>
+          <defs><marker id="a8" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--ink-faint)"/></marker>
+          <marker id="a9" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--cost)"/></marker></defs>
+        </svg>
+        <figcaption>The theory solver is an incremental cycle-detection algorithm over ordering relations (drawing on He, Fan &amp; Sun's ordering-consistency theory). It checks <code>consDPTSO</code> first; only if that holds does it invoke a second solver (Fan, Sun &amp; He's weak-memory extension) to check <code>consTSO</code> reachability, exactly mirroring Algorithm 1's cheap-filter-then-expensive-check structure.</figcaption>
+      </figure>
+
+      <div class="callout takeaway"><span class="ic">●</span><div><b>Where the runtime actually goes.</b> None of this changes the underlying complexity — Boolean encoding plus DPLL(T) makes the search dramatically more efficient than brute-force enumeration, but the space is still exponential in program size. That's the direct explanation for the multi-thousand-second runtimes in the next tab.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Put real numbers on it</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Three calculations using the paper's own examples and evaluation tables, plus an interactive widget for the dtpo cycle mechanism. All arithmetic below is recomputed from the paper's stated figures.</p>
+    </div>
+
+    <div class="card">
+      <h3>Example 1 — why <code>a=0;b=1</code> is non-robust (Section 1's opening example)</h3>
+      <p>Single thread: <code>a = 1; b = 1;</code>, both <code>a,b</code> shared, initial value 0. Suppose a crash exposes <code>a=0; b=1</code>.</p>
+      <ol class="seq">
+        <li><b>Is it a plausible crash state?</b> Yes — Section 1 states this directly: persist order can differ from visibility order, so store <code>b=1</code> can persist while <code>a=1</code> is still sitting in a volatile cache line.</li>
+        <li><b>Is it reachable under x86-TSO (crash-free)?</b> Per Table 1, write→write pairs in program order are always preserved (✓, cannot reorder). So any crash-free execution must make <code>a=1</code> visible strictly before <code>b=1</code> — the coherence/hb order can never place <code>b</code>'s write before <code>a</code>'s. A state with <code>b=1</code> visible while <code>a</code> is still <code>0</code> is therefore <i>impossible</i> under ordinary x86-TSO execution.</li>
+        <li><b>Conclusion (Definition 6):</b> a reachable non-volatile state (<code>a=0;b=1</code>) is <i>not</i> reachable under x86-TSO ⇒ the program is <b>non-robust</b>, exactly as the paper states.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> robustness violations are precisely the crash states that "shouldn't be possible" by ordinary program logic — which is exactly why they're the dangerous, easy-to-miss bugs that motivate this whole line of work.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 2 — the dtpo cycle, full vs. partial execution (Figures 2–4)</h3>
+      <p>Two threads run <code>x=1; flush x; a=y; x=a</code> and <code>y=2; flush y; b=x; y=b</code>; the recovery observer reads <code>r1=x</code>, <code>r2=y</code>, observing <code>x=0; y=1</code>. Toggle whether Thread 1's tail (<code>flush x; a=y; x=a</code>) propagated before the crash:</p>
+
+      <figure class="viz" id="dptsoFig" style="box-shadow:var(--shadow-sm);margin-top:10px">
+        <div class="viz-title">dtpo cycle explorer</div>
+        <div class="viz-kicker">does flush x being enabled create a dtpo edge that contradicts program order?</div>
+        <div class="legend">
+          <span><i style="background:var(--mech)"></i> program order (po)</span>
+          <span><i style="background:var(--huge)"></i> dtpo edge (only if flush x enabled)</span>
+          <span><i style="background:var(--honey)"></i> recovery observer read (rrf)</span>
+        </div>
+        <svg viewBox="0 0 500 150" style="width:100%;max-width:520px;display:block;margin:0 auto 14px" id="dptsoSvg" aria-hidden="true">
+          <rect x="30" y="20" width="110" height="30" rx="6" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.4"/>
+          <text x="85" y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">x = 1</text>
+          <rect x="30" y="60" width="110" height="30" rx="6" id="flushNode" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.4"/>
+          <text x="85" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">flush x</text>
+          <path d="M85 50 v6" stroke="var(--mech)" stroke-width="2" marker-end="url(#dpa1)"/>
+          <text x="160" y="46" font-family="JetBrains Mono" font-size="9.5" fill="var(--ink-soft)">po</text>
+
+          <rect x="330" y="60" width="110" height="30" rx="6" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.4"/>
+          <text x="385" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">r1 = x (init.)</text>
+          <path d="M330 75 h-180" stroke="var(--honey)" stroke-width="1.8" stroke-dasharray="4 2" fill="none" marker-end="url(#dpa2)"/>
+          <text x="240" y="68" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#6e4a09">rrf reads x₀=0</text>
+
+          <path id="dtpoEdge" d="M140 75 q90 -55 -35 -34" stroke="var(--huge)" stroke-width="2.2" fill="none" marker-end="url(#dpa3)"/>
+          <text id="dtpoLabel" x="85" y="120" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">dtpo: flush x ≺ x=1</text>
+
+          <defs>
+            <marker id="dpa1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--mech)"/></marker>
+            <marker id="dpa2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--honey)"/></marker>
+            <marker id="dpa3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--huge)"/></marker>
+          </defs>
+        </svg>
+        <label style="display:flex;gap:10px;align-items:center;font-family:var(--mono);font-size:.85rem;color:var(--ink-soft);cursor:pointer">
+          <input type="checkbox" id="thread1Full" style="width:18px;height:18px;accent-color:var(--mech)">
+          thread 1 propagates <code>flush x; a=y; x=a</code> before the crash (full execution, Fig. 3)
+        </label>
+        <div class="part-readout" style="margin-top:12px">
+          <div class="pstat">flush x<b id="dpFlush">excluded</b></div>
+          <div class="pstat">dtpo edges on x<b id="dpEdges">0</b></div>
+          <div class="pstat">cycle?<b id="dpCycle">no</b></div>
+        </div>
+        <div class="pverdict opt" id="dptsoVerdict" style="margin-top:10px">…</div>
+        <figcaption style="margin-top:14px">Matches the paper exactly: partial execution (checkbox off, Fig. 4) has no <code>flush x</code> event at all, so <code>dtpo</code> (which requires <code>enabled(FL_x)</code>) contributes nothing — valid under DPTSO, <code>x=0;y=1</code> reachable. Full execution (checkbox on, Fig. 3) enables <code>flush x</code>, which is <code>co</code>-before every later store to <code>x</code> the observer's read is older than — including <code>x=1</code>, already ordered the other way by <code>po</code> — a 2-event cycle, invalid under DPTSO.</figcaption>
+      </figure>
+    </div>
+
+    <div class="card">
+      <h3>Example 3 — recomputing the evaluation numbers (Tables 2 &amp; 4)</h3>
+      <p>26 PMDK <code>pmemobj</code> programs, avg. 548 LOC, 2-hour (7200s) timeout, Intel Core i5-10400 @ 2.90GHz / 16GB RAM.</p>
+      <ol class="seq">
+        <li><b>Coverage check (Table 2):</b> PMVerify: 1 YES + 12 No + 13 UNKNOWN = <b>26</b> ✓. PSan (random): 0 + 6 + 20 = <b>26</b> ✓. PSan* (model-checking mode): 0 + 0 + 26 = <b>26</b> ✓ (it terminated unexpectedly on every case). PMVerify solves 13/26 (50%); PSan solves 6/26 (23%).</li>
+        <li><b>Violations found:</b> PMVerify found 12 robustness violations against PSan's 6 — a difference of <b>6 more</b> (exactly double), with 7 of PMVerify's finds unique to it (Unique No. = 7 in Table 2).</li>
+        <li><b>Speed vs. soundness:</b> PMVerify's average runtime is 2768.42s ≈ <b>46.1 minutes</b> (paper rounds to "around 45 minutes" ✓). Dividing PMVerify's overall average by PSan's (2768.42 / 16.7 ≈ <b>165.8×</b>) is far larger than the paper's own claim of "33 times shorter" — this is flagged as an inconsistency in Source Notes rather than silently resolved, since the two averages are computed over different, non-identical subsets of solved cases.</li>
+        <li><b>Table 4 sanity check (instrumented, provably-robust programs):</b> summing the 12 programs' LOC (493+432+551+570+6379+1793+207+5512+742+195+95+67) gives 17,036; divided by 12 = <b>1419.7 ≈ 1420</b> — matches the paper's stated average exactly. Summing the 6 solved runtimes (5468.95+3565.19+7021.70+4677.78+1765.79+5905.49) gives 28,404.90s; divided by 6 = <b>4734.15s</b> — matches the paper's stated average exactly.</li>
+      </ol>
+      <div class="callout warn" style="margin-top:6px"><span class="ic">▲</span><div><b>Misconception it kills:</b> "the slower, sound tool must be strictly better." PMVerify proves things PSan structurally cannot (robustness itself, not just violations), but it is two to three orders of magnitude slower — the two tools are complementary, exactly as the paper concludes, not a strict upgrade path.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Check yourself</div>
+      <h2>Practice</h2>
+      <p class="sub">Work the answer before opening it. Each answer ends with the misconception the question is designed to catch.</p>
+    </div>
+
+    <div class="prob">
+      <span class="ptag easy">Warm-up</span>
+      <div class="qtext">Why does the paper need a separate <b>persist order</b> (<code>nvo</code>) in addition to the ordinary <b>visibility order</b> (<code>hb</code>), instead of just reusing <code>hb</code> for everything?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Because they can genuinely differ: a store can become <i>visible</i> to other threads (leave the store buffer) while still sitting in a volatile write-back cache, not yet <i>persisted</i> to NVM. Definition 1 constrains <code>nvo</code> to agree with <code>hb</code> only for same-variable stores and around flushes — everywhere else, the two orders are free to diverge, which is exactly the source of NVM's crash-consistency bugs.
+        <span class="mis">Catches: assuming "ordered" is a single, universal notion. On NVM there are (at least) two independently-meaningful orders over the same events, and conflating them hides real bugs.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">In the two-thread example (Figures 2–4), why does removing <code>flush x; a=y; x=a</code> from the partial execution make <code>x=0;y=1</code> reachable, when the <i>full</i> execution proved it wasn't?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        <code>dtpo</code> is only generated <i>from</i> enabled flush events (<code>enabled(FL_x)</code> is a precondition in the definition). Dropping <code>flush x</code> from the partial execution removes the only source of a <code>dtpo</code> edge on <code>x</code> — with no <code>dtpo</code> edge, there's nothing to contradict program order, so <code>consDPTSO</code> holds and the state is a genuine reachable non-volatile state (Figure 4). This is exactly the real-world scenario it represents: the crash hit <i>before</i> that flush (and everything after it) ever propagated.
+        <span class="mis">Catches: thinking robustness violations are properties of a whole program in isolation. They're properties of specific (partial) executions — the very same program can have both robust and non-robust crash points depending on how far execution got.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">Table 2 shows PMVerify's average runtime (2768.42s) is roughly 166× PSan's (16.7s) by direct division, yet the paper's prose claims PSan is "on average 33 times shorter." Is this a contradiction the tools disagree on, or something else?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Almost certainly a subset mismatch, not a real contradiction: PMVerify's 2768.42s is averaged over the 13 cases <i>it</i> solves, while PSan's 16.7s is averaged over the 6 cases <i>it</i> solves — different, non-identical sets of programs with presumably different intrinsic difficulty. The paper's "33×" claim is most plausibly computed over a common comparison set (e.g., the 6 cases PSan solves), which this guide cannot fully reconstruct from the published tables alone.
+        <span class="mis">Catches: dividing two averages computed over different populations and treating the ratio as meaningful without checking what each average is actually averaging over.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">Table 4's instrumented (flush-after-every-store) programs are strictly <i>larger</i> in event count than the originals, yet PMVerify's average runtime on the 6 it solves (4734.15s) is only about 1.7× the original average (2768.42s), not exponentially worse. Why doesn't the added instrumentation blow up the search?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Two effects roughly cancel. Adding a flush after every store increases the raw event count and search space (more redundancy). But it also <i>shrinks</i> the set of reachable non-volatile states, because stronger ordering constraints leave fewer valid partial executions to explore — and since PMVerify checks <code>consDPTSO</code> (the cheap filter) before ever reaching the expensive x86-TSO reachability check, many candidate states are pruned early. The paper reports this explicitly: heavier instrumentation trades a larger search space for fewer states surviving the first, cheap filter.
+        <span class="mis">Catches: assuming "more instructions in the program" always means "proportionally more verification cost." The cost is driven by the number of <i>reachable states that survive filtering</i>, not raw program size alone.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">The paper notes robustness is only a <i>sufficient</i>, not necessary, condition for crash consistency, and that it may be "over-strong," disallowing benign programming idioms. Sketch a scenario where a program could be crash-consistent but still fail the robustness check.</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Robustness demands every reachable non-volatile state also be reachable under ordinary crash-free execution — a state-level guarantee. A program could instead be written so that <i>any</i> post-crash state it can produce, even an "unusual" one no crash-free run would reach, still leads to a correct, safe recovery routine (e.g., a recovery handler that explicitly re-derives or re-validates the value rather than trusting it blindly) — this can be crash-consistent by construction without being robust by Definition 6. The paper cites this exact concern (referencing Margalit &amp; Lahav's weaker robustness notions) as future work.
+        <span class="mis">Catches: treating "robust" and "crash-consistent" as synonyms. Robustness is a convenient, fully-automatable proxy for crash consistency, not a redefinition of it — the paper is explicit that robustness is sufficient, not equivalent.</span>
+      </div></details>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Loose ends</div>
+      <h2>Frequently asked</h2>
+      <p class="sub">The questions that come up once the mechanism clicks.</p>
+    </div>
+    <div class="faq">
+
+      <details><summary><span class="q">Q</span>Is this the same "robustness" definition Gorjiara et al. (PLDI'22) introduced?<span class="chev">▾</span></summary>
+        <div class="a">Related but explicitly reformulated. The original PLDI'22 definition is stated in terms of <i>strict persistency</i> — the strongest persistency model, where any recovered state must be an observable volatile state. This paper's Definition 6 (Footnote 1) instead defines robustness directly via reachability of the recovered non-volatile state under x86-TSO, which is what makes the dtpo/DPTSO reduction possible.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Why not just enumerate persist orders (<code>nvo</code>) directly instead of reducing to DPTSO?<span class="chev">▾</span></summary>
+        <div class="a">A naive approach — enumerate all persist orders consistent with the two axioms of Definition 1, then check each prefix against the observed state — is correct but redundant and inefficient; even pruned by the axioms it remains impractical. The paper's insight is that only the <i>last</i> persisted stores and the ordering constraints they induce (<code>dtpo</code>) actually matter for reachability, collapsing an enumeration problem into a single acyclicity check (Theorem 1).</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Is DPTSO a real hardware persistency model, or an artifact of this proof?<span class="chev">▾</span></summary>
+        <div class="a">DPTSO ("derived TSO propagation order," from Khyzha &amp; Lahav, POPL'21) is a genuine prior formalism relating memory consistency and persistency, reused here as the target of the reduction — it is not invented for this paper. The actual hardware persistency model being respected throughout is Px86 (Raad et al., POPL'20).</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Why build PMVerify on a bounded model checker (CBMC) if the goal is to <i>prove</i> robustness?<span class="chev">▾</span></summary>
+        <div class="a">CBMC unrolls loops that aren't statically bounded, which the paper's own Limitations section acknowledges leaves the implementation <i>incomplete</i> for proving robustness in general (an unbounded loop can't be exhaustively unrolled). The authors note this is a limitation of the current prototype's exploration backend, not of Algorithm 1 itself — other exploration methods (Section 4) could, in principle, restore completeness.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>What does "UNKNOWN" mean in Table 2 — is it a false negative?<span class="chev">▾</span></summary>
+        <div class="a">No — it means the tool neither proved robustness nor found a violation within the 2-hour timeout (or, for PMVerify, sometimes because the program uses PMDK primitives the frontend doesn't model, e.g. <code>pmemobj_tx_add_range_direct</code>). It's an honest "didn't finish," not a claim about the program's actual robustness.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does this paper say anything about CXL-attached memory or OS-managed DRAM/NVM tiering?<span class="chev">▾</span></summary>
+        <div class="a"><i>No — this is the guide's own framing, not the paper's content.</i> The paper is scoped entirely to Intel-x86's native persistency model (Px86/x86-TSO) for locally-attached NVM accessed via <code>load</code>/<code>store</code>/<code>clflush</code>-family instructions; it never discusses CXL, memory pooling, or tiering policy. If you work on OS-managed tiering, the connection worth drawing yourself is: any tiering layer that migrates "persistent-seeming" pages between DRAM and CXL-attached persistent memory inherits the same persist/visibility-order gap this paper formalizes — but validating that inheritance is outside this paper's scope and would need its own analysis.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>How does PMVerify compare to Jaaru, the dynamic model checker PSan is built on?<span class="chev">▾</span></summary>
+        <div class="a">Jaaru is PSan's underlying dynamic engine: it observes memory operations at runtime and checks the observed trace for persistency bugs, reducing search space by focusing on last-writes-per-location. PMVerify is static and symbolic (SMT-based) rather than dynamic — it can prove the <i>absence</i> of violations across all executions, which a dynamic, trace-sampling tool structurally cannot do, at the cost of far greater runtime.</div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Reference</h2>
+      <p class="sub">Glossary, a dated summary card, further reading, and the honest provenance notes.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Robustness</b><span>A program is robust iff every reachable non-volatile (post-crash) state is also reachable under x86-TSO (Definition 6) — the paper's central correctness property.</span></div>
+      <div class="term-def"><b>Persist order (nvo)</b><span>A total order over all stores and flushes, distinct from visibility order, satisfying the two axioms of Definition 1; governs what actually reaches NVM.</span></div>
+      <div class="term-def"><b>Visibility order (hb)</b><span>The x86-TSO happens-before order over memory events: <code>(ppo ∪ rfe ∪ co ∪ fr)⁺</code>, required to be irreflexive for a valid execution.</span></div>
+      <div class="term-def"><b>Recovery observer (P_r, REC)</b><span>A virtual, unordered thread instrumented into the program with one read per shared variable, used to enumerate candidate post-crash states via its reads-from relation <code>rrf</code>.</span></div>
+      <div class="term-def"><b>dtpo</b><span>A derived ordering relation: a flush on <code>x</code> must precede any store to <code>x</code> that is coherence-ordered after the store the observer's <code>rrf</code> read — the bridge in Theorem 1.</span></div>
+      <div class="term-def"><b>DPTSO</b><span>x86-TSO augmented with <code>dtpo</code> (Definition 8, from Khyzha &amp; Lahav); an execution's validity under DPTSO is equivalent to reachability of its observed state (Theorem 1).</span></div>
+      <div class="term-def"><b>Event Order Graph (EOG)</b><span><code>G=(E,E₀,po,rf)</code> — the declarative representation of an execution that all later relations (co, fr, hb, dtpo) are built on top of.</span></div>
+      <div class="term-def"><b>Partial execution</b><span>A prefix-closed (w.r.t. <code>po∪rf</code>) subset of a program's full event set, modeling a crash that hits before propagation finishes.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>ppo</b><span>Preserved program order — program order minus the one x86 relaxation: a store/flush may be reordered after a later read.</span></div>
+      <div class="term-def"><b>co / fr</b><span>Coherence order (total order per variable over writes) and from-read (<code>rf⁻¹;co</code>), the two derived relations used to build <code>hb</code>.</span></div>
+      <div class="term-def"><b>s₀</b><span>The non-volatile state observed via <code>rrf</code>: for each variable <code>x</code>, the value the recovery observer's read of <code>x</code> saw.</span></div>
+      <div class="term-def"><b>Alternation / expansion (G′≃G / G≺G′)</b><span>Alternation: same events &amp; <code>rrf</code>, other <code>rf</code> may differ. Expansion: a strict superset of events and <code>rf</code>. Both drive Algorithm 1's search and pruning.</span></div>
+      <div class="term-def"><b>DPLL(T)</b><span>SMT framework pairing a SAT solver (over a Boolean skeleton) with theory solvers that check background-theory consistency and return conflict clauses.</span></div>
+      <div class="term-def"><b>PMVerify</b><span>This paper's prototype tool, built by extending Deagle (an SMT-based weak-memory verifier atop the CBMC bounded model checker) with a robustness-checking theory solver.</span></div>
+      <div class="term-def"><b>PSan / Jaaru</b><span>PSan (Gorjiara et al., PLDI'22) is the only prior robustness-violation detector, built on Jaaru's dynamic model checking engine; used as PMVerify's evaluation baseline.</span></div>
+      <div class="term-def"><b>PMDK pmemobj</b><span>Intel's Persistent Memory Development Kit object-store library; its 26 bundled example programs form the paper's evaluation benchmark (avg. 548 LOC).</span></div>
+    </div>
+
+    <div class="card" style="background:var(--mech-soft);border-color:#bcbfe8;margin-top:26px">
+      <h3 style="color:#3a409a">📌 Summary card <span style="font-family:var(--mono);font-size:.7rem;font-weight:500;color:#5A61B4">· as of 2026-08-30 · ASPLOS'25</span></h3>
+      <ul style="margin:0;padding-left:20px;color:#3a409a">
+        <li><b>What:</b> a fully-automated, static method to verify <i>robustness</i> — a sufficient condition for NVM crash consistency — with no user annotation.</li>
+        <li><b>Why it's hard:</b> persist order (<code>nvo</code>) and visibility order (<code>hb</code>) over the same stores can legitimately differ, letting a crash expose "impossible" states.</li>
+        <li><b>The core reduction (Theorem 1):</b> reachability of a post-crash state ⟺ validity under DPTSO (x86-TSO + the derived order <code>dtpo</code>) — a graph-cycle check.</li>
+        <li><b>The enabling trick:</b> a recovery observer (unordered virtual thread of reads) enumerates candidate crash states via its reads-from relation.</li>
+        <li><b>The algorithm:</b> exhaustively search partial executions, filter cheaply via <code>consDPTSO</code>, escalate survivors to an x86-TSO reachability check, report a violation only if no alternation is valid.</li>
+        <li><b>The engine:</b> SSA + Boolean ordering encoding solved via DPLL(T) with a dedicated ordering-consistency theory solver; prototype tool PMVerify (built on Deagle/CBMC).</li>
+        <li><b>Headline numbers:</b> 26 PMDK programs; PMVerify solves 13 (1 proved robust, 12 violations — 6 more than PSan's), avg. 2768.42s; on 12 manually-strengthened robust variants, proves 6, avg. 4734.15s.</li>
+        <li><b>Tradeoff:</b> PMVerify is sound and can prove robustness; PSan is orders of magnitude faster but, being dynamic, can never prove absence of violations.</li>
+        <li><b>Known limitations:</b> CBMC's bounded-loop unrolling makes the implementation incomplete; robustness itself may be too strong a property for some benign idioms.</li>
+      </ul>
+    </div>
+
+    <div class="subhead">Further reading (from the paper's own references)</div>
+    <div class="read-item">
+      <h4>Gorjiara, Luo, Lee, Xu &amp; Demsky — "Checking robustness to weak persistency models" <span class="diff easy">origin</span></h4>
+      <div class="meta">PLDI 2022 · introduces robustness &amp; the PSan tool</div>
+      <p>The original robustness definition and PSan, this paper's dynamic-tool baseline and point of departure (Definition 6 here is a deliberate reformulation of PSan's original strict-persistency-based version).</p>
+    </div>
+    <div class="read-item">
+      <h4>Khyzha &amp; Lahav — "Taming x86-TSO persistency" <span class="diff med">bridge</span></h4>
+      <div class="meta">POPL 2021 · source of DPTSO and the dtpo relation</div>
+      <p>Where DPTSO and the derived TSO propagation order come from — this paper's Theorem 1 is built directly on top of that formalism.</p>
+    </div>
+    <div class="read-item">
+      <h4>Raad, Wickerson, Neiger &amp; Vafeiadis — "Persistency semantics of the Intel-x86 architecture" <span class="diff hard">foundation</span></h4>
+      <div class="meta">POPL 2020 · the Px86 model</div>
+      <p>The formal hardware persistency model (Px86) whose reachability problem this paper is ultimately trying to make tractable in practice.</p>
+    </div>
+    <div class="read-item">
+      <h4>He, Fan &amp; Sun — "Satisfiability modulo ordering consistency theory for multi-threaded program verification" <span class="diff med">engine</span></h4>
+      <div class="meta">PLDI 2021 · the DPLL(T) theory solver reused here</div>
+      <p>The ordering-consistency theory and DPLL(T) integration this paper's robustness theory solver is built on top of (extended to weak memory by Fan, Sun &amp; He, TOPLAS 2023).</p>
+    </div>
+
+    <div class="subhead">Source notes — provenance &amp; honesty</div>
+    <div class="card" style="border-color:var(--line-strong)">
+      <p style="font-size:.96rem"><b>Kind:</b> source-grounded field guide — every definition, theorem statement, table figure, and quoted number is drawn directly from <code>robustness-verification-for-checking-cra.txt</code> (Han &amp; He, ASPLOS'25). All arithmetic in Worked Examples was independently recomputed against the paper's tables.</p>
+      <p style="font-size:.96rem"><b>Grounded &amp; verified (high confidence):</b> all formal definitions (persist order, EOG, x86-TSO, robustness, dtpo, DPTSO, partial execution, atomic), Theorem 1 and Lemma 1's statements, Algorithm 1's structure, the DPLL(T)/PMVerify architecture, and every number in Tables 2–4 (independently recomputed: 1420 average LOC, 4734.15s average runtime, 26/13/12/6 case counts all check out exactly).</p>
+      <p style="font-size:.96rem"><b>Flagged discrepancy (paper vs. paper, not this guide's error):</b> Table 2's raw averages imply PSan is ≈166× faster than PMVerify (2768.42/16.7), but the paper's own prose claims "33 times shorter." Both are the paper's stated numbers; the guide reports the discrepancy (Worked Examples, Ex. 3 and Practice) rather than silently picking one, most likely explained by the two averages covering different, non-identical subsets of solved programs.</p>
+      <p style="font-size:.96rem"><b>My framing (clearly marked, not the paper's claims):</b> all six Analogies-tab metaphors; the CXL/OS-tiering connection raised in the FAQ (the paper never mentions CXL, memory pooling, or tiering policy — that bridge is this guide's extrapolation for a memory-tiering researcher's context, not a claim the authors make); the "translation dictionary" and "alibi" framings of Theorem 1 and dtpo.</p>
+      <p style="font-size:.96rem"><b>Not covered by this paper (explicitly out of scope):</b> ARMv8 persistency (the paper is Intel-x86-only), any hardware/OS-level DRAM↔NVM migration or tiering mechanism, and CXL-attached memory of any kind. Stated as of <b>2026-08-30</b>.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Han &amp; He, "Robustness Verification for Checking Crash Consistency of Non-volatile Memory," ASPLOS'25</span>
+    <span><b>Built from:</b> _paper_txt/robustness-verification-for-checking-cra.txt · house style reused from the THP field guide template</span>
+    <span><b>Provenance:</b> source-grounded (see Source notes) · one flagged in-paper numeric discrepancy · CXL/tiering connections marked as this guide's own framing</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- DPTSO CYCLE EXPLORER (interactive) ---- */
+  var chk = document.getElementById('thread1Full');
+  var flushNode = document.getElementById('flushNode');
+  var dtpoEdge = document.getElementById('dtpoEdge');
+  var dtpoLabel = document.getElementById('dtpoLabel');
+  function renderDptso(full){
+    if(flushNode) flushNode.style.opacity = full ? '1' : '0.28';
+    if(dtpoEdge) dtpoEdge.style.opacity = full ? '1' : '0';
+    if(dtpoLabel) dtpoLabel.style.opacity = full ? '1' : '0';
+    var flushEl = document.getElementById('dpFlush');
+    var edgesEl = document.getElementById('dpEdges');
+    var cycleEl = document.getElementById('dpCycle');
+    var vEl = document.getElementById('dptsoVerdict');
+    if(flushEl) flushEl.textContent = full ? 'enabled' : 'excluded';
+    if(edgesEl) edgesEl.textContent = full ? '1 (flush x ≺ x=1)' : '0';
+    if(cycleEl) cycleEl.textContent = full ? 'yes' : 'no';
+    if(vEl){
+      if(full){
+        vEl.className = 'pverdict sub';
+        vEl.innerHTML = '✕ <b>Cycle found</b> — po already has x=1 ≺ flush x; dtpo now adds flush x ≺ x=1. consDPTSO fails: this full execution does <b>not</b> witness x=0;y=1 as reachable (matches Fig. 3).';
+      } else {
+        vEl.className = 'pverdict opt';
+        vEl.innerHTML = '✓ <b>No dtpo edge possible</b> — flush x is not in this partial execution, so dtpo (which requires enabled(FL_x)) contributes nothing on x. consDPTSO holds: x=0;y=1 <b>is</b> a genuine reachable non-volatile state (matches Fig. 4).';
+      }
+    }
+  }
+  if(chk){
+    chk.addEventListener('change', function(){ renderDptso(chk.checked); });
+    renderDptso(chk.checked);
+  }
+
+  /* ---- INIT ---- */
+  runReveals();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+<script src="../rate.js"></script>
+</body>
+</html>

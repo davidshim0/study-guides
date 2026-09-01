@@ -1,0 +1,1227 @@
+<!DOCTYPE html>
+<!-- Delegato field guide — Locality-Aware Atomic Memory Operations on Chiplets (Soria-Pardos et al., MICRO'25).
+     Built from _paper_txt/a-delegato-locality-aware-atomic-memory.txt; house style copied from
+     learn/sessions/2026-08-13-thp/study-guide.html (CSS + tab/reveal script reused verbatim).
+     Semantic colors (repurposed per-paper — see Start Here legend):
+     terracotta (--cost) = Near AMO (the ping-pong baseline) · honey (--honey/chip-base) = Centralized AMO (today's default far AMO)
+     indigo (--mech) = Migrate AMO (near-AMO traffic, directory-visible) · teal (--huge) = Delegate AMO (the paper's star result) -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Don't Move the Line, Move the Op — Delegato, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --huge:#2C8C7C; --huge-soft:#DCEFE9;       /* teal   = the 2MB huge page & the TLB win     */
+  --mech:#5A61B4; --mech-soft:#E6E6F6;       /* indigo = kernel machinery (fault/khugepaged) */
+  --cost:#C0563B; --cost-soft:#F7E1D8;       /* terracotta = the costs (stalls, bloat, splits) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:19ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--huge);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--mech);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--huge);font-weight:600}
+.rule-plaque .wo{color:var(--cost);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:64ch}
+
+/* PROSE / CARDS */
+.prose{max-width:76ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--mech-soft);color:var(--mech);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--huge-soft);border-left:3px solid var(--huge);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--cost)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-huge{background:var(--huge-soft);color:#1f5b51}
+.chip-base{background:var(--honey-soft);color:#6e4a09}
+.chip-mech{background:var(--mech-soft);color:#3a409a}
+.chip-cost{background:var(--cost-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--huge-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--cost-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-huge{border-color:#9fd2c7;background:var(--huge-soft)}
+.node.n-mech{border-color:#bcbfe8;background:var(--mech-soft)}
+.node.n-cost{border-color:#e3b4a5;background:var(--cost-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--huge-soft)}
+.tbl .best:hover td{background:#cfeae2}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-base{background:linear-gradient(90deg,#eab657,#C27D14)}
+.bf-mid{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-huge{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-giga{background:linear-gradient(90deg,#2f6f64,#1f5147)}
+
+/* COLLAPSE EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.cells{display:grid;grid-template-columns:repeat(32,1fr);gap:3px;margin:8px 0}
+.cell{aspect-ratio:1/1;border-radius:3px;background:var(--paper-2);border:1px solid var(--line);transition:background .15s,border-color .15s}
+.cell.touched{background:var(--honey);border-color:var(--honey-deep)}
+.cell.filled{background:var(--huge);border-color:#1f5b51}
+.cell.waste{background:repeating-linear-gradient(45deg,#e9c9be,#e9c9be 3px,#f7e1d8 3px,#f7e1d8 6px);border-color:#e3b4a5}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls label{font-family:var(--mono);font-size:.8rem;color:var(--ink-soft);font-weight:700}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--mech)}
+.part-controls input[type=number]{width:74px;font-family:var(--mono);padding:6px 8px;border:1.5px solid var(--line-strong);border-radius:8px}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--huge-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--cost-soft);color:#9a3a22;border:1px solid #e3b4a5}
+.pverdict.off{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--mech);color:var(--mech)}
+.tbtn.sel{border-color:var(--mech);background:var(--mech-soft);color:#3a409a}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--huge-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--cost-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--cost);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--huge-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--cost-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}.cells{grid-template-columns:repeat(16,1fr)}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>Chiplet Coherence &amp; AMOs · A Field Guide</span>
+    <h1>Don't move the line, <span class="swash">move the operation</span></h1>
+    <p class="lede"><strong>Delegato</strong> (Soria-Pardos et al., MICRO'25) gives a chiplet's coherence directory two new ways to run an atomic read-modify-write besides "steal the line" or "do it myself": <em>forward the op to whoever already owns the line</em>, or <em>hand the line over cleanly</em> — then teaches the directory, via a one-bit reuse trace, which of the three to pick.</p>
+    <div class="hero-meta">
+      <span>🧩 MICRO 2025 · gem5-simulated dual-chiplet CHI system</span>
+      <span>🎓 Assumes you know cache coherence, NUMA/CXL, and the Linux memory stack</span>
+      <span>⏱ ~45 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🎯</div>
+      <p>Give the directory three ways to run an AMO — centralize, <span class="ro">delegate to the owner</span>, or migrate the line — and let a one-bit reuse trace pick between them, instead of forcing every atomic through <span class="wo">one fixed serialization point</span>.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Eight ideas Delegato builds on</h2>
+      <p class="sub">You already know coherence, NUMA, and CXL-class interconnects, so these skip the basics and go straight to the machinery this paper leans on: AMOs, the CHI directory protocol, chiplet hop-counting, and coherence predictors. Tap any open; read in order the first time.</p>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--cost)"></i> Near AMO — the ping-pong baseline</span>
+      <span><i style="background:var(--honey-deep)"></i> Centralized AMO — today's only far AMO</span>
+      <span><i style="background:var(--mech)"></i> Migrate AMO — near-AMO traffic, made directory-visible</span>
+      <span><i style="background:var(--huge)"></i> Delegate AMO — the paper's star result</span>
+    </div>
+    <div class="callout note" style="margin-top:0">
+      <span class="ic">◇</span>
+      <div><b>Semantic color key for this guide (our framing, not the paper's palette).</b> The house style's four accent slots are reused so each one always means the same AMO type everywhere below: terracotta (<code>--cost</code>/<code>chip-cost</code>) = <b>Near</b>, honey (<code>--honey</code>/<code>chip-base</code>) = <b>Centralized</b>, indigo (<code>--mech</code>/<code>chip-mech</code>) = <b>Migrate</b>, teal (<code>--huge</code>/<code>chip-huge</code>) = <b>Delegate</b>. The mapping tracks the paper's own framing: Centralized is literally today's default policy on CHI systems (honey = "the base case"), Near is the traffic problem the whole paper is reacting to (terracotta = "the cost"), Migrate is near-AMO traffic wearing a directory-visible tag (indigo = "machinery"), and Delegate is the paper's best result (teal = "the win").</div>
+    </div>
+
+    <div class="primer-grid">
+
+      <details class="primer" open>
+        <summary><span class="pnum">1</span>What an AMO actually is, and why every ISA has one<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An <b>Atomic Memory Operation</b> is a read-modify-write (RMW) on a memory location that the ISA guarantees happens as one indivisible step, even under concurrent access: compare-and-swap (CAS), fetch-and-add (FAA), floating-point add/min/max, bitwise OR, unsigned min, and so on. Armv9, x86, RISC-V, and Nvidia PTX all expose AMO instructions, and ISAs keep extending them — x86 recently added conditional-increment AMOs (<code>CMPccXADD</code>), Arm added floating-point AMO extensions (LSFE).</p>
+          <p>AMOs are the hardware primitive underneath mutexes, barriers, lock-free data structures, and reduction variables — anything where many threads touch one shared word. Because they're so heavily used for synchronization, their latency and throughput directly gate how well parallel code scales.</p>
+          <div class="ready"><b>Now you're ready:</b> this whole paper is about <i>where in the cache hierarchy</i> an AMO's RMW step actually executes — not about the ISA-level semantics, which are a given.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">2</span>The directory, cache states, and AMBA CHI vocabulary<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>In a many-core system, accesses are interleaved across multiple <b>directory</b> structures — hardware that tracks, per cache line, who has a copy and in what state, acting as the point of coherence. This paper's baseline speaks <b>AMBA 5 CHI</b>, whose states map onto familiar MOESI: <span class="mem-chip chip-base">UD</span> (Unique Dirty), <span class="mem-chip chip-base">UC</span> (Unique Clean), SD/SC (Shared Dirty/Clean), and <span class="mem-chip chip-cost">I</span> (Invalid).</p>
+          <p>At the LLC/directory itself, a line can additionally be <b>RSC/RSD/RU</b> — Remote Shared Clean, Remote Shared Dirty, or Remote Unique — meaning "not resident here, but held upstream in SC/SD/U state by some private cache." Key transactions you'll see in the flow diagrams: <code>ReadUnique</code> (get exclusive ownership), <code>AtomicLoad</code>/<code>AtomicStore</code> (the ISA-level AMO request to the directory), <code>SnpFwd</code>/<code>SnpUnique</code> (snoop messages that invalidate or forward a line), and — new in this paper — <code>SnpAMO</code> (snoop an owner to <i>execute</i> an RMW on the directory's behalf).</p>
+          <div class="ready"><b>Now you're ready:</b> every transaction diagram below is just these primitives arranged between Requester (R), Directory (D), and Owner (O).</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">3</span>Near AMOs — the incumbent baseline<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Most systems today run AMOs the same way as any store: the L1D acquires the line in exclusive state (a <code>ReadUnique</code>), performs the RMW locally, and keeps the line around hoping for reuse. When one private cache already owns the line, this resolves in as few as three hops because the owner forwards data straight to the requester. Repeated AMOs from the <i>same</i> core are then cheap.</p>
+          <p>The problem is what happens when AMOs bounce between cores: ownership — and the whole cache line — migrates to whoever touched it last, ping-ponging across the interconnect. On a chiplet system that ping-pong crosses an expensive interposer link every time.</p>
+          <div class="ready"><b>Now you're ready:</b> "near AMO" = <span class="mem-chip chip-cost">the line moves to the operation</span>. Everything in Sections 3–4 of the paper is about not doing that when it's expensive.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">4</span>Centralized AMOs — today's only far AMO<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Centralized AMOs</b> send the RMW to a single fixed serialization point — typically the directory/LLC slice for that line — using an <code>AtomicLoad</code>/<code>AtomicStore</code> request. The directory recovers ownership from any current owner, performs the RMW with its own ALU, and returns the (optional) old value. When the line has no private-cache sharers and already sits in the LLC, this takes only two hops.</p>
+          <p>Centralized AMOs are the <i>only</i> kind of far AMO that existing commercial CHI systems (NVIDIA Grace, AWS Graviton 3/4) support. They avoid ping-pong but pay for it with (a) an invalidation round-trip whenever an owner exists, and (b) a directory-side ALU. Because every update funnels through one point, they're excellent for high-fan-in throughput but actively hostile to CAS-style retry loops, which the directory can starve.</p>
+          <div class="ready"><b>Now you're ready:</b> centralized = <span class="mem-chip chip-base">the operation moves to one fixed place, always</span>. The paper's whole contribution is adding two more places to choose from.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">5</span>Chiplets, interposers, and why hop-counting matters<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Chiplet designs split what used to be one monolithic die into several smaller dies connected by an interposer. This raises yield and lowers cost, but the interposer link is slower and higher-latency than on-die wires — a NUMA-like penalty <i>inside the socket</i>. The paper's baseline models two 16-core chiplets linked at 450 GB/s with 50 ns latency (and separately tests a 2 ns UCIe-class link).</p>
+          <p>Because crossing that link is the expensive step, the paper analyzes every AMO scheme by <b>counting how many messages cross the interposer</b> for a given placement of Requester (R), Directory (D), and Owner (O) relative to the two chiplets. That's the analytical tool used throughout Sections 3 and 4 — not cycle counts, but "how many high-latency hops."</p>
+          <div class="ready"><b>Now you're ready:</b> when you see "Case A / B / C" later, it always means one specific arrangement of R, D, O across two chiplets, and the question is always the same — how many times does a message have to cross the link?</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">6</span>Coherence misses, and why CAS hates centralization<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>coherence miss</b> is a cache miss caused by an invalidation or downgrade, not by genuine absence of data. They matter enormously for <b>compare-and-swap</b>: a CAS can fail if the compared value changed since it was read, and the longer the RMW takes to complete, the more likely some other write snuck in first. Both near AMOs (via ping-pong invalidations) and centralized AMOs (via the invalidation needed to recover ownership, plus the added round-trip latency) increase this failure probability.</p>
+          <p>This is the mechanism behind a pattern you'll see repeatedly in the evaluation: policies that centralize AMOs help throughput-style workloads (FAA, high fan-in) but actively hurt CAS-heavy lock/lock-free workloads, because they inflate RMW latency exactly when latency determines the retry rate.</p>
+          <div class="ready"><b>Now you're ready:</b> "CAS-affine" and "CAS-disruptive" (terms the paper uses for its own results) both trace back to this one mechanism — RMW latency versus CAS failure probability.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">7</span>Coherence predictors, and DynAMO specifically<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>coherence predictor</b> is a hardware structure that watches access metadata and decides which coherence transaction to issue, to optimize either single-thread latency or system-wide throughput. <b>DynAMO</b> — the paper's main point of comparison — is one such predictor placed at the L1D: it tracks whether a line fetched by a near AMO was subsequently reused, and if not, routes future accesses to that line to a centralized AMO instead.</p>
+          <p>DynAMO's limits, per the paper: it's conservative (defaults to near AMO in most cases), it only sees local L1D history (no system-wide view), and — because it only chooses between transactions that already exist — it structurally cannot reduce coherence misses or offer anything besides near/centralized.</p>
+          <div class="ready"><b>Now you're ready:</b> DynAMO is the yardstick every later result is measured against. Delegato doesn't beat DynAMO by predicting better with the same two options — it wins by having two additional options (Delegate, Migrate) DynAMO's baseline hardware can't issue at all.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">8</span>Reading the evaluation: APKI, geomean speed-up, gem5<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The paper simulates everything in <b>gem5</b> (full-system mode, Arm ISA, Ubuntu 22.04 / Linux 5.4.65, Ruby for CHI coherence, HeteroGarnet for the mesh NoC) across 22 real workloads — Splash-4/PARSEC kernels, GAP graph benchmarks, lock-free data structures, and scientific kernels. <b>APKI</b> (atomics per kilo-instruction) tells you how AMO-heavy a workload is — from 0.10 (Dedup) to 74.71 (Histogram, Lulesh).</p>
+          <p>Every bar chart normalizes execution time to <b>Near AMOs</b> as the baseline (because near AMOs, not centralized, are what most real systems ship today). The "speed-up" numbers you'll see (1.80×, 1.07×, 1.13×, …) are <b>geometric means</b> across all 22 workloads, and a policy that helps most workloads can still individually hurt a handful — that per-workload nuance is where most of the paper's insight lives.</p>
+          <div class="ready"><b>Now you're ready:</b> when a section says "1.07× over centralized," it means (Delegato's geomean speed-up over Near) ÷ (Centralized's geomean speed-up over Near) — a ratio of ratios, not a subtraction. Worked Example 3 walks this arithmetic explicitly.</div>
+        </div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Delegato in a nutshell</h2>
+      <p class="sub">The problem chiplets create for AMOs, the two transactions that fix it, and the trace mechanism that teaches a directory when to use which.</p>
+    </div>
+    <div class="prose">
+      <p>Chiplet-based CPUs (NVIDIA Grace, AWS Graviton 3/4) now outsell monolithic designs, but the interposer that glues chiplets together is slower than on-die wiring — a NUMA penalty inside the socket. That penalty lands hardest on <b>Atomic Memory Operations</b>: <span class="mem-chip chip-cost">near AMOs</span> ping-pong the whole cache line across the interposer every time ownership changes hands, and the industry's only alternative, <span class="mem-chip chip-base">centralized AMOs</span>, funnels every update through one fixed directory location — avoiding ping-pong, but paying for it with invalidation round-trips and directory-ALU area, and actively hurting CAS-based synchronization by inflating RMW latency.</p>
+      <p>Delegato's core move is to notice that "near" and "centralized" aren't the only two places an AMO can run. The paper adds two new CHI transactions: <span class="mem-chip chip-huge">Delegate</span>, which forwards the RMW to whoever already owns the line so it executes locally <i>without</i> transferring the line or invalidating anyone, and <span class="mem-chip chip-mech">Migrate</span>, which behaves like a near AMO (transfers the line) but is tagged as an atomic so the directory can see and reason about it. Neither transaction requires an ALU at the directory the way centralized AMOs do — Delegate needs one at the L2, and Migrate needs none.</p>
+      <p>With four placements now available, the directory needs a policy to choose between them. The paper first explores five <b>static policies</b> keyed purely on the LLC/directory's cache-block state (Section 4.2), then adds a <b>Chiplet-Aware</b> policy that also checks where the requester and owner physically sit relative to the directory (Section 4.3) — because the best choice among Migrate/Centralize/Delegate literally depends on which side of the interposer everyone is on.</p>
+      <p>Static policies need a human to pick one per workload, which doesn't scale. So the paper's headline contribution, <b>Delegato</b> proper, is a tracing mechanism: every time the directory delegates an AMO, the owner's private cache reports back a single <code>reuse_bit</code> — is it still actively updating this line, or not? That one bit, riding for free on an existing CHI response field, lets a small <b>predictor</b> at the directory (two small tables, &lt;0.06 mm² together) learn, per cache line, whether to keep delegating, pin ownership to a repeat requester, or pull the line back to the directory and centralize.</p>
+      <p><strong>The result:</strong> across 22 gem5-simulated benchmarks, the Delegato predictor reaches a <b>1.80×</b> geometric-mean speed-up over near AMOs — beating the best hand-picked static policy per workload's aggregate (1.85× is the theoretical ceiling from perfect per-workload selection, so Delegato gets most of the way there automatically), beating plain centralized AMOs by <b>1.07×</b>, and beating the DynAMO predictor by <b>1.13×</b> — for a hardware cost of roughly 0.17% of a 32-core chip's area.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Four AMO placements now exist: <b>Near</b> (line moves), <b>Centralized</b> (op moves to directory, always), <b>Migrate</b> (line moves, but flagged as atomic), <b>Delegate</b> (op moves to the owner, nothing transfers).</li>
+        <li>Delegate and Migrate need <b>no directory ALU</b> for their own execution — Delegate needs an ALU at the L2 instead; Migrate needs none at all.</li>
+        <li>Best placement depends on <b>cache-block state</b> (is there an owner?) <i>and</i>, on chiplets, <b>physical location</b> of requester/owner relative to the directory.</li>
+        <li><b>Delegato</b> = a one-bit <code>reuse_bit</code> fed back on every Delegate transaction, reused from an existing CHI field (effectively free), turning invisible private-cache reuse into directory-visible feedback.</li>
+        <li>The predictor built on Delegato cycles a line through three states: <b>Chiplet-Aware</b> (default) → <b>Pinned Owner</b> (after two consecutive same-requester AMOs) → <b>Present Central</b> (after a Delegate comes back with <code>reuse_bit=0</code>).</li>
+        <li>Geomean results vs. Near AMOs: DynAMO 1.60×, Chiplet-Aware (static) 1.71×, <b>Delegato 1.80×</b>, Best-Static-per-workload 1.85×.</li>
+        <li>Total hardware cost: ≈0.142 mm² on a 32-core chip (Reuse Table + Predictor Table + L2 ALU) — about <b>0.17%</b> of chip area.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole idea in one picture: four places an AMO can run</div>
+      <div class="viz-kicker">Requester (R) wants to update a line owned by Owner (O), tracked by Directory (D) on the other chiplet — Case A from Section 3.1</div>
+      <div class="legend">
+        <span><i style="background:var(--cost)"></i> Near</span>
+        <span><i style="background:var(--honey-deep)"></i> Centralized</span>
+        <span><i style="background:var(--mech)"></i> Migrate</span>
+        <span><i style="background:var(--huge)"></i> Delegate</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 400" role="img" aria-label="Four columns showing Near, Centralized, Migrate, and Delegate AMO transactions between requester, directory, and owner, with cross-chiplet hop counts of 2, 4, 2, and 2 respectively">
+        <line x1="190" y1="10" x2="190" y2="340" stroke="var(--line-strong)" stroke-width="1" stroke-dasharray="3 3"/>
+        <line x1="380" y1="10" x2="380" y2="340" stroke="var(--line-strong)" stroke-width="1" stroke-dasharray="3 3"/>
+        <line x1="570" y1="10" x2="570" y2="340" stroke="var(--line-strong)" stroke-width="1" stroke-dasharray="3 3"/>
+        <!-- column headers -->
+        <g font-family="Fraunces" font-size="15" font-weight="600" text-anchor="middle">
+          <text x="95" y="26" fill="#9a3a22">Near</text>
+          <text x="285" y="26" fill="#6e4a09">Centralized</text>
+          <text x="475" y="26" fill="#3a409a">Migrate</text>
+          <text x="665" y="26" fill="#1f5b51">Delegate</text>
+        </g>
+        <!-- generic R/D/O layout per column, R and O on left chiplet, D on right chiplet -->
+        <!-- shared chiplet divider label -->
+        <g font-family="JetBrains Mono" font-size="9" fill="var(--ink-faint)">
+          <text x="15" y="60">R,O chiplet</text><text x="15" y="230">D chiplet →</text>
+        </g>
+        <!-- template function repeated manually for 4 columns: R top-left, O bottom-left, D right -->
+        <!-- COLUMN 1: NEAR -->
+        <g>
+          <rect x="35" y="46" width="54" height="30" rx="6" fill="#fff" stroke="#9a3a22" stroke-width="1.5"/><text x="62" y="66" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">R</text>
+          <rect x="35" y="176" width="54" height="30" rx="6" fill="#fff" stroke="#9a3a22" stroke-width="1.5"/><text x="62" y="196" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">O</text>
+          <rect x="135" y="110" width="54" height="30" rx="6" fill="var(--cost-soft)" stroke="#9a3a22" stroke-width="1.5"/><text x="162" y="130" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">D</text>
+          <path d="M62 76 L62 176" stroke="#c7a894" stroke-width="1.2" fill="none" stroke-dasharray="2 2"/>
+          <path d="M89 61 L135 122" stroke="#9a3a22" stroke-width="1.8" fill="none" marker-end="url(#arrN)"/>
+          <path d="M135 130 L89 190" stroke="#9a3a22" stroke-width="1.8" fill="none" stroke-dasharray="4 2" marker-end="url(#arrN)"/>
+          <path d="M89 195 L45 90" stroke="#9a3a22" stroke-width="2.4" fill="none" marker-end="url(#arrN)"/>
+          <text x="150" y="248" font-family="Fraunces" font-size="22" text-anchor="middle" fill="#9a3a22">★</text>
+          <text x="150" y="266" font-family="JetBrains Mono" font-size="9.5" text-anchor="middle" fill="#9a3a22">RMW at R's L1D</text>
+          <rect x="20" y="288" width="150" height="26" rx="13" fill="#9a3a22"/><text x="95" y="306" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#fff" font-weight="700">2 cross-chiplet hops</text>
+          <text x="95" y="332" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="var(--ink-faint)">line ping-pongs to R</text>
+        </g>
+        <!-- COLUMN 2: CENTRALIZED -->
+        <g>
+          <rect x="225" y="46" width="54" height="30" rx="6" fill="#fff" stroke="#C27D14" stroke-width="1.5"/><text x="252" y="66" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#8a5c0a">R</text>
+          <rect x="225" y="176" width="54" height="30" rx="6" fill="#fff" stroke="#C27D14" stroke-width="1.5"/><text x="252" y="196" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#8a5c0a">O</text>
+          <rect x="325" y="110" width="54" height="30" rx="6" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.5"/><text x="352" y="130" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#8a5c0a">D</text>
+          <path d="M279 61 L325 122" stroke="#C27D14" stroke-width="1.8" fill="none" marker-end="url(#arrC)"/>
+          <path d="M325 130 L279 190" stroke="#C27D14" stroke-width="1.8" fill="none" stroke-dasharray="4 2" marker-end="url(#arrC)"/>
+          <path d="M279 195 L379 122" stroke="#C27D14" stroke-width="2.4" fill="none" marker-end="url(#arrC)"/>
+          <path d="M379 130 L279 66" stroke="#C27D14" stroke-width="1.8" fill="none" marker-end="url(#arrC)"/>
+          <text x="352" y="248" font-family="Fraunces" font-size="22" text-anchor="middle" fill="#8a5c0a">★</text>
+          <text x="352" y="266" font-family="JetBrains Mono" font-size="9.5" text-anchor="middle" fill="#8a5c0a">RMW at D's ALU</text>
+          <rect x="210" y="288" width="150" height="26" rx="13" fill="#C27D14"/><text x="285" y="306" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#fff" font-weight="700">4 cross-chiplet hops</text>
+          <text x="285" y="332" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="var(--ink-faint)">line transferred to D + reply</text>
+        </g>
+        <!-- COLUMN 3: MIGRATE -->
+        <g>
+          <rect x="415" y="46" width="54" height="30" rx="6" fill="#fff" stroke="#5A61B4" stroke-width="1.5"/><text x="442" y="66" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">R</text>
+          <rect x="415" y="176" width="54" height="30" rx="6" fill="#fff" stroke="#5A61B4" stroke-width="1.5"/><text x="442" y="196" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">O</text>
+          <rect x="515" y="110" width="54" height="30" rx="6" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.5"/><text x="542" y="130" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">D</text>
+          <path d="M469 61 L515 122" stroke="#5A61B4" stroke-width="1.8" fill="none" marker-end="url(#arrM)"/>
+          <path d="M515 130 L469 190" stroke="#5A61B4" stroke-width="1.8" fill="none" stroke-dasharray="4 2" marker-end="url(#arrM)"/>
+          <path d="M469 195 L425 90" stroke="#5A61B4" stroke-width="2.4" fill="none" marker-end="url(#arrM)"/>
+          <text x="500" y="248" font-family="Fraunces" font-size="22" text-anchor="middle" fill="#3a409a">★</text>
+          <text x="500" y="266" font-family="JetBrains Mono" font-size="9.5" text-anchor="middle" fill="#3a409a">RMW at R's L2</text>
+          <rect x="400" y="288" width="150" height="26" rx="13" fill="#5A61B4"/><text x="475" y="306" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#fff" font-weight="700">2 cross-chiplet hops*</text>
+          <text x="475" y="332" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="var(--ink-faint)">*traffic = Near (paper's own words)</text>
+        </g>
+        <!-- COLUMN 4: DELEGATE -->
+        <g>
+          <rect x="605" y="46" width="54" height="30" rx="6" fill="#fff" stroke="#2C8C7C" stroke-width="1.5"/><text x="632" y="66" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">R</text>
+          <rect x="605" y="176" width="54" height="30" rx="6" fill="#fff" stroke="#2C8C7C" stroke-width="1.5"/><text x="632" y="196" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">O</text>
+          <rect x="705" y="110" width="54" height="30" rx="6" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.5"/><text x="732" y="130" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">D</text>
+          <path d="M659 61 L705 122" stroke="#2C8C7C" stroke-width="1.8" fill="none" marker-end="url(#arrD)"/>
+          <path d="M705 130 L659 190" stroke="#2C8C7C" stroke-width="1.8" fill="none" marker-end="url(#arrD)"/>
+          <path d="M659 195 L649 66" stroke="#2C8C7C" stroke-width="1.8" fill="none" stroke-dasharray="4 2" marker-end="url(#arrD)"/>
+          <text x="670" y="248" font-family="Fraunces" font-size="22" text-anchor="middle" fill="#1f5b51">★</text>
+          <text x="670" y="266" font-family="JetBrains Mono" font-size="9.5" text-anchor="middle" fill="#1f5b51">RMW at O's cache — no transfer</text>
+          <rect x="595" y="288" width="150" height="26" rx="13" fill="#2C8C7C"/><text x="670" y="306" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#fff" font-weight="700">2 cross-chiplet hops</text>
+          <text x="670" y="332" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="var(--ink-faint)">line never leaves O</text>
+        </g>
+        <defs>
+          <marker id="arrN" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#9a3a22"/></marker>
+          <marker id="arrC" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#C27D14"/></marker>
+          <marker id="arrM" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#5A61B4"/></marker>
+          <marker id="arrD" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2C8C7C"/></marker>
+        </defs>
+      </svg>
+      <figcaption>Same starting point every time — R wants to update a line O owns, D tracks it on the other chiplet (Section 3.1's "Case A"). The paper states the Near/Centralized/Delegate hop counts explicitly (2, 4, 2); it separately states, in Section 2.1, that "the traffic of migrating AMOs is equivalent to that of near AMOs" — hence the asterisk on Migrate's count here. The star marks where the RMW actually executes. Notice Centralized is the only column where the line makes <i>two</i> cross-chiplet trips.</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → two new transactions → policy layer → the missing feedback → Delegato → result</div>
+      <div class="flow-row">
+        <div class="node n-cost"><div class="nt">Problem</div><div class="nd">Chiplet interposers make near-AMO ping-pong and centralized-AMO round-trips both expensive</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">Two new transactions</div><div class="nd">Migrate (tagged near AMO) and Delegate (forward RMW to the owner, no transfer)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">Directory policies</div><div class="nd">Static policies key on cache state; Chiplet-Aware also keys on requester/owner location</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-cost"><div class="nt">Missing piece</div><div class="nd">Big private caches filter reuse info — the directory only sees misses, never "still in use"</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">Delegato trace</div><div class="nd">Owner reports a 1-bit reuse_bit on every Delegate — free, rides an existing CHI field</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-huge"><div class="nt">Predictor</div><div class="nd">Chiplet-Aware ⇄ Pinned Owner ⇄ Present Central, per cache line</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule" style="max-width:520px"><div class="nt">Result</div><div class="nd">1.80× geomean vs. Near · 1.07× vs. Centralized · 1.13× vs. DynAMO · ≈0.17% chip area</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about Delegato</h2>
+      <p class="sub">Each picture stands alone — read in any order. Every card ends with an honest note about where the analogy stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="20" width="34" height="26" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <rect x="90" y="50" width="34" height="26" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <path d="M52 33 Q70 20 88 55" stroke="#C0563B" stroke-width="2" fill="none" stroke-dasharray="4 3"/>
+          <path d="M88 63 Q68 76 50 41" stroke="#C0563B" stroke-width="2" fill="none" stroke-dasharray="4 3" marker-end="url(#a1)"/>
+          <text x="33" y="37" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">tool</text>
+          <text x="33" y="86" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">borrow it back</text>
+          <defs><marker id="a1" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#C0563B"/></marker></defs>
+        </svg></div>
+        <span class="term chip-cost" style="color:#9a3a22;background:none;padding:0">Near AMO</span>
+        <h3>Borrowing the neighbor's drill, every single time</h3>
+        <p>Every time you need the drill, you walk over, take it, use it, and it sits at your place until <i>they</i> need it back — then it walks back across the yard. Fine if only one of you ever needs it. If you alternate every five minutes, you spend more time carrying a drill across the yard than actually drilling.</p>
+        <div class="breaks"><b>Where it breaks:</b> real ownership transfer is cheap; ping-ponging a cache line across a chiplet interposer costs real, measured nanoseconds and bandwidth — the yard-crossing is the whole performance story, not a minor inconvenience.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="30" r="16" fill="#FBEACB" stroke="#C27D14" stroke-width="2"/>
+          <text x="70" y="35" text-anchor="middle" font-family="monospace" font-size="9" fill="#8a5c0a">DIR</text>
+          <path d="M30 66 L58 40" stroke="#C27D14" stroke-width="1.6" fill="none" marker-end="url(#a2)"/>
+          <path d="M110 66 L82 40" stroke="#C27D14" stroke-width="1.6" fill="none" marker-end="url(#a2)"/>
+          <circle cx="24" cy="72" r="10" fill="#fff" stroke="#C27D14" stroke-width="1.6"/>
+          <circle cx="116" cy="72" r="10" fill="#fff" stroke="#C27D14" stroke-width="1.6"/>
+          <defs><marker id="a2" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#C27D14"/></marker></defs>
+        </svg></div>
+        <span class="term chip-base" style="color:#8a5c0a;background:none;padding:0">Centralized AMO</span>
+        <h3>One notary who signs every document</h3>
+        <p>Instead of everyone editing the shared ledger themselves, they mail their edit to a single notary who applies it and mails back the result. No one fights over the physical ledger — but if two people are racing to update the same line while the notary works through a queue, whichever edit was based on stale information has to be redone. The notary is fast for a flood of unrelated one-off edits, slow and failure-prone for a tight back-and-forth negotiation.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real notary doesn't need extra hardware; the paper's directory literally needs a dedicated floating-point-capable ALU (measured at 2894 μm², about 0.11% of a core tile) to actually perform the RMW.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="30" width="34" height="30" rx="4" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="31" y="49" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">O</text>
+          <path d="M52 44 L78 44" stroke="#2C8C7C" stroke-width="1.8" stroke-dasharray="3 2" marker-end="url(#a3)"/>
+          <text x="65" y="36" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">note</text>
+          <rect x="82" y="30" width="44" height="30" rx="4" fill="#fff" stroke="#2C8C7C" stroke-width="1.6"/>
+          <text x="104" y="49" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">"do +1"</text>
+          <defs><marker id="a3" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#2C8C7C"/></marker></defs>
+        </svg></div>
+        <span class="term chip-huge" style="color:#1f5b51;background:none;padding:0">Delegate AMO</span>
+        <h3>Leaving a note for the person already holding the ladder</h3>
+        <p>Your neighbor already has the ladder up against the roof. Instead of asking for it back and re-climbing yourself, you shout up "while you're there, also tighten that bolt" — they do it, hand you the old bolt if you need it, and keep the ladder. Nothing physically moves except the instruction and the answer.</p>
+        <div class="breaks"><b>Where it breaks:</b> in the paper, Delegate is only defined for the single-owner case (the RU state); when several people share the ladder, the paper explicitly puts that extension "out of scope" rather than solving it.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="30" width="34" height="26" rx="4" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <text x="35" y="47" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">O</text>
+          <path d="M52 40 Q75 20 96 40" stroke="#5A61B4" stroke-width="2" fill="none" marker-end="url(#a4)"/>
+          <rect x="88" y="30" width="34" height="26" rx="4" fill="#fff" stroke="#5A61B4" stroke-width="2"/>
+          <text x="105" y="47" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">R</text>
+          <rect x="70" y="66" width="30" height="16" rx="3" fill="#fff" stroke="#5A61B4" stroke-width="1.2"/>
+          <text x="85" y="78" text-anchor="middle" font-family="monospace" font-size="6.5" fill="#3a409a">stamped</text>
+          <defs><marker id="a4" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#5A61B4"/></marker></defs>
+        </svg></div>
+        <span class="term chip-mech" style="color:#3a409a;background:none;padding:0">Migrate AMO</span>
+        <h3>A courier who stamps the package "atomic" before handing it over</h3>
+        <p>The ladder still physically moves from your neighbor to you — same as a plain borrow — but the courier stamps the transfer "this is for an atomic job," so the office (the directory) knows to keep an eye on it differently than an ordinary loan. Same movement, more visibility.</p>
+        <div class="breaks"><b>Where it breaks:</b> the paper is explicit that Migrate's <i>traffic</i> is identical to a plain near AMO — the entire benefit is the directory's added visibility (letting the L2 cache the line instead of the L1, and letting Delegato's predictor reason about it), not any reduction in data movement.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="34" width="30" height="28" rx="4" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2"/>
+          <path d="M46 44 h16" stroke="#2C8C7C" stroke-width="2" marker-end="url(#a5)"/>
+          <circle cx="80" cy="44" r="6" fill="#fff" stroke="#2C8C7C" stroke-width="1.6"/>
+          <text x="80" y="47" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">1</text>
+          <path d="M88 44 h16" stroke="#2C8C7C" stroke-width="2" marker-end="url(#a5)"/>
+          <rect x="108" y="30" width="24" height="28" rx="4" fill="#FBEACB" stroke="#C27D14" stroke-width="2"/>
+          <text x="120" y="47" text-anchor="middle" font-family="monospace" font-size="7" fill="#8a5c0a">DIR</text>
+          <defs><marker id="a5" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#2C8C7C"/></marker></defs>
+        </svg></div>
+        <span class="term">The trace · reuse_bit</span>
+        <h3>A heartbeat monitor on the borrowed ladder</h3>
+        <p>Every time the office asks your neighbor to do one more job with the ladder, they also ask "still using it a lot?" — one yes/no bit clipped onto the reply they were sending anyway. As long as the answer is "yes," the office leaves the ladder alone. The moment the answer is "no," the office reclaims it and starts handling that job centrally instead.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real heartbeat monitor is extra equipment; Delegato's bit is <i>free</i> — it reuses the existing <code>DataPull</code> field already carried by CHI's stashing-transaction responses, so no new wires are added.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="10" y="20" width="55" height="56" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="1.6"/>
+          <line x1="37.5" y1="20" x2="37.5" y2="76" stroke="#9A8E7C" stroke-width="1.2" stroke-dasharray="3 2"/>
+          <text x="24" y="14" text-anchor="middle" font-family="monospace" font-size="7" fill="#6E6456">building A</text>
+          <text x="51" y="14" text-anchor="middle" font-family="monospace" font-size="7" fill="#6E6456">building B</text>
+          <circle cx="20" cy="44" r="6" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.4"/>
+          <circle cx="50" cy="60" r="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.4"/>
+          <rect x="75" y="38" width="14" height="18" fill="none" stroke="#9A8E7C" stroke-width="1.6"/>
+          <text x="82" y="66" text-anchor="middle" font-family="monospace" font-size="7" fill="#6E6456">bridge</text>
+        </svg></div>
+        <span class="term">The stage · chiplet placement</span>
+        <h3>Two office buildings joined by one narrow bridge</h3>
+        <p>All the interesting cost-accounting in this paper reduces to one question: how many times does someone have to cross that one narrow bridge? Whether the cheapest choice is to hand the job to whoever's already on the far side, or bring the job to the near side, or send just the paperwork across, depends entirely on which side the requester and the file's current owner happen to be standing on.</p>
+        <div class="breaks"><b>Where it breaks:</b> the paper's "Case A/B/C" analysis only enumerates the placements it needs for its argument; it doesn't exhaustively cost every possible arrangement of requester/owner/directory across more than two chiplets.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Section by section</div>
+      <h2>How Delegato actually works</h2>
+      <p class="sub">Centralized AMOs' real shortcomings → the two new transactions → static and chiplet-aware directory policies → the reuse trace → the predictor state machine.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Why centralized AMOs aren't good enough (Section 3)</h3>
+      <p>Centralized AMOs avoid line ping-pong, but the paper identifies three concrete shortcomings. <b>Interconnect traffic:</b> because ordinary loads/stores keep migrating the line between private caches anyway, centralizing the AMO alone doesn't eliminate cross-chiplet traffic — and in the specific "Case A" arrangement (requester and owner on one chiplet, directory on the other), a centralized AMO needs <b>four</b> high-latency cross-chiplet messages versus <b>two</b> for near or delegated AMOs, because the line has to be transferred to the directory <i>and</i> the response has to come back. <b>Coherence misses:</b> centralizing a CAS operation increases its latency, which increases the chance some other write lands first and the CAS has to retry. <b>Area cost:</b> the directory needs its own ALU. The paper measured an extended atomic ALU (adding floating-point min/max/add) at 2894 μm² in a 7 nm process — 85.4% of that area is the floating-point RMW logic, 14.5% is simple bitwise/integer logic — which is about 0.11% of a Neoverse V1 core tile's area (worked out in Example 1).</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Case A: crossing the interposer, message by message</div>
+        <div class="viz-kicker">requester + owner share a chiplet; the directory sits on the other one</div>
+        <div class="legend">
+          <span><i style="background:var(--cost)"></i> Near — 2 hops</span>
+          <span><i style="background:var(--honey-deep)"></i> Centralized — 4 hops</span>
+          <span><i style="background:var(--huge)"></i> Delegate — 2 hops</span>
+        </div>
+        <svg class="full" viewBox="0 0 700 220" role="img" aria-label="Three horizontal lanes comparing Near, Centralized, and Delegated AMO message flows, with cross-chiplet segments highlighted; Centralized needs two extra long-latency messages that the other two do not">
+          <line x1="330" y1="10" x2="330" y2="210" stroke="var(--line-strong)" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <text x="330" y="8" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="var(--ink-faint)">interposer</text>
+          <!-- lane 1: near -->
+          <text x="20" y="34" font-family="Fraunces" font-size="13" font-weight="600" fill="#9a3a22">Near</text>
+          <circle cx="60" cy="50" r="14" fill="#fff" stroke="#9a3a22" stroke-width="1.6"/><text x="60" y="54" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">R</text>
+          <circle cx="150" cy="50" r="14" fill="#fff" stroke="#9a3a22" stroke-width="1.6"/><text x="150" y="54" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">O</text>
+          <circle cx="470" cy="50" r="14" fill="var(--cost-soft)" stroke="#9a3a22" stroke-width="1.6"/><text x="470" y="54" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">D</text>
+          <path d="M74 46 L456 46" stroke="#9a3a22" stroke-width="1.8" fill="none" marker-end="url(#h1)"/><text x="260" y="38" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#9a3a22">1 ReadUnique (cross)</text>
+          <path d="M456 58 L164 58" stroke="#9a3a22" stroke-width="1.8" fill="none" marker-end="url(#h1)"/><text x="310" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#9a3a22">2 SnpFwd (cross)</text>
+          <path d="M150 64 Q100 90 68 62" stroke="#9a3a22" stroke-width="1.8" fill="none" marker-end="url(#h1)"/><text x="105" y="98" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#9a3a22">3 Data (local)</text>
+          <!-- lane 2: centralized -->
+          <text x="20" y="104" font-family="Fraunces" font-size="13" font-weight="600" fill="#8a5c0a">Centralized</text>
+          <circle cx="60" cy="120" r="14" fill="#fff" stroke="#8a5c0a" stroke-width="1.6"/><text x="60" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#8a5c0a">R</text>
+          <circle cx="150" cy="120" r="14" fill="#fff" stroke="#8a5c0a" stroke-width="1.6"/><text x="150" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#8a5c0a">O</text>
+          <circle cx="470" cy="120" r="14" fill="var(--honey-soft)" stroke="#8a5c0a" stroke-width="1.6"/><text x="470" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#8a5c0a">D</text>
+          <path d="M74 116 L456 116" stroke="#8a5c0a" stroke-width="1.8" fill="none" marker-end="url(#h2)"/><text x="260" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#8a5c0a">1 AtomicLoad (cross)</text>
+          <path d="M456 128 L164 128" stroke="#8a5c0a" stroke-width="1.8" fill="none" marker-end="url(#h2)"/><text x="310" y="142" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#8a5c0a">2 SnpUnique (cross)</text>
+          <path d="M150 134 Q470 175 484 138" stroke="#8a5c0a" stroke-width="1.8" fill="none" marker-end="url(#h2)"/><text x="330" y="182" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#8a5c0a">3 line transfer O→D (cross)</text>
+          <path d="M456 108 L74 108" stroke="#8a5c0a" stroke-width="1.8" fill="none" stroke-dasharray="3 2" marker-end="url(#h2)"/><text x="260" y="100" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#8a5c0a">4 Resp (cross)</text>
+          <!-- lane 3: delegate -->
+          <text x="20" y="174" font-family="Fraunces" font-size="13" font-weight="600" fill="#1f5b51">Delegate</text>
+          <circle cx="60" cy="190" r="14" fill="#fff" stroke="#2C8C7C" stroke-width="1.6"/><text x="60" y="194" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">R</text>
+          <circle cx="150" cy="190" r="14" fill="#fff" stroke="#2C8C7C" stroke-width="1.6"/><text x="150" y="194" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">O</text>
+          <circle cx="470" cy="190" r="14" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.6"/><text x="470" y="194" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">D</text>
+          <path d="M74 186 L456 186" stroke="#2C8C7C" stroke-width="1.8" fill="none" marker-end="url(#h3)"/><text x="260" y="178" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#1f5b51">1 AtomicLoad (cross)</text>
+          <path d="M456 198 L164 198" stroke="#2C8C7C" stroke-width="1.8" fill="none" marker-end="url(#h3)"/><text x="310" y="212" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#1f5b51">2 SnpAMO (cross)</text>
+          <path d="M150 178 Q100 160 66 182" stroke="#2C8C7C" stroke-width="1.8" fill="none" marker-end="url(#h3)"/><text x="90" y="156" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#1f5b51">3 ReqAck+data (local)</text>
+          <defs>
+            <marker id="h1" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#9a3a22"/></marker>
+            <marker id="h2" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#8a5c0a"/></marker>
+            <marker id="h3" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#2C8C7C"/></marker>
+          </defs>
+        </svg>
+        <figcaption>Only messages crossing the dashed interposer line count toward the paper's "high-latency hop" tally. Near and Delegate each cross it twice; Centralized crosses it four times because the line itself has to travel to the directory and the reply has to travel back. (Simplified from Figures 2 and 3; exact CHI sub-messages such as acks are omitted for clarity — the hop <i>counts</i> are quoted directly from the text.)</figcaption>
+      </figure>
+
+      <h3>2 · Delegate and Migrate: the transaction specification (Section 4.1)</h3>
+      <p>Both new transactions can be triggered by the same <code>AtomicLoad</code>/<code>AtomicStore</code> request the directory already receives for centralized AMOs — the directory just chooses a different way to service it. <b>Migrate</b> replays the near-AMO flow (line transfers to the requester) but uses the AMO-flavored request instead of a plain <code>ReadUnique</code>, so the directory can tell "this was an atomic" apart from an ordinary store, and can choose to cache the migrated line at the L2 instead of the L1D (reducing L1D pollution). <b>Delegate</b> sends an <code>SnpAMO</code> snoop carrying the RMW operation itself to the owner; the owner answers the requester directly with a <code>ReqAck</code> (and, for an <code>AtomicLoad</code>, the original value via <code>Resp</code>), the requester ships its data operands to the owner via <code>SourceData</code>, the owner executes the RMW locally, and finally notifies the directory that the snoop completed. Delegate is defined only for the single-owner (RU) case — extending it to multiple sharers would require invalidating all but one first, which the paper explicitly leaves out of scope.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Delegate, step by step</div>
+        <div class="viz-kicker">rebuilt from Figure 4's Delegate lane</div>
+        <svg class="full" viewBox="0 0 700 240" role="img" aria-label="Five-step Delegate transaction: AtomicLoad from requester to directory, SnpAMO from directory to owner, ReqAck and Resp from owner to requester, SourceData from requester to owner, execution at the owner, and a completion notice back to the directory">
+          <circle cx="90" cy="50" r="16" fill="#fff" stroke="#2C8C7C" stroke-width="1.8"/><text x="90" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">R</text>
+          <circle cx="350" cy="50" r="16" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.8"/><text x="350" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">D</text>
+          <circle cx="610" cy="50" r="16" fill="#fff" stroke="#2C8C7C" stroke-width="1.8"/><text x="610" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">O</text>
+          <path d="M106 46 L334 46" stroke="#2C8C7C" stroke-width="1.8" marker-end="url(#s1)"/><text x="220" y="38" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">1 AtomicLoad</text>
+          <path d="M366 46 L594 46" stroke="#2C8C7C" stroke-width="1.8" marker-end="url(#s1)"/><text x="480" y="38" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">2 SnpAMO (the RMW op)</text>
+          <path d="M594 70 L122 70" stroke="#2C8C7C" stroke-width="1.8" marker-end="url(#s1)"/><text x="360" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">3 ReqAck (+ Resp with old data, if AtomicLoad)</text>
+          <path d="M122 100 L594 100" stroke="#2C8C7C" stroke-width="1.8" marker-end="url(#s1)"/><text x="360" y="116" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">4 SourceData (operands)</text>
+          <rect x="560" y="130" width="100" height="30" rx="6" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.4"/><text x="610" y="150" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#1f5b51">executes RMW</text>
+          <path d="M594 148 Q470 200 366 60" stroke="#2C8C7C" stroke-width="1.8" fill="none" stroke-dasharray="4 3" marker-end="url(#s1)"/><text x="470" y="196" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">5 completion notice</text>
+          <text x="350" y="220" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="var(--ink-faint)">the cache line itself never appears in any of these five messages</text>
+          <defs><marker id="s1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2C8C7C"/></marker></defs>
+        </svg>
+        <figcaption>Compare this to Centralized: the directory never touches the data at all here — it only relays the request and gets a completion notice back. The RMW happens once, at the owner, using data the requester sent directly.</figcaption>
+      </figure>
+
+      <h3>3 · Static directory policies (Section 4.2) and the design space</h3>
+      <p>With three transaction types (Migrate/Centralize/Delegate) available for five directory-visible cache states — <code>UC/UD</code> (line only in the LLC), <code>RSC</code>, <code>RSD</code>, <code>RU</code> (line held upstream, shared-clean/shared-dirty/unique respectively), and <code>I</code> (invalid) — the paper notes Delegate can only legally apply to <code>RU</code> (there has to be a single owner to delegate to). That leaves 2⁴ ways to assign Migrate-or-Centralize to the other four states, times 3 ways to assign Migrate/Centralize/Delegate to <code>RU</code>: <b>2⁴ × 3 = 48</b> possible static policies (verified in Worked Example 2). The paper studies five of them:</p>
+      <table class="tbl">
+        <thead><tr><th>Policy</th><th>UC/UD</th><th>RSC</th><th>RSD</th><th>RU</th><th>I</th><th>Idea</th></tr></thead>
+        <tbody>
+          <tr><td><b>All-Central</b> <span class="mem-chip chip-base">default</span></td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--honey-soft)">C</td><td>Everything to the directory. Shipping today (Grace, Graviton 3/4).</td></tr>
+          <tr><td><b>All-Migrate</b></td><td class="mono" style="background:var(--mech-soft)">M</td><td class="mono" style="background:var(--mech-soft)">M</td><td class="mono" style="background:var(--mech-soft)">M</td><td class="mono" style="background:var(--mech-soft)">M</td><td class="mono" style="background:var(--mech-soft)">M</td><td>Always migrate to the L2, never the L1 — near AMO without L1 pollution.</td></tr>
+          <tr><td><b>Present Central</b></td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--mech-soft)">M</td><td>Centralize, except allocate straight to the requester on a true LLC miss.</td></tr>
+          <tr><td><b>Pinned Owner</b></td><td class="mono" style="background:var(--mech-soft)">M</td><td class="mono" style="background:var(--mech-soft)">M</td><td class="mono" style="background:var(--mech-soft)">M</td><td class="mono" style="background:var(--huge-soft)">D</td><td class="mono" style="background:var(--mech-soft)">M</td><td>Migrate by default, but delegate rather than disturb an existing owner.</td></tr>
+          <tr class="best"><td><b>Unowned Central</b></td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--huge-soft)">D</td><td class="mono" style="background:var(--mech-soft)">M</td><td>Centralize when unowned; delegate to an existing owner; allocate on a true miss.</td></tr>
+        </tbody>
+      </table>
+      <p>Evaluated against near AMOs (Section 6.2), these split into three behavioral groups: <b>All-Migrate</b> barely helps (1.02×) since AMOs now run at the L2 instead of L1; <b>Pinned Owner</b> is "CAS-affine" (1.26×, strong on lock-free queues/stacks) because it never disturbs a genuinely active owner; and <b>All-Central / Unowned Central / Present Central</b> are "CAS-disruptive" but FAA-friendly (1.68×/1.69×/1.70×) because centralizing hurts retry-based CAS loops but helps high-fan-in accumulation. Picking the single best static policy per workload reaches 1.85× — the ceiling static policies can reach without a real predictor.</p>
+
+      <h3>4 · Chiplet-Aware policy (Section 4.3)</h3>
+      <p>On a chiplet system, the best choice among Migrate/Centralize/Delegate also depends on <i>where</i> the requester and owner physically sit. The paper works through two more placements (Cases B and C, alongside Case A above): when the <b>owner is remote</b> and requester+directory share a chiplet (Case B), Migrate and Centralize both cross the interposer twice (one of those crossings is a full line transfer) but Migrate finishes in one fewer message — Delegate avoids the cross-chiplet line transfer entirely. When the <b>owner and directory share a chiplet</b> and the requester is remote (Case C), all three schemes cross twice, but only Migrate physically moves the line across chiplets; between Centralize and Delegate, Delegate has the shorter critical path. The paper's conclusion: keeping cache-line owners on the <i>same</i> chiplet as their directory is what minimizes cross-chiplet line transfers overall — which is exactly the rule the Chiplet-Aware policy enforces.</p>
+      <table class="tbl">
+        <thead><tr><th></th><th>UC/RSC/UD/RSD</th><th>RU (owner local)</th><th>RU (owner remote)</th><th>I</th></tr></thead>
+        <tbody>
+          <tr><td><b>Requester local</b></td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--huge-soft)">D</td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--mech-soft)">M</td></tr>
+          <tr><td><b>Requester remote</b></td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--huge-soft)">D</td><td class="mono" style="background:var(--honey-soft)">C</td><td class="mono" style="background:var(--honey-soft)">C</td></tr>
+        </tbody>
+      </table>
+      <p>Read it as two rules: delegate whenever the owner is local to the directory, regardless of where the requester is (top-middle / bottom-middle cells); and only migrate a truly-absent line to the requester when the requester is local too — a remote requester on a cache miss gets centralized instead, so the line doesn't have to cross the interposer for a first touch. Try the lookup table yourself in Worked Examples.</p>
+
+      <h3>5 · Delegato: turning invisible reuse into directory feedback (Section 5)</h3>
+      <p>None of the policies above can see whether an owner holding a line via Delegate is actually still using it — modern private caches (up to 2 MB of L2 per core on recent designs) act as a filter, so the directory only ever observes misses and evictions, never live reuse. <b>Delegato</b> fixes this cheaply: on every <code>SnpAMO</code>, the owner's cache checks a small local <b>Reuse Table</b> (tag + 1 reuse bit, updated on local AMOs and reset each transaction) and returns one bit, <code>reuse_bit</code>, riding on the existing <code>SnpResp</code> message — implemented at zero extra wiring cost by reusing the <code>DataPull</code> field CHI's stashing transactions already carry.</p>
+      <p>At the directory, a <b>Predictor Table</b> (tag, last-requester ID, 2-bit policy state) turns that feedback into a decision per cache line, cycling through three states: it starts in <b>Chiplet-Aware</b>; if the <i>same</i> requester issues two AMOs in a row, the directory migrates the line to them and switches to <b>Pinned Owner</b>; the next time that line is delegated, if <code>reuse_bit=0</code> comes back, the directory switches to <b>Present Central</b>, recovering ownership and centralizing future AMOs on that line until it's evicted and reset.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Delegato's two tables and the predictor's three states</div>
+        <div class="viz-kicker">rebuilt from Figure 6 — the reuse loop and the resulting state machine</div>
+        <svg class="full" viewBox="0 0 700 260" role="img" aria-label="Reuse Table in the private cache reports a reuse bit to the directory's Predictor Table on every SnpAMO; the Predictor Table cycles a cache line between Chiplet-Aware, Pinned Owner, and Present Central states">
+          <rect x="20" y="20" width="190" height="80" rx="10" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.6"/>
+          <text x="115" y="40" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#1f5b51">Reuse Table (in L2)</text>
+          <text x="115" y="62" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">tag + 1 reuse bit / line</text>
+          <text x="115" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">set on local AMO, reset each SnpAMO</text>
+          <path d="M210 60 L340 60" stroke="#2C8C7C" stroke-width="2" marker-end="url(#g1)"/>
+          <text x="275" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">reuse_bit via SnpResp</text>
+          <rect x="345" y="20" width="200" height="80" rx="10" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.6"/>
+          <text x="445" y="40" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#3a409a">Predictor Table (directory)</text>
+          <text x="445" y="62" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">tag + last requester ID + 2-bit state</text>
+          <text x="445" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">indexed by request address</text>
+          <!-- state machine triangle -->
+          <circle cx="120" cy="190" r="42" fill="#fff" stroke="#5A61B4" stroke-width="1.8"/><text x="120" y="186" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#3a409a">Chiplet-</text><text x="120" y="200" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#3a409a">Aware</text>
+          <circle cx="350" cy="150" r="42" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.8"/><text x="350" y="154" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#1f5b51">Pinned Owner</text>
+          <circle cx="580" cy="190" r="42" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.8"/><text x="580" y="186" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#8a5c0a">Present</text><text x="580" y="200" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#8a5c0a">Central</text>
+          <path d="M158 172 L316 156" stroke="#5A61B4" stroke-width="1.8" fill="none" marker-end="url(#g2)"/>
+          <text x="235" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#3a409a">2 AMOs, same requester → Migrate</text>
+          <path d="M388 172 L544 186" stroke="#C27D14" stroke-width="1.8" fill="none" marker-end="url(#g3)"/>
+          <text x="470" y="164" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#8a5c0a">delegate reply: reuse_bit = 0</text>
+          <path d="M544 214 Q350 260 160 216" stroke="#9A8E7C" stroke-width="1.6" fill="none" stroke-dasharray="4 3" marker-end="url(#g4)"/>
+          <text x="350" y="252" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="var(--ink-faint)">evicted / new line resets to default</text>
+          <path d="M340 116 Q345 135 348 108" stroke="#2C8C7C" stroke-width="1.6" fill="none" stroke-dasharray="3 2" marker-end="url(#g5)"/>
+          <text x="380" y="112" font-family="JetBrains Mono" font-size="8" fill="#1f5b51">reuse_bit = 1 → stay</text>
+          <defs>
+            <marker id="g1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#2C8C7C"/></marker>
+            <marker id="g2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#5A61B4"/></marker>
+            <marker id="g3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#C27D14"/></marker>
+            <marker id="g4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#9A8E7C"/></marker>
+            <marker id="g5" markerWidth="6" markerHeight="6" refX="4" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#2C8C7C"/></marker>
+          </defs>
+        </svg>
+        <figcaption><b>Solidly grounded in the text:</b> the Chiplet-Aware→Pinned-Owner trigger (two consecutive same-requester AMOs) and the Pinned-Owner→Present-Central trigger (a Delegate reply with <code>reuse_bit=0</code>) are stated explicitly in Section 5.3. <b>Our structural framing:</b> drawing these as a clean three-node cycle, and the "evicted/new line resets to default" edge, is our reconstruction of Figure 6b's more compressed diagram — the paper's own figure is consistent with this reading but doesn't spell out every edge in prose, so treat the exact shape of the diagram (not the two stated triggers) as our interpretation.</figcaption>
+      </figure>
+
+      <div class="callout takeaway"><span class="ic">●</span><div><b>The net effect (Section 6.4–6.5).</b> Because the predictor starts every line as Chiplet-Aware and only escalates to Pinned Owner on genuine repeat access, Delegato issues far more Migrate transactions than the static Chiplet-Aware policy alone, and — once pinned — far more Delegate transactions too, on exactly the workloads with real per-line locality. It sacrifices some of the raw data-movement reduction Chiplet-Aware achieves (which cares only about hop count, not latency) in exchange for lower AMO latency overall, and it still wins on total cross-NoC data movement in several benchmarks (LUL, FLU, RSO, HIS).</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Put real numbers on it</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Every number below is recomputed from the paper's own figures, and matches what the paper reports. Then an interactive lookup for the Chiplet-Aware policy table (Table 2).</p>
+    </div>
+
+    <div class="card">
+      <h3>Example 1 — the directory ALU's area cost (Section 3.3)</h3>
+      <ol class="seq">
+        <li>The extended atomic ALU (7 nm TSMC, 2 GHz target, synthesized with Cadence Genus/Innovus v19.11) measures <b>2894 μm²</b> total, split <b>85.4%</b> floating-point RMW logic and <b>14.5%</b> simple bitwise/integer logic (85.4 + 14.5 = 99.9%, rounding in the source).</li>
+        <li>Convert to mm²: 2894 μm² = 2894 / 1,000,000 mm² = <b>0.002894 mm²</b>.</li>
+        <li>An Arm Neoverse V1 core tile is stated at <b>2.52 mm²</b> (7 nm). Overhead fraction = 0.002894 / 2.52 = <b>0.001148</b> = <b>0.1148%</b> ≈ the paper's stated <b>0.11%</b>. ✓ matches.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> adding centralized-AMO support to a directory is nearly free in area — which is precisely why the paper frames Migrate/Delegate's advantage as <i>not</i> needing this ALU at the directory as a genuine, if small, additional win, not the main story.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 2 — the 48-policy design space (Section 4.2)</h3>
+      <ol class="seq">
+        <li>Five directory-visible states exist: <code>UC/UD</code> (merged, since both mean "only at the LLC"), <code>RSC</code>, <code>RSD</code>, <code>RU</code>, <code>I</code> — four independent slots plus <code>RU</code>.</li>
+        <li>Delegate is only legal for <code>RU</code> (there must be exactly one owner to delegate to). So the other four slots each choose between just 2 options (Migrate or Centralize): 2⁴ = <b>16</b>.</li>
+        <li><code>RU</code> alone can choose any of 3 options (Migrate, Centralize, or Delegate): <b>×3</b>.</li>
+        <li>Total policies = 16 × 3 = <b>48</b> — matches the paper's stated "2⁴×3 = 48" exactly. The paper studies 5 of these 48: All-Central, All-Migrate (both implementable with existing CHI transactions), plus Present Central, Pinned Owner, and Unowned Central (the three genuinely new ones).</li>
+      </ol>
+      <div class="callout warn" style="margin-top:6px"><span class="ic">▲</span><div><b>Misconception it kills:</b> reading "5 states" and assuming 3⁵ = 243 combinations. Delegate's single-owner restriction removes two of the three options from four of the five states — that constraint is exactly what shrinks 3⁵ down to 48.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 3 — speed-ups are ratios of ratios (Section 6.4)</h3>
+      <p>All speed-ups below are geometric-mean execution time <i>relative to Near AMOs</i> (Figure 9). To compare two far-AMO schemes to <i>each other</i>, divide their Near-relative speed-ups.</p>
+      <ol class="seq">
+        <li><b>Delegato vs. Near:</b> 1.80× (given). <b>All-Central vs. Near:</b> 1.68× (given).</li>
+        <li><b>Delegato vs. All-Central</b> = 1.80 / 1.68 = <b>1.0714…</b> ≈ <b>1.07×</b> — matches the abstract's headline "1.07× over centralized AMOs" exactly.</li>
+        <li><b>DynAMO vs. Near:</b> 1.60× (given). <b>Delegato vs. DynAMO</b> = 1.80 / 1.60 = <b>1.125</b> ≈ <b>1.13×</b> — matches the abstract's "1.13× over the state-of-the-art AMO predictor" exactly.</li>
+        <li><b>Best-Static vs. All-Central</b> (Section 6.2's own claim) = 1.85 / 1.68 = <b>1.101…</b> ≈ <b>1.10×</b>, as stated in the text.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> the paper's headline numbers are all divisions of Near-relative speed-ups, never differences. "1.80× vs 1.68×" is not "12 percentage points better" — it's 7% faster than centralized on top of centralized's own gains over Near.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 4 — total Delegato hardware cost (Section 6.8)</h3>
+      <ol class="seq">
+        <li><b>Reuse Table</b> entry = 49-bit tag + 1 reuse bit = 50 bits. 128 entries × 50 bits = 6400 bits = <b>800 bytes</b> — matches the paper. Measured at 743 μm² per core (7 nm, 3 GHz); for 32 cores: 743 × 32 = 23,776 μm² = <b>0.0238 mm²</b> ≈ the paper's stated <b>0.024 mm²</b>. ✓</li>
+        <li><b>Predictor Table</b> entry = 49-bit tag + 5-bit requester ID + 2-bit policy state = 56 bits. 128 entries × 56 bits = 7168 bits = <b>896 bytes</b> — matches. At 807 μm² per LLC slice, replicated across 32 slices: 807 × 32 = 25,824 μm² = <b>0.0258 mm²</b> ≈ the paper's stated <b>0.026 mm²</b>. ✓</li>
+        <li>The <code>reuse_bit</code> itself costs nothing extra — it reuses CHI's existing <code>DataPull</code> field.</li>
+        <li><b>L2 ALU</b> (same design as the directory ALU, Example 1): 2894 μm² per core × 32 cores = 92,608 μm² = <b>0.0926 mm²</b>.</li>
+        <li><b>Total</b> ≈ 0.024 + 0.026 + 0.093 = <b>0.143 mm²</b>, closely matching the paper's stated total of <b>0.142208 mm²</b> (the small gap is rounding across the per-component μm² figures — the paper's own final number is the authoritative one).</li>
+        <li>A 32-core Neoverse-V1-class chip (2.52 mm²/core × 32 = <b>80.64 mm²</b>) gains 0.142208 / 80.64 = <b>0.00176</b> = <b>0.176%</b> ≈ the paper's stated <b>0.17%</b>. ✓</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h3>Example 5 — Delegato holds up on a faster interposer too (Section 6.6, UCIe)</h3>
+      <p>Shrinking the interposer latency from 50 ns to 2 ns (a UCIe-class link) shrinks <i>every</i> scheme's advantage over Near AMOs, since Near's ping-pong penalty shrinks too — but the ranking barely moves.</p>
+      <ol class="seq">
+        <li>At 50 ns: Delegato 1.80×, All-Central 1.68×, Best-Static 1.85× (vs. Near).</li>
+        <li>At 2 ns: Delegato 1.62×, All-Central 1.52×, Best-Static 1.65× (vs. Near).</li>
+        <li>Delegato vs. All-Central at 2 ns = 1.62 / 1.52 = <b>1.066…</b> ≈ <b>1.07×</b> — the same 1.07× ratio the paper reports at 50 ns.</li>
+        <li>Best-Static vs. Delegato at 2 ns = 1.65 / 1.62 = <b>1.0185…</b> ≈ <b>1.02×</b>, exactly the "only 1.02× faster than Delegato" the paper reports — i.e. Delegato closes almost the entire gap to a perfect per-workload oracle even under a much cheaper interconnect.</li>
+      </ol>
+      <p>Now explore the Chiplet-Aware policy (Table 2) directly:</p>
+
+      <!-- INTERACTIVE: Chiplet-Aware policy lookup -->
+      <figure class="viz" id="policyFig" style="box-shadow:var(--shadow-sm);margin-top:10px">
+        <div class="viz-title">Chiplet-Aware policy lookup</div>
+        <div class="viz-kicker">reproduces Table 2 exactly · pick a cache-block state and the physical placement</div>
+        <div class="legend">
+          <span><i style="background:var(--honey-deep)"></i> Centralize (C)</span>
+          <span><i style="background:var(--huge)"></i> Delegate (D)</span>
+          <span><i style="background:var(--mech)"></i> Migrate (M)</span>
+        </div>
+        <div class="part-viz">
+          <div class="part-controls">
+            <label>Block state:</label>
+            <div class="preset-row" id="stateButtons">
+              <button class="tbtn sel" data-state="shared">UC / RSC / UD / RSD (shared or exclusive at LLC)</button>
+              <button class="tbtn" data-state="ru">RU (single private-cache owner exists)</button>
+              <button class="tbtn" data-state="i">I (not present anywhere)</button>
+            </div>
+          </div>
+          <div class="part-controls" id="ownerRow" style="display:none">
+            <label>Owner's chiplet:</label>
+            <div class="preset-row" id="ownerButtons">
+              <button class="tbtn sel" data-owner="local">Same chiplet as directory</button>
+              <button class="tbtn" data-owner="remote">Remote chiplet</button>
+            </div>
+          </div>
+          <div class="part-controls">
+            <label>Requester's chiplet:</label>
+            <div class="preset-row" id="reqButtons">
+              <button class="tbtn sel" data-req="local">Same chiplet as directory</button>
+              <button class="tbtn" data-req="remote">Remote chiplet</button>
+            </div>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">Policy chosen<b id="pPolicy">C</b></div>
+          </div>
+          <div class="pverdict opt" id="pVerdict">…</div>
+        </div>
+        <figcaption>Every combination here is read directly off Table 2 in Section 4.3 — nothing is extrapolated. Toggle "Owner's chiplet" only matters when the state is RU.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Check yourself</div>
+      <h2>Practice</h2>
+      <p class="sub">Work the answer before opening it. Each answer ends with the misconception the question is designed to catch.</p>
+    </div>
+
+    <div class="prob">
+      <span class="ptag easy">Warm-up</span>
+      <div class="qtext">Why can a static policy legally assign "Delegate" to the RU state but never to RSC, RSD, UC, or UD?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Delegate forwards the RMW to a single private-cache <b>owner</b> — that only makes sense when exactly one owner exists, which is what <code>RU</code> (Remote Unique) means. <code>UC/UD</code> mean the line is only at the LLC (no owner to delegate to), and <code>RSC/RSD</code> mean it's shared by potentially multiple private caches, so there's no single owner to forward to without first invalidating everyone else — which the paper explicitly puts out of scope.
+        <span class="mis">Catches: treating Delegate as a general-purpose "send it somewhere other than the directory" transaction. It specifically requires a unique owner; that's the whole reason the design space is 48 policies, not 3⁵ = 243.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">A lock-free queue (like LFQ in the paper's benchmark set) has one dominant owner core doing most of the enqueue/dequeue CAS operations in a tight loop. Which static policy performs best on this kind of workload, and why does All-Central perform worse than Near AMOs here?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        <b>Pinned Owner</b> — the paper reports it as the best-performing static policy specifically on LFQ, because it delegates to (rather than disturbs) an owner who is clearly still active. All-Central performs <i>worse</i> than Near on several CAS-heavy benchmarks including LFQ because centralizing the RMW adds latency to every CAS attempt, and CAS failure probability rises with latency (a newer conflicting write is more likely to land first) — so centralization actively increases the retry rate on exactly the workloads with tight CAS loops.
+        <span class="mis">Catches: assuming "moves work off the critical core" always helps throughput. For CAS-based synchronization specifically, added RMW latency can make things worse, not better — this is the paper's "CAS-disruptive" pattern.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">The abstract claims Delegato is "1.07× faster than centralized AMOs and 1.13× faster than the state-of-the-art predictor." Using only the Figure 9 geomean numbers (DynAMO 1.60×, All-Central 1.68×, Delegato 1.80×, all vs. Near AMOs), show the arithmetic behind both claims.</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Delegato vs. All-Central = 1.80 / 1.68 = 1.0714 ≈ <b>1.07×</b>. Delegato vs. DynAMO = 1.80 / 1.60 = 1.125 ≈ <b>1.13×</b>. Both headline numbers are ratios of Near-relative speed-ups, not differences (1.80 − 1.68 = 0.12, which is <i>not</i> the reported 1.07×).
+        <span class="mis">Catches: subtracting Near-relative speed-ups instead of dividing them. A speed-up of "1.80×" already encodes a ratio to a shared baseline, so comparing two such numbers to each other requires dividing, not subtracting.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">A workload has many cores round-robin updating one shared counter — no single core ever issues two consecutive AMOs to the line. Walk through what the Delegato predictor does with this line, and whether it's likely to help or hurt versus Near AMOs.</div>
+      <details><summary>Show answer</summary><div class="ans">
+        The Predictor Table starts the line in <b>Chiplet-Aware</b>. Because "two consecutive AMOs from the same requester" never happens under round-robin, the line never transitions to Pinned Owner — it stays governed by the Chiplet-Aware table (Table 2) indefinitely, delegating only when the current owner happens to sit on the directory's chiplet, and centralizing or migrating otherwise. Whether this helps depends entirely on chiplet placement, not reuse — and the paper explicitly reports that Delegato <i>degrades</i> performance relative to Near AMOs on some low-locality benchmarks (FMM, BAR, LFQ), attributing this to cases where near AMOs were simply better suited and the predictor "can do little."
+        <span class="mis">Catches: assuming Delegato always beats Near AMOs. The paper is explicit that it does not — on workloads without the per-line repeat-access pattern the predictor is built to detect, an L1-level predictor like DynAMO (which the paper suggests combining with Delegato) would be needed to catch the cases Delegato's directory-side logic can't see.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">Explain, using Table 2, why a cache-line miss (state <code>I</code>) is handled differently for a local requester (Migrate) than for a remote requester (Centralize), even though both are "the line isn't anywhere yet" cases.</div>
+      <details><summary>Show answer</summary><div class="ans">
+        For a state-<code>I</code> line, there is no existing copy to protect — the only decision is where the <i>first</i> copy should land. If the requester shares a chiplet with the directory, allocating it directly to the requester (Migrate) costs nothing extra in cross-chiplet traffic, since the directory and requester are already local to each other. If the requester is remote, migrating would mean transferring the freshly-fetched line all the way across the interposer for a single first-touch — the Chiplet-Aware policy instead centralizes, keeping the line at the directory (which, per Section 4.2's "Present Central" idea, can also be paired with allocating LLC-missed lines efficiently via direct memory transfer) rather than paying a cross-chiplet transfer for a line that hasn't even proven it will be reused.
+        <span class="mis">Catches: assuming Table 2's rows only depend on the cache-block state. The <code>I</code> column is the one place in the table where the requester's location alone — not the owner's, since there is no owner — changes the decision, which is easy to miss if you only remember "delegate when there's an owner."</span>
+      </div></details>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Loose ends</div>
+      <h2>Frequently asked</h2>
+      <p class="sub">The questions that come up once the mechanism clicks.</p>
+    </div>
+    <div class="faq">
+
+      <details><summary><span class="q">Q</span>Isn't Delegate AMO just software delegation done in hardware?<span class="chev">▾</span></summary>
+        <div class="a">Conceptually related but mechanically different. Software delegation (Section 2.2) has the programmer statically partition shared data so only one designated thread ever updates each location — it avoids data movement but adds real serialization, and someone has to design the partitioning. Delegate AMO is a coherence-protocol transaction: the directory decides, per access and dynamically, whether to forward an RMW to whoever the coherence protocol says currently owns the line — no programmer partitioning required, and the "owner" can change over time as the workload's access pattern changes.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does Delegato remove the need for a directory ALU entirely?<span class="chev">▾</span></summary>
+        <div class="a">No — it relocates where an ALU is needed, it doesn't eliminate the need everywhere. Migrate and Pinned-Owner-style policies need no directory ALU at all (the RMW runs in a private cache's own execution unit). Delegate specifically needs an ALU at the L2 (Section 4.1, accounted for in Section 6.8's area analysis) rather than at the directory. Present Central and Chiplet-Aware still fall back to centralizing in several states, so a directory ALU is still assumed present in the paper's baseline for those cases.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>What happens if a line has multiple sharers and someone wants to delegate an AMO to it?<span class="chev">▾</span></summary>
+        <div class="a">The paper notes this is possible in principle — invalidate all sharers except one, who becomes the new owner and executes the RMW — but explicitly states "such implementations are out of scope of this paper." Every Delegate transaction evaluated here targets the <code>RU</code> (single unique owner) state only.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Is Delegato deployed in real silicon, or is this purely a simulation study?<span class="chev">▾</span></summary>
+        <div class="a">Purely a simulation study, as far as the paper describes. All results come from gem5 v23.1.0 full-system simulation of a hypothetical dual-chiplet Arm system; Delegate and Migrate are proposed <i>extensions</i> to the AMBA CHI protocol, not features of any shipping product. The paper does note that existing shipping systems (NVIDIA Grace, AWS Graviton 3/4) already implement Centralized AMOs and near/far AMO switching per the Neoverse N2 manual — that part is real hardware; Delegato itself is not.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>How does the reuse_bit avoid costing extra hardware?<span class="chev">▾</span></summary>
+        <div class="a">CHI's <code>SnpResp</code> message already carries a <code>DataPull</code> field, used by "stashing" transactions to tell a cache whether to install data. Delegato repurposes that existing bit for Delegate transactions instead, so no new wire or field needs to be added to the protocol — the paper states this makes the reuse-signaling mechanism free to implement.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Why does DynAMO underperform simple static policies like Chiplet-Aware, if it's supposed to be "smart"?<span class="chev">▾</span></summary>
+        <div class="a">DynAMO can only choose between transactions the <i>baseline</i> hardware already supports — near AMOs and centralized AMOs. It's also deliberately conservative (only escalates to centralized when a line misses in the L1D <i>and</i> its own local reuse tracking says "not reused"), and it only sees L1D-local history, with no visibility into system-wide or chiplet-placement information. Chiplet-Aware, despite being a fixed (non-adaptive) policy, has access to information DynAMO's hardware simply doesn't: cache-block state <i>and</i> physical chiplet location, plus the ability to actually issue Delegate and Migrate transactions.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Why does everything get less dramatic on a UCIe-class (2 ns) interposer?<span class="chev">▾</span></summary>
+        <div class="a">Every scheme's advantage over Near AMOs in this paper comes from avoiding expensive interposer crossings. Shrink the interposer latency from 50 ns to 2 ns and Near AMOs' ping-pong penalty shrinks right along with everyone else's transfer costs — so the <i>relative</i> gap between schemes compresses (Delegato falls from 1.80× to 1.62× vs. Near). The paper reports the <i>ranking</i> stays essentially the same (Delegato still beats All-Central by 1.07×), which is presented as evidence the mechanism is robust to interconnect technology, not just tuned to one latency regime.</div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Reference</h2>
+      <p class="sub">Glossary, benchmark acronyms, a dated summary card, and the honest provenance notes.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>AMO</b><span>Atomic Memory Operation — an ISA-level indivisible read-modify-write (CAS, FAA, floating-point add/min/max, etc.), fundamental to synchronization primitives.</span></div>
+      <div class="term-def"><b>Near AMO</b><span>The RMW executes in the requester's own L1D after acquiring the line exclusively — causes cache-line ping-pong between cores. <span class="mem-chip chip-cost">terracotta</span></span></div>
+      <div class="term-def"><b>Centralized AMO</b><span>The RMW executes at a fixed serialization point (the directory/LLC), via an <code>AtomicLoad</code>/<code>AtomicStore</code> request — today's only shipping far AMO. <span class="mem-chip chip-base">honey</span></span></div>
+      <div class="term-def"><b>Migrate AMO</b><span>New transaction: transfers the line like a near AMO, but flagged so the directory can distinguish it from an ordinary store. <span class="mem-chip chip-mech">indigo</span></span></div>
+      <div class="term-def"><b>Delegate AMO</b><span>New transaction: the directory sends the owner an <code>SnpAMO</code>, the owner executes the RMW locally using operands sent directly by the requester — no line transfer, no invalidation. <span class="mem-chip chip-huge">teal</span></span></div>
+      <div class="term-def"><b>Directory</b><span>The coherence point-of-serialization that tracks per-line ownership/sharer state; in this paper's baseline it also includes an LLC slice.</span></div>
+      <div class="term-def"><b>RU / RSC / RSD / UC / UD / I</b><span>CHI cache-block states the directory tracks: Remote Unique/Shared-Clean/Shared-Dirty (held upstream), Unique Clean/Dirty (only at the LLC), Invalid.</span></div>
+      <div class="term-def"><b>Chiplet-Aware policy</b><span>Static directory policy that additionally checks requester's and owner's chiplet location relative to the directory (Table 2).</span></div>
+    </div>
+
+    <div class="subhead">Delegato-specific terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Delegato</b><span>The paper's tracing mechanism: owners report a 1-bit <code>reuse_bit</code> on every Delegate transaction, giving the directory visibility into private-cache reuse it otherwise can't see.</span></div>
+      <div class="term-def"><b>reuse_bit</b><span>One bit in <code>SnpResp</code> (reusing CHI's existing <code>DataPull</code> field) indicating whether the delegated line is still being actively updated.</span></div>
+      <div class="term-def"><b>Reuse Table</b><span>Small table at the private cache (L2) tracking per-line reuse to compute the <code>reuse_bit</code>; best-performing at ~64 entries in the design-space sweep.</span></div>
+      <div class="term-def"><b>Predictor Table</b><span>Table at the directory holding tag, last-requester ID, and a 2-bit policy state per tracked line; 128 entries, 2-way associative in the best configuration.</span></div>
+      <div class="term-def"><b>Pinned Owner (PO) / Present Central (PC) / Chiplet-Aware (CA) states</b><span>The three predictor states a line cycles through: CA (default) → PO (after 2 consecutive same-requester AMOs) → PC (after a Delegate reply with <code>reuse_bit=0</code>).</span></div>
+      <div class="term-def"><b>DynAMO</b><span>The state-of-the-art baseline coherence predictor (prior work): chooses near vs. centralized at the L1D using local reuse history only.</span></div>
+      <div class="term-def"><b>APKI</b><span>Atomics per kilo-instruction — how AMO-intensive a benchmark is; ranges 0.10 (Dedup) to 74.71 (Histogram/Lulesh) in the paper's suite.</span></div>
+      <div class="term-def"><b>CAS-affine / CAS-disruptive</b><span>The paper's own labels for policies that help vs. hurt compare-and-swap-heavy workloads, respectively, based on how they affect RMW latency and CAS failure probability.</span></div>
+    </div>
+
+    <div class="subhead">Benchmark acronyms (Figures 7, 9, 10, 11)</div>
+    <table class="tbl">
+      <thead><tr><th>Acronym</th><th>Benchmark</th><th>Acronym</th><th>Benchmark</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">BAR</td><td>Barnes</td><td class="mono">LFQ</td><td>Lock-free queue</td></tr>
+        <tr><td class="mono">FMM</td><td>Fast Multipole Method</td><td class="mono">LFS</td><td>Lock-free stack</td></tr>
+        <tr><td class="mono">RAD</td><td>Radiosity</td><td class="mono">SCQ</td><td>Scalable circular queue</td></tr>
+        <tr><td class="mono">RAY</td><td>Raytrace</td><td class="mono">WCQ</td><td>Wait-free circular queue</td></tr>
+        <tr><td class="mono">FLU</td><td>Fluidanimate</td><td class="mono">WFQ</td><td>Wait-free queue</td></tr>
+        <tr><td class="mono">DUP</td><td>Dedup</td><td class="mono">HIS</td><td>Histogram</td></tr>
+        <tr><td class="mono">BC</td><td>Betweenness Centrality</td><td class="mono">LUL</td><td>Lulesh</td></tr>
+        <tr><td class="mono">BFS</td><td>Breadth-First Search</td><td class="mono">KME</td><td>Kmer Count</td></tr>
+        <tr><td class="mono">SSSP</td><td>Single-Source Shortest Path</td><td class="mono">RSO</td><td>Radix Sort</td></tr>
+        <tr><td class="mono">LFH</td><td>Lock-free hash table</td><td class="mono">SpC / SpO</td><td>SPMV-CSC / SPMV-COO</td></tr>
+        <tr><td class="mono">LFK</td><td>Lock-free key-value store</td><td class="mono">—</td><td>—</td></tr>
+      </tbody>
+    </table>
+
+    <div class="card" style="background:var(--mech-soft);border-color:#bcbfe8;margin-top:26px">
+      <h3 style="color:#3a409a">📌 Summary card <span style="font-family:var(--mono);font-size:.7rem;font-weight:500;color:#5A61B4">· as of 2026-08-30 · MICRO'25 paper</span></h3>
+      <ul style="margin:0;padding-left:20px;color:#3a409a">
+        <li><b>Problem:</b> chiplet interposers make near-AMO ping-pong and centralized-AMO round-trips both expensive; only one far-AMO type (Centralized) existed.</li>
+        <li><b>Two new transactions:</b> Migrate (near-AMO traffic, directory-visible) and Delegate (forward the RMW to the owner — no transfer, no invalidation).</li>
+        <li><b>Directory policy space:</b> 2⁴×3 = 48 static policies; the paper studies 5, plus a Chiplet-Aware policy keyed on physical placement (Table 2).</li>
+        <li><b>Delegato mechanism:</b> a free 1-bit <code>reuse_bit</code> fed back on every Delegate transaction, reusing CHI's existing <code>DataPull</code> field.</li>
+        <li><b>Predictor:</b> Reuse Table (L2) + Predictor Table (directory), cycling each line through Chiplet-Aware → Pinned Owner → Present Central.</li>
+        <li><b>Headline results (vs. Near AMOs, gem5, 22 workloads):</b> DynAMO 1.60×, Chiplet-Aware 1.71×, <b>Delegato 1.80×</b>, Best-Static-per-workload 1.85×.</li>
+        <li><b>Derived:</b> Delegato beats Centralized AMOs by <b>1.07×</b> and DynAMO by <b>1.13×</b> — both exactly reproduced in Worked Example 3.</li>
+        <li><b>Cost:</b> ≈0.142 mm² on a 32-core chip (Reuse + Predictor tables + L2 ALU) ≈ <b>0.17%</b> of total area.</li>
+        <li><b>Robustness check:</b> on a 2 ns UCIe-class interposer, absolute gains shrink but the 1.07× Delegato-over-Centralized ratio holds.</li>
+        <li><b>Known limitation (paper's own words):</b> Delegato still degrades vs. Near AMOs on some low-locality benchmarks (FMM, BAR, LFQ) — combining it with an L1-level predictor like DynAMO is suggested future work.</li>
+      </ul>
+    </div>
+
+    <div class="subhead">Further reading</div>
+    <div class="read-item">
+      <h4>Soria-Pardos et al., "Delegato: Locality-Aware Atomic Memory Operations on Chiplets" <span class="diff easy">primary</span></h4>
+      <div class="meta">MICRO'25 · DOI 10.1145/3725843.3756030</div>
+      <p>The source of every claim in this guide. Read Sections 4 (transactions/policies) and 5 (Delegato) closely if you're extending this to CXL-attached memory pools rather than intra-socket chiplets.</p>
+    </div>
+    <div class="read-item">
+      <h4>DynAMO (cited as [102] in the paper) <span class="diff med">baseline</span></h4>
+      <div class="meta">Prior work — the state-of-the-art AMO predictor Delegato is compared against throughout Section 6</div>
+      <p>Read to understand exactly what "1.13× over DynAMO" is measured against — an L1D-local, near-vs-centralized-only predictor.</p>
+    </div>
+    <div class="read-item">
+      <h4>AMBA 5 CHI specification <span class="diff med">protocol</span></h4>
+      <div class="meta">Arm Ltd. — defines ReadUnique, AtomicLoad/Store, SnpFwd/SnpUnique, and the stashing/DataPull mechanism Delegato repurposes</div>
+      <p>Needed to fully parse the transaction-flow figures rebuilt in How It Works; this guide only reconstructs the subset relevant to AMOs.</p>
+    </div>
+    <div class="read-item">
+      <h4>Connecting outward: CXL and locality-aware placement <span class="diff hard">your framing</span></h4>
+      <div class="meta">Not covered by the paper — an extrapolation for readers working on OS-managed tiering</div>
+      <p><i>Conceptual, our framing:</i> Delegato's core insight — feed the coherence/placement decision-maker actual reuse information instead of only misses — rhymes with page-level hotness tracking in DRAM/NVM/CXL tiering software (e.g. deciding whether to migrate a page vs. leave it remote). The paper itself makes no such connection; it is scoped entirely to intra-socket chiplet coherence.</p>
+    </div>
+
+    <div class="subhead">Source notes — provenance &amp; honesty</div>
+    <div class="card" style="border-color:var(--line-strong)">
+      <p style="font-size:.96rem"><b>Kind:</b> paper-grounded field guide, built solely from <code>_paper_txt/a-delegato-locality-aware-atomic-memory.txt</code> (the extracted text of Soria-Pardos et al., MICRO'25). Every number in Worked Examples was independently recomputed against the source text.</p>
+      <p style="font-size:.96rem"><b>Grounded &amp; verified (high confidence):</b> the four AMO types and their transaction flows (Section 4.1); the 48-policy design-space arithmetic; Tables 1 and 2 (static and Chiplet-Aware policies), reproduced exactly; the Delegato reuse mechanism and its free implementation via the <code>DataPull</code> field (Section 5.2); the Reuse/Predictor table structure and sizes (Section 5.3, 6.7); every area figure in Examples 1 and 4 (independently recomputed and matched to within rounding); the headline speed-ups (1.80×/1.68×/1.60×/1.71×/1.85× vs. Near, and the derived 1.07×/1.13×/1.10× ratios, Section 6.2–6.6).</p>
+      <p style="font-size:.96rem"><b>Our framing (clearly labeled, not the paper's own language):</b> the four-color semantic mapping (Near=terracotta, Centralized=honey, Migrate=indigo, Delegate=teal); all six analogies; the signature "four places an AMO can run" figure and concept map (built from the paper's Figures 2–5 but redrawn and recombined); the exact edge-set of the CA/PO/PC state-machine diagram in How It Works, item 5 (the two labeled transitions are directly stated in Section 5.3 text; the third "reset on eviction" edge and the overall triangular layout are our structural completion of Figure 6b, which the extracted text renders ambiguously).</p>
+      <p style="font-size:.96rem"><b>Flagged as uncertain / low confidence:</b> Table 4's APKI column lists <b>74.71</b> for both Histogram and Lulesh — identical to three decimal places. We report this value for both, as printed in the extracted source text, but cannot independently confirm whether this is a genuine coincidence or a text-extraction artifact from the original PDF table. Figure 6a's exact tag/reuse-bit example values are partially garbled in the OCR-extracted text and were not relied upon for any claim in this guide.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Soria-Pardos et al., "Delegato: Locality-Aware Atomic Memory Operations on Chiplets," MICRO'25</span>
+    <span><b>Built from:</b> _paper_txt/a-delegato-locality-aware-atomic-memory.txt · house style from learn/sessions/2026-08-13-thp</span>
+    <span><b>Provenance:</b> paper-grounded, numbers independently recomputed (see Source notes) · framing/analogies clearly marked</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- CHIPLET-AWARE POLICY LOOKUP (Table 2, exact) ---- */
+  var state = 'shared', owner = 'local', req = 'local';
+  var stateBtns = Array.prototype.slice.call(document.querySelectorAll('#stateButtons .tbtn'));
+  var ownerBtns = Array.prototype.slice.call(document.querySelectorAll('#ownerButtons .tbtn'));
+  var reqBtns   = Array.prototype.slice.call(document.querySelectorAll('#reqButtons .tbtn'));
+  var ownerRow  = document.getElementById('ownerRow');
+  var pPolicy   = document.getElementById('pPolicy');
+  var pVerdict  = document.getElementById('pVerdict');
+
+  var LABELS = {
+    C: {name:'Centralize (C)', cls:'off', color:'#8a5c0a', bg:'var(--honey-soft)'},
+    D: {name:'Delegate (D)',   cls:'opt', color:'#1f5b51', bg:'var(--huge-soft)'},
+    M: {name:'Migrate (M)',    cls:'sub', color:'#3a409a', bg:'var(--mech-soft)'}
+  };
+  var EXPLAIN = {
+    'shared':      'Line is shared or exclusive at the LLC/directory (UC/RSC/UD/RSD) — no private-cache owner to protect either way, so the directory always centralizes.',
+    'ru-local':    'A single private-cache owner exists, and that owner sits on the same chiplet as the directory — delegate, since the RMW can run locally without any cross-chiplet line transfer.',
+    'ru-remote':   'A single private-cache owner exists, but it sits on a different chiplet than the directory — the policy revokes ownership and centralizes rather than letting a remote owner keep the line.',
+    'i-local':     'Line is not present anywhere, and the requester shares a chiplet with the directory — migrate the fresh line straight to the local requester at no cross-chiplet cost.',
+    'i-remote':    'Line is not present anywhere, but the requester is on a different chiplet — centralize instead of migrating, so the freshly-fetched line does not have to cross the interposer for an unproven first touch.'
+  };
+
+  function lookup(){
+    var key, policy;
+    if(state === 'shared'){ key='shared'; policy='C'; }
+    else if(state === 'ru'){ key = 'ru-' + owner; policy = (owner==='local') ? 'D' : 'C'; }
+    else { key = 'i-' + req; policy = (req==='local') ? 'M' : 'C'; }
+    return {policy:policy, explain: EXPLAIN[key]};
+  }
+
+  function render(){
+    ownerRow.style.display = (state === 'ru') ? '' : 'none';
+    var r = lookup();
+    var L = LABELS[r.policy];
+    pPolicy.textContent = r.policy;
+    pPolicy.style.color = L.color;
+    pVerdict.className = 'pverdict ' + L.cls;
+    pVerdict.innerHTML = '<b>' + L.name + '</b> — ' + r.explain;
+  }
+
+  function wireGroup(list, attr, setter){
+    list.forEach(function(b){
+      b.addEventListener('click', function(){
+        list.forEach(function(x){ x.classList.remove('sel'); });
+        b.classList.add('sel');
+        setter(b.dataset[attr]);
+        render();
+      });
+    });
+  }
+  if(stateBtns.length){
+    wireGroup(stateBtns, 'state', function(v){ state = v; });
+    wireGroup(ownerBtns, 'owner', function(v){ owner = v; });
+    wireGroup(reqBtns, 'req', function(v){ req = v; });
+    render();
+  }
+
+  /* ---- INIT ---- */
+  runReveals();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+<script src="../rate.js"></script>
+</body>
+</html>

@@ -1,0 +1,1269 @@
+<!DOCTYPE html>
+<!-- Field guide — "To Cross, or Not to Cross Pages for Prefetching?" (Vavouliotis et al., HPCA 2025).
+     Built from _paper_txt/to-cross-or-not-to-cross-pages-for-prefe.txt (full text ingested). House style
+     copied verbatim from learn/sessions/2026-08-13-thp/study-guide.html (Fraunces/Mulish/JetBrains Mono,
+     4-slot semantic palette, 8-tab structure, tab/reveal script).
+     Semantic colors, repurposed for THIS paper (L1D cache prefetching / VIPT caches / TLB pressure —
+     NOT about DRAM/NVM tiering; see hero note and Reference > Source notes):
+       honey    = Discard PGC / in-page-only prefetching (the conservative baseline)
+       teal     = useful page-cross prefetch / the win (TLB+cache benefit, DRIPPER's accuracy gain)
+       indigo   = MOKA/DRIPPER machinery (Page-Cross Filter: perceptrons, WT, vUB, pUB, adaptive Ta)
+       terracotta = useless / inaccurate page-cross prefetch (Permit PGC's risk: wasted walk + pollution)
+     Kind: paper-grounded. All numbers recomputed against the source text; extrapolations marked. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>To Cross, or Not to Cross — A Field Guide to MOKA &amp; DRIPPER</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --huge:#2C8C7C; --huge-soft:#DCEFE9;       /* teal   = useful page-cross prefetch, the win     */
+  --mech:#5A61B4; --mech-soft:#E6E6F6;       /* indigo = MOKA/DRIPPER machinery (filter, WT, vUB/pUB, Ta) */
+  --cost:#C0563B; --cost-soft:#F7E1D8;       /* terracotta = useless page-cross prefetch, the risk */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:19ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--huge);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--mech);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--huge);font-weight:600}
+.rule-plaque .wo{color:var(--cost);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:64ch}
+
+/* PROSE / CARDS */
+.prose{max-width:76ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--mech-soft);color:var(--mech);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--huge-soft);border-left:3px solid var(--huge);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--cost)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-huge{background:var(--huge-soft);color:#1f5b51}
+.chip-base{background:var(--honey-soft);color:#6e4a09}
+.chip-mech{background:var(--mech-soft);color:#3a409a}
+.chip-cost{background:var(--cost-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--huge-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--cost-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-huge{border-color:#9fd2c7;background:var(--huge-soft)}
+.node.n-mech{border-color:#bcbfe8;background:var(--mech-soft)}
+.node.n-cost{border-color:#e3b4a5;background:var(--cost-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--huge-soft)}
+.tbl .best:hover td{background:#cfeae2}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-base{background:linear-gradient(90deg,#eab657,#C27D14)}
+.bf-mid{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-huge{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-giga{background:linear-gradient(90deg,#2f6f64,#1f5147)}
+
+/* DECISION SIMULATOR (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.cells{display:grid;grid-template-columns:repeat(32,1fr);gap:3px;margin:8px 0}
+.cell{aspect-ratio:1/1;border-radius:3px;background:var(--paper-2);border:1px solid var(--line);transition:background .15s,border-color .15s}
+.cell.touched{background:var(--honey);border-color:var(--honey-deep)}
+.cell.filled{background:var(--huge);border-color:#1f5b51}
+.cell.waste{background:repeating-linear-gradient(45deg,#e9c9be,#e9c9be 3px,#f7e1d8 3px,#f7e1d8 6px);border-color:#e3b4a5}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls label{font-family:var(--mono);font-size:.8rem;color:var(--ink-soft);font-weight:700}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--mech)}
+.part-controls input[type=number]{width:74px;font-family:var(--mono);padding:6px 8px;border:1.5px solid var(--line-strong);border-radius:8px}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--huge-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--cost-soft);color:#9a3a22;border:1px solid #e3b4a5}
+.pverdict.off{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--mech);color:var(--mech)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--huge-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--cost-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--cost);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--huge-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--cost-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}.cells{grid-template-columns:repeat(16,1fr)}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>Cache Prefetching · CPU Microarchitecture · HPCA 2025</span>
+    <h1>The prefetcher wants to jump the page boundary. <span class="swash">About half the time, it's wrong.</span></h1>
+    <p class="lede">L1D prefetchers see virtual addresses and could legally cross into the next page — CPU vendors permit it, academia mostly forbids it, and nobody publishes a policy. This paper measures what happens if you just let prefetchers cross (spoiler: coin-flip accuracy) and builds <strong>MOKA</strong>, a learned gate that decides per-request. <em>Scope note: this is L1D/TLB microarchitecture, not DRAM/NVM tiering — but the TLB-pressure and page-walk-cost machinery here is the same substrate your tiering work sits on.</em></p>
+    <div class="hero-meta">
+      <span>🖥️ VIPT L1D caches · Berti / BOP / IPCP prefetchers</span>
+      <span>🎓 Assumes virtual memory, TLB, and hardware prefetchers</span>
+      <span>⏱ ~35 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🛂</div>
+      <p>Score every <span class="wo">page-crossing</span> prefetch against cheap per-PC/delta history plus live TLB pressure; only <span class="ro">issue</span> it once the score clears a self-tuning threshold — otherwise <span class="wo">discard</span> it before it triggers a wasted speculative page walk.<br><em style="font-size:.9rem">Static "always cross" and "never cross" both lose. The winning move is per-request, per-phase judgment.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Nine ideas this paper builds on</h2>
+      <p class="sub">You already know virtual memory, TLBs, and hardware prefetchers, so these skip the basics and go straight to what "crossing a page boundary" means for a prefetcher, why it's risky, and what MOKA/DRIPPER actually add. Tap any open; read in order the first time.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--honey-deep)"></i> Discard PGC / in-page prefetching (conservative baseline)</span>
+      <span><i style="background:var(--huge)"></i> useful page-cross prefetch — the win</span>
+      <span><i style="background:var(--mech)"></i> MOKA / DRIPPER machinery</span>
+      <span><i style="background:var(--cost)"></i> useless page-cross prefetch — the risk</span>
+    </div>
+
+    <div class="primer-grid">
+
+      <details class="primer" open>
+        <summary><span class="pnum">1</span>Why an L1D prefetcher gets to decide about page boundaries at all<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>First-level data caches are almost always <b>VIPT</b> (Virtually Indexed, Physically Tagged): they're probed with the virtual address before translation even finishes. That means the L1D prefetcher sits right next to the virtual-address stream and has <b>direct access to the TLB</b> — unlike L2/LLC prefetchers, which sit downstream of translation and only ever see physical addresses (PIPT caches).</p>
+          <p>So when an L1D prefetcher's pattern (e.g., "stride +1 cache line") would land past the end of the current 4&nbsp;KB page, it has a real choice: stay inside the page (<span class="mem-chip chip-base">in-page prefetch</span>), or reach into the next page (<span class="mem-chip chip-cost">page-cross prefetch</span>) by consulting the TLB it already has access to.</p>
+          <div class="ready"><b>Now you're ready:</b> "page-cross prefetching" is a decision that is only <i>architecturally possible</i> at VIPT structures like L1D — that's why this whole paper is scoped to L1D, not L2/LLC.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">2</span>Two TLB levels, two very different sizes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The paper's simulated core (Table IV) has a small first-level <b>dTLB</b> — <b>64 entries</b>, 4-way, 1-cycle — backed by a much larger unified second-level <b>sTLB</b> — <b>1536 entries</b>, 12-way, 8-cycle. A translation that hits dTLB never has to touch sTLB; a translation that misses dTLB but hits sTLB avoids a page walk but pays the 8-cycle sTLB latency.</p>
+          <p>Because dTLB is <i>~24× smaller</i> than sTLB, a handful of extra or avoided misses moves dTLB's <b>MPKI</b> (misses per kilo-instruction) far more than it moves sTLB's — this is exactly the asymmetry the paper measures in Figure 4 and Figure 12.</p>
+          <div class="ready"><b>Now you're ready:</b> whenever this guide says "dTLB is more sensitive than sTLB," it's because of this capacity gap, not some property of page-cross prefetching itself.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">3</span>What a page walk actually costs when it's speculative<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The simulated system uses a <b>5-level radix page table</b> with an x86 hardware page-table walker and split <b>Page Structure Caches</b> (PSCs) at 4 levels (L5: 1-entry, L4: 2-entry, L3: 8-entry, L2: 32-entry) to cache intermediate walk state. When a translation isn't TLB-resident, the walker can still initiate a walk speculatively — i.e., before any real (demand) access needs it — to serve a page-cross prefetch.</p>
+          <p>The paper's own accounting: a fully-missed speculative page walk costs <b>up to 4 memory accesses</b> (one per uncached radix level) <b>plus 1</b> for the actual prefetch fetch itself — <b>up to 5 useless memory accesses total</b> if the prefetch turns out wrong.</p>
+          <div class="ready"><b>Now you're ready:</b> "5 useless accesses" is the paper's recurring cost unit for one bad page-cross prefetch — you'll see it again in Worked Examples.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">4</span>Meet the three L1D prefetchers this paper filters<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Berti</b> (MICRO'22) — a state-of-the-art "local delta" prefetcher: per-PC, it tracks recent address deltas and prefetches the best one(s) ahead. <b>BOP</b> (Best-Offset Prefetcher, HPCA'16) — searches for a single best constant offset that historically produced timely hits. <b>IPCP</b> (Bouquet of Instruction Pointers, ISCA'20) — classifies each load PC into a pattern class (stream/CS/GS/etc.) and prefetches accordingly.</p>
+          <p>All three normally compute their next address as "current virtual address + delta/offset" and, near a page boundary, that arithmetic can spill into the next page. The paper doesn't change any of these prefetchers' internal logic — it adds an external gate that only vetoes their <i>cross-page</i> requests.</p>
+          <div class="ready"><b>Now you're ready:</b> MOKA/DRIPPER is prefetcher-agnostic by design — it wraps Berti, BOP, or IPCP without touching their prediction logic (Table II shows each gets its own small feature set).</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">5</span>The two "obvious" static policies — and why neither wins<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Permit PGC:</b> always let the prefetcher cross pages. <b>Discard PGC:</b> never let it — the traditional academic default. The paper's motivational study (Section II-C) runs both, for all three prefetchers, across memory-intensive SPEC/GAP/LIGRA/PARSEC/GeekBench/Qualcomm workloads.</p>
+          <p>Result: Permit PGC beats Discard PGC on some workloads (e.g., <code>astar</code>, <code>cc.road</code>, <code>MIS</code>, <code>vips</code>) by a lot, and loses badly on others (<code>sphinx3</code>, <code>fotonik3d_s</code>, <code>bc.web</code>). There is no single static answer — it's workload- and phase-dependent.</p>
+          <div class="ready"><b>Now you're ready:</b> this workload-by-workload split (Figure 2 in the paper) is the entire motivation for building a <i>dynamic</i> filter instead of picking a static policy.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">6</span>Coverage vs. accuracy — two different prefetching scorecards<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Coverage</b>: of all demand misses that occurred, what fraction did prefetching eliminate? <b>Accuracy</b>: of all prefetches issued, what fraction were actually used (hit at least once) before eviction? A prefetcher can have high coverage and low accuracy — it catches most misses, but wastes a lot of bandwidth doing it.</p>
+          <p>The paper deliberately does <i>not</i> optimize DRIPPER for accuracy directly (a threshold demanding very high accuracy leaves performance on the table) or for coverage (different misses matter differently for performance) — it optimizes for <b>IPC speedup</b> and reports coverage/accuracy afterward as explanatory evidence.</p>
+          <div class="ready"><b>Now you're ready:</b> when Section V says "DRIPPER matches Permit PGC's coverage but with much higher accuracy," that's the mechanism behind its speedup, not the optimization target itself.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">7</span>A hashed perceptron predictor, in one paragraph<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A hashed perceptron predictor keeps one small table (a <b>Weight Table</b>, WT) per feature. To predict, it hashes the feature's current value (e.g., the PC), indexes the WT, and reads out a small signed <b>saturating counter</b> (a "weight"). Weights from every feature are <b>summed</b>; the sign/magnitude of the sum drives the decision. Training nudges the weight up or down (increment/decrement, saturating at the counter's bit-width limits) after the outcome is known.</p>
+          <p>This is the same family of predictor used for branch prediction and reuse prediction — MOKA repurposes it here to score one narrow question: <i>"will this specific page-cross prefetch be worth it?"</i></p>
+          <div class="ready"><b>Now you're ready:</b> everywhere this guide says "weight," picture one small saturating counter, indexed by a hash of some program feature, that gets nudged after every training event.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">8</span>Program features vs. system features<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>program feature</b> is derived from the current memory request itself — PC, virtual address bits, the delta the prefetcher used, XORs of these. It answers "does <i>this kind</i> of request usually pay off when it crosses a page?" A <b>system feature</b> is a live runtime metric (sTLB MPKI, sTLB Miss Rate, LLC MPKI, …) compared against a threshold; it answers "is the <i>system</i> currently in a state where crossing pages tends to help or hurt?"</p>
+          <p>Program features alone can't see that the same instruction's cross-page prefetch might be great during one phase and harmful during another (e.g., under LLC pressure) — that's exactly what system features add.</p>
+          <div class="ready"><b>Now you're ready:</b> DRIPPER's final designs (Table II) each use exactly <b>1 program feature + 2 system features</b> — the two feature families are complementary, not redundant.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">9</span>MOKA vs. DRIPPER — framework vs. prototype<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>MOKA</b> is the general framework: a menu of 55 program features + 6 system features, a hashed-perceptron scoring mechanism, a training loop (via two small buffers, vUB and pUB), and an epoch-based scheme that re-tunes the activation threshold <code>Ta</code> at runtime. It's a recipe for building a "Page-Cross Filter" for <i>any</i> VIPT L1D prefetcher.</p>
+          <p><b>DRIPPER</b> is what you get when you run that recipe's feature-selection process (Section III-D3) against Berti, BOP, and IPCP specifically — three concrete, small (1.44&nbsp;KB/core), production-shaped filters (Table II).</p>
+          <div class="ready"><b>Now you're ready:</b> you're ready for the rest of the guide. Everywhere you see "the filter" or "the Page-Cross Filter," that's MOKA's mechanism; everywhere you see "DRIPPER," that's one trained, feature-selected instance of it.</div>
+        </div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>MOKA / DRIPPER in a nutshell</h2>
+      <p class="sub">The motivational finding, the mechanism, and the headline numbers — recomputed and cross-checked against the paper's tables.</p>
+    </div>
+    <div class="prose">
+      <p>CPU vendors let L1D prefetchers cross page boundaries (they have direct TLB access, being VIPT structures) but disclose nothing about how they decide when. Academic prefetchers, meanwhile, are almost universally restricted to <span class="mem-chip chip-base">in-page prefetching</span> and simply discard anything that would cross a page. This paper asks the obvious question nobody had measured: <i>if you just let three state-of-the-art L1D prefetchers (Berti, BOP, IPCP) always cross pages, does it help?</i></p>
+      <p>The answer is a firm "it depends." Across memory-intensive workloads, <span class="mem-chip chip-huge">Permit PGC</span> (always cross) beats <span class="mem-chip chip-base">Discard PGC</span> (never cross) on some workloads by a wide margin and loses badly on others — there is no static winner. Digging into <i>why</i>, the paper finds that of the page-cross prefetches actually issued under Permit PGC, only <b>~50% are useful</b> on average (the rest pollute the cache and TLB and, when the translation isn't resident, trigger a wasted speculative page walk of <b>up to 5 memory accesses</b>). State-of-the-art L1D prefetchers, in other words, are good at prefetching but genuinely bad at knowing <i>when to cross a page</i>.</p>
+      <p>The fix is <strong>MOKA</strong>: a framework for building a <span class="mem-chip chip-mech">Page-Cross Filter</span> that sits between "prefetcher wants to cross a page" and "prefetch is actually issued." It scores each candidate cross-page request with a hashed-perceptron sum over a handful of <b>program features</b> (PC, address bits, delta) and <b>system features</b> (TLB/cache pressure), compares the sum to an activation threshold <code>Ta</code>, and trains itself using two small buffers that watch L1D demand accesses and evictions. An epoch-based scheme continuously re-tunes <code>Ta</code> to the current workload phase.</p>
+      <p><strong>DRIPPER</strong> is MOKA applied to Berti, BOP, and IPCP: three tiny (1.44&nbsp;KB/core), prefetcher-independent filters (1 program feature + 2 system features each) that beat both static policies for every prefetcher tested, hold up on 178 unseen workloads and 300 random 8-core mixes, and keep winning when 2&nbsp;MB large pages enter the picture.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>No static page-cross policy wins across workloads — <b>Permit PGC</b> and <b>Discard PGC</b> each win on a disjoint subset (Fig. 2), so the right question is per-request, not per-system.</li>
+        <li>When always permitted, only <b>~50%</b> of issued page-cross prefetches are useful, across all three prefetchers (Fig. 3) — the inaccuracy is real, not an edge case.</li>
+        <li>One inaccurate page-cross prefetch costs <b>up to 5 useless memory accesses</b> (4 for a speculative page walk + 1 for the fetch) plus cache/TLB pollution.</li>
+        <li><b>MOKA</b> = hashed-perceptron program features + threshold-gated system features + an epoch-based adaptive <code>Ta</code>, packaged as a reusable recipe for any VIPT L1D prefetcher.</li>
+        <li><b>DRIPPER</b> (Berti) needs just <b>1 program + 2 system features</b> and <b>1.44&nbsp;KB/core</b>, yet beats Permit PGC by <b>+2.5%</b> and Discard PGC by <b>+1.7%</b> geomean IPC (218 seen workloads).</li>
+        <li>DRIPPER matches Permit PGC's miss-coverage gain (~4.1% vs ~4.2%) while turning Permit PGC's <b>-2.6%</b> accuracy loss into a <b>+1.2%</b> accuracy gain, both over Discard PGC.</li>
+        <li>Gains generalize: <b>+2.1%/+1.2%</b> on 178 unseen workloads, <b>+3.3%/+2.0%</b> on 300 8-core mixes, and DRIPPER still wins with 2&nbsp;MB large pages in the mix.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole idea in one picture: the gate at the page boundary</div>
+      <div class="viz-kicker">what happens to a prefetch request that wants to cross from Page A into Page B</div>
+      <div class="legend">
+        <span><i style="background:var(--honey-deep)"></i> stays in-page — no decision needed</span>
+        <span><i style="background:var(--mech)"></i> Page-Cross Filter (MOKA / DRIPPER)</span>
+        <span><i style="background:var(--huge)"></i> issued &amp; useful — the win</span>
+        <span><i style="background:var(--cost)"></i> issued &amp; useless — the risk avoided</span>
+      </div>
+      <svg class="full" viewBox="0 0 780 420" role="img" aria-label="A page-cross prefetch request is scored by the Page-Cross Filter before being allowed to cross from Page A to Page B; the filter routes it to a useful-issue outcome or a discard outcome, informed by the paper's ~50/50 useful/useless split under an always-permit policy">
+        <!-- Page A -->
+        <rect x="24" y="30" width="230" height="150" rx="10" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.6"/>
+        <text x="139" y="52" text-anchor="middle" font-family="Fraunces" font-size="15" font-weight="600" fill="#6e4a09">Page A</text>
+        <g fill="#fff" stroke="#C27D14" stroke-width="1">
+          <rect x="40" y="66" width="26" height="18"/><rect x="70" y="66" width="26" height="18"/><rect x="100" y="66" width="26" height="18"/><rect x="130" y="66" width="26" height="18"/><rect x="160" y="66" width="26" height="18"/><rect x="190" y="66" width="26" height="18"/>
+          <rect x="40" y="90" width="26" height="18"/><rect x="70" y="90" width="26" height="18"/><rect x="100" y="90" width="26" height="18"/><rect x="130" y="90" width="26" height="18"/><rect x="160" y="90" width="26" height="18"/>
+        </g>
+        <rect x="190" y="90" width="26" height="18" fill="#C27D14"/>
+        <text x="203" y="103" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#fff">i</text>
+        <text x="139" y="128" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#6e4a09">BLOCKi — near the page boundary</text>
+        <path d="M40 150 h180" stroke="#C27D14" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="139 " y="168" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a6a1c">in-page prefetches: no filter, always issued</text>
+
+        <!-- crossing arrow into filter -->
+        <path d="M256 96 h64" stroke="var(--mech)" stroke-width="2.4" fill="none" marker-end="url(#arrowMoka)"/>
+        <text x="288" y="88" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">wants to cross</text>
+
+        <!-- Page-Cross Filter box -->
+        <rect x="330" y="46" width="150" height="120" rx="12" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2"/>
+        <text x="405" y="68" text-anchor="middle" font-family="Fraunces" font-size="14.5" font-weight="600" fill="#3a409a">Page-Cross Filter</text>
+        <text x="405" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">Σ (program + system</text>
+        <text x="405" y="99" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">feature weights) = w_final</text>
+        <text x="405" y="122" text-anchor="middle" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#3a409a">w_final &gt; Ta ?</text>
+        <text x="405" y="148" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#5a61b4">Ta retunes every epoch</text>
+
+        <!-- Yes -> issue useful path -->
+        <path d="M480 90 h60" stroke="var(--huge)" stroke-width="2.4" fill="none" marker-end="url(#arrowHuge)"/>
+        <text x="510" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="10" font-weight="700" fill="#1f5b51">YES</text>
+        <!-- No -> discard path -->
+        <path d="M405 166 v40" stroke="var(--cost)" stroke-width="2.4" fill="none" marker-end="url(#arrowCost)"/>
+        <text x="420" y="186" text-anchor="start" font-family="JetBrains Mono" font-size="10" font-weight="700" fill="#9a3a22">NO</text>
+
+        <!-- Page B + issue outcome -->
+        <rect x="546" y="30" width="210" height="150" rx="10" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.8"/>
+        <text x="651" y="52" text-anchor="middle" font-family="Fraunces" font-size="15" font-weight="600" fill="#1f5b51">Page B — issued</text>
+        <g fill="#fff" stroke="#2C8C7C" stroke-width="1">
+          <rect x="562" y="66" width="26" height="18"/><rect x="592" y="66" width="26" height="18"/><rect x="652" y="66" width="26" height="18"/><rect x="682" y="66" width="26" height="18"/><rect x="712" y="66" width="26" height="18"/>
+        </g>
+        <rect x="622" y="66" width="26" height="18" fill="#2C8C7C"/>
+        <text x="635" y="79" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#fff">j</text>
+        <text x="651" y="106" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#1f5b51">BLOCKj — TLB hit, cache hit,</text>
+        <text x="651" y="120" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#1f5b51">timelier prefetch: the win</text>
+        <text x="651" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">↓ dTLB / sTLB / L1D / LLC MPKI</text>
+
+        <!-- Discard outcome box -->
+        <rect x="330" y="220" width="220" height="96" rx="10" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.8"/>
+        <text x="440" y="244" text-anchor="middle" font-family="Fraunces" font-size="14.5" font-weight="600" fill="#9a3a22">discarded — cost avoided</text>
+        <text x="440" y="266" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">no speculative page walk</text>
+        <text x="440" y="282" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">up to 5 useless accesses avoided</text>
+        <text x="440" y="298" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">(4 for the walk + 1 for the fetch)</text>
+
+        <!-- 50/50 annotation -->
+        <rect x="24" y="352" width="732" height="52" rx="10" fill="var(--paper-2)" stroke="var(--line-strong)"/>
+        <text x="40" y="374" font-family="JetBrains Mono" font-size="11" fill="var(--ink-soft)">If you skip the filter and always permit crossing (Permit PGC):</text>
+        <rect x="430" y="362" width="150" height="16" rx="3" fill="#2C8C7C"/>
+        <text x="505" y="374" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#fff">~50% useful</text>
+        <rect x="580" y="362" width="150" height="16" rx="3" fill="#C0563B"/>
+        <text x="655" y="374" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#fff">~50% useless</text>
+        <text x="40" y="394" font-family="JetBrains Mono" font-size="9.5" fill="var(--ink-faint)">average across Berti / BOP / IPCP, Fig. 3 — this is exactly the coin-flip the filter is built to resolve.</text>
+
+        <defs>
+          <marker id="arrowMoka" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--mech)"/></marker>
+          <marker id="arrowHuge" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--huge)"/></marker>
+          <marker id="arrowCost" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--cost)"/></marker>
+        </defs>
+      </svg>
+      <figcaption><b>Read it left to right.</b> In-page prefetches (staying inside Page A) never see the filter at all — only requests that want to cross the boundary do. The Page-Cross Filter sums program- and system-feature weights into <code>w_final</code> and compares it to the self-tuning threshold <code>Ta</code>; above threshold, the prefetch is issued and (if accurate) delivers the TLB/cache win in Page B, while below threshold it's discarded before it can waste up to 5 memory accesses. The 50/50 bar is the paper's own measured baseline under a policy with no filter at all (Permit PGC) — DRIPPER's whole job is shifting that split toward "useful."</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">motivation → MOKA's three mechanisms → DRIPPER prototype → measured outcome</div>
+      <div class="flow-row">
+        <div class="node n-cost"><div class="nt">Motivation</div><div class="nd">Permit PGC vs. Discard PGC: no static winner; ~50% of cross-page prefetches are useless</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">Program features</div><div class="nd">Hashed-perceptron WTs over PC / VA bits / delta (55 candidates, best subset in Table I)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">System features</div><div class="nd">sTLB/LLC/L1D MPKI &amp; miss rate, gated by their own thresholds (6 candidates)</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-mech"><div class="nt">Adaptive Ta</div><div class="nd">Epoch-based scheme retunes the activation threshold from accuracy trend, IPC, ROB/LLC/L1I pressure</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">DRIPPER</div><div class="nd">1 program + 2 system features per prefetcher, 1.44&nbsp;KB/core (Berti/BOP/IPCP)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-huge"><div class="nt">Outcome</div><div class="nd">+2.5%/+1.7% (seen), +2.1%/+1.2% (unseen), +3.3%/+2.0% (8-core) over Permit/Discard PGC</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about MOKA / DRIPPER</h2>
+      <p class="sub">Each picture stands alone — read in any order. Every card ends with an honest note about where the analogy stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="10" y="26" width="56" height="46" rx="3" fill="#FBEACB" stroke="#C27D14" stroke-width="2"/>
+          <text x="38" y="53" text-anchor="middle" font-family="Fraunces" font-size="11" fill="#6e4a09">Page A</text>
+          <rect x="86" y="26" width="46" height="46" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="109" y="53" text-anchor="middle" font-family="Fraunces" font-size="11" fill="#1f5b51">Page B</text>
+          <path d="M68 49 h16" stroke="#5A61B4" stroke-width="2.2" marker-end="url(#a1)"/>
+          <circle cx="76" cy="49" r="9" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+          <text x="76" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">🛂</text>
+          <defs><marker id="a1" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#5A61B4"/></marker></defs>
+        </svg></div>
+        <span class="term">The core decision · page-cross prefetch</span>
+        <h3>Passport control at the page border</h3>
+        <p>Every request that wants to leave Page A for Page B has to go through a checkpoint. Requests that stay inside Page A never see it. The Page-Cross Filter is that checkpoint: it doesn't slow down local traffic, it only interrogates the requests trying to cross — and it decides using the requester's "travel history" (program features) and today's border conditions (system features like TLB pressure).</p>
+        <div class="breaks"><b>Where it breaks:</b> a real checkpoint's decision is final; MOKA's is continuously retrained — a request pattern denied today can be approved next epoch once vUB (Primer/analogy 6) proves it should have been let through.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="48" r="16" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/><text x="30" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">PC</text>
+          <circle cx="65" cy="30" r="13" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/><text x="65" y="34" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">Δ</text>
+          <circle cx="65" cy="66" r="13" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/><text x="65" y="70" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">VA</text>
+          <path d="M46 44 L98 40 M46 52 L98 46 M78 33 L98 42 M78 63 L98 46" stroke="#9A8E7C" stroke-width="1.4"/>
+          <rect x="98" y="34" width="30" height="24" rx="4" fill="#FBEACB" stroke="#C27D14" stroke-width="1.6"/>
+          <text x="113" y="50" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#6e4a09">Σ</text>
+        </svg></div>
+        <span class="term">The mechanism · hashed perceptron</span>
+        <h3>A committee of narrow specialists</h3>
+        <p>Instead of one expert judging "is this a good page-cross prefetch," MOKA convenes a small committee: one specialist per feature (one for the PC, one for the delta, one for the virtual-address bits). Each specialist has learned, from a lifetime of saturating-counter nudges, one narrow opinion. Their votes (weights) are simply summed — the committee's total confidence is the sum of independent, cheap opinions.</p>
+        <div class="breaks"><b>Where it breaks:</b> real committees deliberate; these specialists never see each other's votes or reasoning — the sum is computed the same way whether the features agree wildly or barely correlate, which is precisely why feature <i>selection</i> (Section III-D3) matters so much.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="20" width="112" height="16" rx="3" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.4"/>
+          <text x="70" y="32" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">sTLB Miss Rate high</text>
+          <rect x="14" y="60" width="112" height="16" rx="3" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.4"/>
+          <text x="70" y="72" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">sTLB MPKI low</text>
+          <path d="M70 38 v18" stroke="#9A8E7C" stroke-width="1.4" stroke-dasharray="2 2"/>
+        </svg></div>
+        <span class="term">The system features · phase awareness</span>
+        <h3>A thermostat that reads the weather report first</h3>
+        <p>A program feature is like knowing a person's habits; a system feature is like checking today's weather before trusting that habit. "This PC's cross-page prefetches are usually good" is a habit — but during a phase of high sTLB pressure or low sTLB pressure, that habit's payoff can flip. MOKA's system features are threshold-gated dials that only speak up when the weather (TLB/cache pressure) actually matches their specialty.</p>
+        <div class="breaks"><b>Where it breaks:</b> a thermostat reacts to one signal; MOKA layers <i>two</i> deliberately complementary sTLB signals (MPKI for low-pressure phases, Miss Rate for high-pressure ones) precisely because one metric alone misses half the relevant weather.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="16" width="42" height="64" rx="4" fill="#fff" stroke="#5A61B4" stroke-width="2"/>
+          <text x="41" y="34" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#3a409a">vUB</text>
+          <text x="41" y="50" text-anchor="middle" font-family="monospace" font-size="6.5" fill="#6E6456">"denied,</text>
+          <text x="41" y="60" text-anchor="middle" font-family="monospace" font-size="6.5" fill="#6E6456">would've</text>
+          <text x="41" y="70" text-anchor="middle" font-family="monospace" font-size="6.5" fill="#6E6456">been a hit"</text>
+          <rect x="78" y="16" width="42" height="64" rx="4" fill="#fff" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="99" y="34" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#1f5b51">pUB</text>
+          <text x="99" y="50" text-anchor="middle" font-family="monospace" font-size="6.5" fill="#6E6456">"issued,</text>
+          <text x="99" y="60" text-anchor="middle" font-family="monospace" font-size="6.5" fill="#6E6456">did it get</text>
+          <text x="99" y="70" text-anchor="middle" font-family="monospace" font-size="6.5" fill="#6E6456">a hit?"</text>
+        </svg></div>
+        <span class="term">The training loop · vUB &amp; pUB</span>
+        <h3>Two detectives' notebooks</h3>
+        <p>The <b>vUB</b> (Virtual Update Buffer) is the notebook of "suspects released without charge" — page-cross prefetches the filter <i>discarded</i>. If a later demand miss lands exactly there, it's proof the release was a mistake, and the responsible weights get a positive nudge. The <b>pUB</b> (Physical Update Buffer) is the case file on everyone the filter <i>let through</i>: if the fetched block gets used before eviction, weights go up; if it's evicted with zero hits, weights go down.</p>
+        <div class="breaks"><b>Where it breaks:</b> real detectives use one address book; MOKA needs two because vUB must record <i>virtual</i> addresses (a discarded prefetch never got a physical translation) while pUB must record <i>physical</i> addresses (L1D evictions are checked against the physically-tagged cache).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 Q40 20 70 45 Q100 70 120 25" stroke="#5A61B4" stroke-width="2.2" fill="none"/>
+          <circle cx="70" cy="45" r="4" fill="#C0563B"/>
+          <circle cx="120" cy="25" r="4" fill="#2C8C7C"/>
+          <text x="70" y="60" text-anchor="middle" font-family="monospace" font-size="7" fill="#9a3a22">bad phase</text>
+          <text x="120" y="16" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">good phase</text>
+          <path d="M14 76 h112" stroke="var(--line-strong)" stroke-width="1" stroke-dasharray="2 2"/>
+          <text x="70" y="88" text-anchor="middle" font-family="monospace" font-size="7" fill="#9A8E7C">Ta over time (epochs)</text>
+        </svg></div>
+        <span class="term">The adaptive scheme · epoch-based Ta</span>
+        <h3>A bouncer who adjusts the door policy by the hour</h3>
+        <p>A single fixed admission bar (a static <code>Ta</code>) is either too strict for a quiet night or too loose for a packed one. MOKA's bouncer checks the room every epoch — recent accuracy, IPC, how full the "waiting area" (ROB) is, how loud the "kitchen" (LLC) is — and quietly raises the bar during dangerous conditions (tightening to <code>th</code>) or eases it back down as accuracy improves, one notch (<code>Ta±1</code>) at a time.</p>
+        <div class="breaks"><b>Where it breaks:</b> a human bouncer uses judgment; MOKA's scheme is a fixed set of threshold rules (Fig. 8, steps i–vii) — it can't invent a new heuristic mid-shift, only re-weight the ones it was built with.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="20" width="46" height="56" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <text x="41" y="42" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#6E6456">always</text>
+          <text x="41" y="54" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#6E6456">cross</text>
+          <text x="41" y="66" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#6E6456">(Permit)</text>
+          <rect x="80" y="20" width="46" height="56" rx="4" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2"/>
+          <text x="103" y="42" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#3a409a">ask</text>
+          <text x="103" y="54" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#3a409a">every</text>
+          <text x="103" y="66" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#3a409a">time</text>
+        </svg></div>
+        <span class="term">Static vs. learned · the paper's core contrast</span>
+        <h3>A blanket rule vs. asking every time</h3>
+        <p>Discard PGC is "never bring an umbrella" — safe on sunny days, soaked on rainy ones. Permit PGC is "always bring one" — dry in the rain, needlessly burdened on sunny days. DRIPPER is the person who actually checks the sky (and the forecast trend) before each trip. It doesn't need to be right every single time to beat both blanket rules in the long run — it only needs to be right more often than either fixed bet.</p>
+        <div class="breaks"><b>Where it breaks:</b> DRIPPER isn't infallible even in aggregate — the paper reports a real tail of short-running QMM INT/FP workloads where it briefly underperforms Discard PGC (Fig. 10, Fig. 14), because a few phases don't give the adaptive scheme enough time to calibrate.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Section by section</div>
+      <h2>How MOKA and DRIPPER actually work</h2>
+      <p class="sub">The motivational measurement → the filter's five hardware components → prediction → training → the adaptive threshold → feature selection and storage. Structure and numbers follow Sections II–III of the paper.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The motivational measurement (Section II)</h3>
+      <p>Before proposing anything, the paper runs Berti, BOP, and IPCP in two fixed modes — <span class="mem-chip chip-base">Discard PGC</span> (never cross) and <span class="mem-chip chip-huge">Permit PGC</span> (always cross) — across memory-intensive SPEC 2006/2017, GAP, LIGRA, PARSEC, GeekBench, and Qualcomm CVP-1 workloads, on ChampSim with a full page-table-walk model (5-level radix tree, x86 walker, split PSCs). Figure 2 of the paper shows per-workload IPC of Permit PGC over Discard PGC: strongly positive for some workloads, strongly negative for others, for all three prefetchers.</p>
+      <p>Splitting Berti's workloads into "Permit PGC wins" vs. "Discard PGC wins" and comparing dTLB/sTLB/L1D/LLC MPKI (paper's Fig. 4) shows a consistent asymmetry: the "Permit wins" group sees dTLB MPKI drop far more than sTLB MPKI (because dTLB is the 64-entry structure and sTLB the 1536-entry one — Primer 2); the "Discard wins" group sees the opposite — all four MPKIs <i>increase</i> under Permit PGC, dTLB again moving the most.</p>
+
+      <div class="callout why"><span class="ic">◆</span><div><b>The governing tradeoff (memorize this).</b> An accurate page-cross prefetch improves TLB hit rate (prefetches a translation ahead of the demand access), improves cache hit rate, and improves prefetch timeliness. An inaccurate one triggers up to 5 useless memory accesses (a wasted speculative page walk plus the wasted fetch) and pollutes both the TLB and the cache. Since ~50% of Permit PGC's cross-page prefetches are useless on average (Fig. 3), a system that always permits is gambling on a near coin flip every time a prefetcher's arithmetic spills past a page boundary.</div></div>
+
+      <h3>2 · Design overview — where the filter sits (Fig. 5)</h3>
+      <p>MOKA assumes a VIPT L1D. On every L1D access, the prefetcher produces a candidate request. The system first checks <b>(A)</b> whether the request crosses a page boundary; if not, it's issued immediately, no filter involved. If it does cross, the <b>Page-Cross Filter (B)</b> activates and decides issue-or-discard. A prefetch that passes still has to walk the TLB hierarchy <b>(C)</b> to resolve the target page's translation; if it misses, a speculative page walk <b>(D)</b> is triggered to fetch it before the prefetched block can actually be requested from L2C/LLC/DRAM.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">MOKA design overview — from prefetch request to issued page-cross prefetch</div>
+        <div class="viz-kicker">rebuilt from Fig. 5 · steps A–D as in the paper</div>
+        <div class="legend">
+          <span><i style="background:var(--honey-deep)"></i> in-page — bypasses the filter</span>
+          <span><i style="background:var(--mech)"></i> Page-Cross Filter &amp; TLB/walk machinery</span>
+          <span><i style="background:var(--huge)"></i> issued to L2C/LLC/DRAM</span>
+        </div>
+        <svg class="full" viewBox="0 0 760 300" role="img" aria-label="An L1D prefetch request is checked for page crossing (A); if crossing, the Page-Cross Filter (B) decides issue or discard; issued requests resolve translation via the TLB (C), triggering a speculative page walk if needed (D), before being sent onward">
+          <rect x="20" y="120" width="110" height="50" rx="8" fill="#fff" stroke="var(--line-strong)" stroke-width="1.6"/>
+          <text x="75" y="140" text-anchor="middle" font-family="Fraunces" font-size="12" fill="var(--ink)">L1D access</text>
+          <text x="75" y="156" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="var(--ink-soft)">prefetcher fires</text>
+
+          <path d="M130 145 h50" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#ah1)"/>
+
+          <rect x="180" y="110" width="110" height="70" rx="8" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.8"/>
+          <text x="235" y="132" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#3a409a">A</text>
+          <text x="235" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">page-cross?</text>
+          <text x="235" y="166" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#5a61b4">(checked in VA space)</text>
+
+          <path d="M290 128 h44" stroke="var(--honey-deep)" stroke-width="1.8" fill="none" marker-end="url(#ah2)"/>
+          <text x="312" y="120" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6e4a09">no</text>
+          <rect x="334" y="98" width="120" height="44" rx="8" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.6"/>
+          <text x="394" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">issue in-page</text>
+
+          <path d="M290 160 h44" stroke="var(--cost)" stroke-width="1.8" fill="none" marker-end="url(#ah3)"/>
+          <text x="312" y="176" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9a3a22">yes</text>
+
+          <rect x="334" y="150" width="120" height="70" rx="8" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.8"/>
+          <text x="394" y="172" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#3a409a">B</text>
+          <text x="394" y="190" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">Page-Cross</text>
+          <text x="394" y="203" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">Filter (MOKA)</text>
+
+          <path d="M454 185 h44" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#ah4)"/>
+          <text x="476" y="177" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="var(--ink-soft)">issued</text>
+
+          <rect x="498" y="150" width="110" height="70" rx="8" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.8"/>
+          <text x="553" y="172" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#3a409a">C</text>
+          <text x="553" y="190" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">TLB lookup</text>
+          <text x="553" y="205" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#5a61b4">dTLB → sTLB</text>
+
+          <path d="M608 172 q30 -30 60 -8" stroke="var(--cost)" stroke-width="1.6" fill="none" marker-end="url(#ah5)"/>
+          <text x="640" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9a3a22">miss</text>
+          <rect x="600" y="60" width="130" height="52" rx="8" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.6"/>
+          <text x="665" y="80" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#9a3a22">D</text>
+          <text x="665" y="97" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#9a3a22">speculative walk</text>
+          <text x="665" y="109" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9a3a22">≤4 accesses if wrong</text>
+
+          <path d="M608 195 h50" stroke="var(--huge)" stroke-width="1.8" fill="none" marker-end="url(#ah6)"/>
+          <text x="633" y="212" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">hit</text>
+          <rect x="660" y="170" width="80" height="60" rx="8" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.6"/>
+          <text x="700" y="192" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">to L2C/</text>
+          <text x="700" y="206" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">LLC/</text>
+          <text x="700" y="220" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">DRAM</text>
+
+          <defs>
+            <marker id="ah1" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--ink-faint)"/></marker>
+            <marker id="ah2" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--honey-deep)"/></marker>
+            <marker id="ah3" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--cost)"/></marker>
+            <marker id="ah4" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--ink-faint)"/></marker>
+            <marker id="ah5" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--cost)"/></marker>
+            <marker id="ah6" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--huge)"/></marker>
+          </defs>
+        </svg>
+        <figcaption>Only requests answering "yes" at step A ever reach the filter — in-page prefetches bypass it entirely. Step D's speculative walk is exactly where an inaccurate decision at B turns into the paper's "up to 5 useless memory accesses" (4 for the walk + 1 for the fetch itself).</figcaption>
+      </figure>
+
+      <h3>3 · The five hardware components of the filter</h3>
+      <p>Every Page-Cross Filter built with MOKA uses the same five pieces: <b>(1) Perceptron predictors</b> — one hashed-perceptron Weight Table (WT) per selected program feature, weights realized as saturating counters. <b>(2) System-feature weights</b> — saturating counters gated by a threshold comparison against a live system metric. <b>(3) Virtual Update Buffer (vUB)</b> — records discarded page-cross prefetches by virtual address, to catch false negatives. <b>(4) Physical Update Buffer (pUB)</b> — records issued page-cross prefetches by physical address, to catch both true positives and false positives. <b>(5) Adaptive Thresholding Scheme</b> — epoch-based logic that retunes the activation threshold <code>Ta</code>.</p>
+
+      <h3>4 · Prediction — four stages (Fig. 6)</h3>
+      <p>For every page-cross candidate: <b>Stage 1</b> extracts each selected program feature from the current request, hashes it, indexes the matching WT, and reads out a weight <code>w<sub>i</sub></code>. <b>Stage 2</b> evaluates each selected system feature against its own threshold (e.g., is <code>sTLB MPKI &lt; T<sub>sTLB_MPKI</sub></code>?) — only features whose condition holds contribute their weight. <b>Stage 3</b> sums every contributing weight into <code>w<sub>final</sub></code>. <b>Stage 4</b> compares <code>w<sub>final</sub></code> to the activation threshold <code>Ta</code>: greater → issue; otherwise → discard.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Prediction pipeline — from features to issue/discard</div>
+        <div class="viz-kicker">rebuilt from Fig. 6 · the four numbered stages</div>
+        <svg class="full" viewBox="0 0 760 260" role="img" aria-label="Stage 1 hashes program features into weight tables; stage 2 gates system feature weights by threshold; stage 3 sums all active weights into w final; stage 4 compares w final to the activation threshold Ta to issue or discard">
+          <rect x="14" y="16" width="220" height="150" rx="10" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.6"/>
+          <text x="124" y="36" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#3a409a">① program features</text>
+          <text x="124" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#5a61b4">e.g. PC, Δ, PC⊕Δ</text>
+          <g font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">
+            <rect x="28" y="64" width="90" height="24" rx="4" fill="#fff" stroke="#5A61B4"/><text x="73" y="80" text-anchor="middle">hash → WT₁ → w₁</text>
+            <rect x="28" y="94" width="90" height="24" rx="4" fill="#fff" stroke="#5A61B4"/><text x="73" y="110" text-anchor="middle">hash → WTᵢ → wᵢ</text>
+            <rect x="28" y="124" width="90" height="24" rx="4" fill="#fff" stroke="#5A61B4"/><text x="73" y="140" text-anchor="middle">hash → WTₙ → wₙ</text>
+          </g>
+
+          <rect x="252" y="16" width="220" height="150" rx="10" fill="var(--paper-2)" stroke="var(--line-strong)" stroke-width="1.6"/>
+          <text x="362" y="36" text-anchor="middle" font-family="Fraunces" font-size="13" fill="var(--ink)">② system features</text>
+          <text x="362" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="var(--ink-soft)">only if condition holds</text>
+          <g font-family="JetBrains Mono" font-size="9" fill="var(--ink)">
+            <rect x="266" y="64" width="192" height="24" rx="4" fill="#fff" stroke="var(--line-strong)"/><text x="362" y="80" text-anchor="middle">SF₁ ≷ Tsf₁ → weightSF₁?</text>
+            <rect x="266" y="94" width="192" height="24" rx="4" fill="#fff" stroke="var(--line-strong)"/><text x="362" y="110" text-anchor="middle">SFₙ ≷ Tsfₙ → weightSFₙ?</text>
+          </g>
+          <text x="362" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="var(--ink-soft)">e.g. sTLB MPKI &lt; T, or</text>
+          <text x="362" y="162" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="var(--ink-soft)">sTLB Miss Rate &gt; T</text>
+
+          <path d="M234 90 h18 M472 90 h18" stroke="var(--ink-faint)" stroke-width="1.6" fill="none"/>
+          <path d="M490 90 h30" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#bh1)"/>
+
+          <rect x="524" y="60" width="90" height="60" rx="10" fill="var(--card)" stroke="var(--honey-deep)" stroke-width="1.8"/>
+          <text x="569" y="82" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#6e4a09">③ Σ</text>
+          <text x="569" y="100" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">w_final</text>
+
+          <path d="M614 90 h30" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#bh2)"/>
+
+          <rect x="648" y="52" width="98" height="76" rx="10" fill="var(--card)" stroke="var(--ink)" stroke-width="1.8"/>
+          <text x="697" y="72" text-anchor="middle" font-family="Fraunces" font-size="13" fill="var(--ink)">④</text>
+          <text x="697" y="90" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--ink)">w_final</text>
+          <text x="697" y="103" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--ink)">&gt; Ta ?</text>
+
+          <path d="M672 128 v20 h-260" stroke="var(--cost)" stroke-width="1.8" fill="none" marker-end="url(#bh3)"/>
+          <text x="500" y="164" text-anchor="middle" font-family="JetBrains Mono" font-size="10" font-weight="700" fill="#9a3a22">NO → discard cross-page prefetch</text>
+
+          <path d="M722 128 v40" stroke="var(--huge)" stroke-width="1.8" fill="none" marker-end="url(#bh4)"/>
+          <text x="722" y="184" text-anchor="middle" font-family="JetBrains Mono" font-size="10" font-weight="700" fill="#1f5b51">YES</text>
+          <text x="722" y="198" text-anchor="middle" font-family="JetBrains Mono" font-size="10" font-weight="700" fill="#1f5b51">issue</text>
+
+          <defs>
+            <marker id="bh1" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--ink-faint)"/></marker>
+            <marker id="bh2" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--ink-faint)"/></marker>
+            <marker id="bh3" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--cost)"/></marker>
+            <marker id="bh4" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--huge)"/></marker>
+          </defs>
+        </svg>
+        <figcaption>Program features (①) always contribute; system features (②) only contribute when their own threshold condition currently holds — this is how the filter changes its effective policy by phase without changing any weight. Try the interactive version of exactly this pipeline, using DRIPPER's real Berti feature set, in <b>Worked Examples</b>.</figcaption>
+      </figure>
+
+      <h3>5 · Training — three triggers (Fig. 7)</h3>
+      <p>Every L1D block gets one extra bit, the <b>Page Cross Bit (PCB)</b>, marking whether it was fetched by a page-cross prefetch. Training fires on three events: <b>(1) L1D demand miss</b> → search vUB → a hit means the filter wrongly discarded a prefetch that would have saved this exact miss → <i>positive</i> training (increment weights) using the hash indexes stored in that vUB entry. <b>(2) L1D demand hit on a block with PCB=1</b> → search pUB → a hit means an issued page-cross prefetch is proving useful right now → <i>positive</i> training. <b>(3) L1D eviction of a block with PCB=1 that received zero hits during its lifetime</b> → search pUB → <i>negative</i> training (decrement weights) — the filter issued a prefetch that turned out useless.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Training loop — how weights get nudged</div>
+        <div class="viz-kicker">rebuilt from Fig. 7 · vUB catches false negatives, pUB catches both outcomes of issued prefetches</div>
+        <svg class="full" viewBox="0 0 760 230" role="img" aria-label="A demand miss searches vUB for a false negative and positively trains weights on a hit; a demand hit on a page-cross block searches pUB and positively trains weights on a hit; an eviction of an unused page-cross block searches pUB and negatively trains weights">
+          <rect x="10" y="20" width="220" height="80" rx="10" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.6"/>
+          <text x="120" y="42" text-anchor="middle" font-family="Fraunces" font-size="12.5" fill="#9a3a22">L1D demand miss</text>
+          <text x="120" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#9a3a22">search vUB (by virtual @)</text>
+          <text x="120" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#9a3a22">hit → "should've issued"</text>
+          <text x="120" y="90" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9a3a22">→ positive training</text>
+
+          <rect x="270" y="20" width="220" height="80" rx="10" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.6"/>
+          <text x="380" y="42" text-anchor="middle" font-family="Fraunces" font-size="12.5" fill="#1f5b51">L1D demand hit, PCB=1</text>
+          <text x="380" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">search pUB (by physical @)</text>
+          <text x="380" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">hit → prefetch just proved useful</text>
+          <text x="380" y="90" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">→ positive training</text>
+
+          <rect x="530" y="20" width="220" height="80" rx="10" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.6"/>
+          <text x="640" y="42" text-anchor="middle" font-family="Fraunces" font-size="12.5" fill="#9a3a22">L1D eviction, PCB=1, 0 hits</text>
+          <text x="640" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#9a3a22">search pUB (by physical @)</text>
+          <text x="640" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#9a3a22">hit → prefetch was never used</text>
+          <text x="640" y="90" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9a3a22">→ negative training</text>
+
+          <path d="M120 100 v20 M380 100 v20 M640 100 v20" stroke="var(--ink-faint)" stroke-width="1.6" fill="none" marker-end="url(#ch1)"/>
+          <rect x="230" y="140" width="300" height="60" rx="10" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.8"/>
+          <text x="380" y="164" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#3a409a">Weight Tables (program + system)</text>
+          <text x="380" y="184" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">saturating counters ± via hash indexes stored in vUB/pUB entries</text>
+          <defs><marker id="ch1" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--ink-faint)"/></marker></defs>
+        </svg>
+        <figcaption>Note the asymmetry that motivates two separate buffers: vUB stores <i>virtual</i> addresses because a discarded prefetch never received a physical translation to key on; pUB stores <i>physical</i> addresses because L1D evictions are checked against the physically-tagged cache.</figcaption>
+      </figure>
+
+      <h3>6 · The adaptive thresholding scheme (Fig. 8)</h3>
+      <p>A fixed <code>Ta</code> is fine for one application profile and suboptimal across many — different programs and phases have different optimal thresholds. Every epoch, the scheme collects runtime stats (useful/useless page-cross prefetch counts, IPC, LLC miss rate, ROB pressure, L1I MPKI) and reacts:</p>
+      <div class="flow-row" style="margin-top:14px">
+        <div class="node n-cost"><div class="nt">High ROB pressure + low accuracy (&lt;T1)</div><div class="nd">Set <code>Ta = th</code> (high) — only very-high-confidence page-cross prefetches get through</div></div>
+        <div class="flow-arrow">·</div>
+        <div class="node n-mech"><div class="nt">High L1I MPKI (&gt;TL1i)</div><div class="nd">Set <code>Ta = tm</code> (medium) — avoid contending with instruction fetches in L2C</div></div>
+        <div class="flow-arrow">·</div>
+        <div class="node n-cost"><div class="nt">Very high LLC pressure</div><div class="nd">Disable page-cross prefetching outright; vUB can re-enable it once pressure drops</div></div>
+      </div>
+      <div class="flow-row" style="margin-top:14px">
+        <div class="node n-huge"><div class="nt">Accuracy rose vs. last epoch</div><div class="nd"><code>Ta++</code> (one notch looser)</div></div>
+        <div class="flow-arrow">·</div>
+        <div class="node n-cost"><div class="nt">Accuracy fell vs. last epoch</div><div class="nd"><code>Ta--</code> (one notch stricter)</div></div>
+        <div class="flow-arrow">·</div>
+        <div class="node n-mech"><div class="nt">IPC dropped vs. last epoch</div><div class="nd">Force <code>Ta = tm</code> if it was lower — a guardrail against silent regressions</div></div>
+      </div>
+      <p style="margin-top:14px">These rules layer on top of each other: the extreme-condition overrides (ROB/L1I/LLC pressure) act "on the spot" within an epoch, while the accuracy/IPC-trend rules apply at epoch boundaries using the previous epoch's statistics.</p>
+
+      <h3>7 · Feature selection and DRIPPER's storage budget</h3>
+      <p>MOKA ships 55 candidate program features and 6 system features (Table I lists the best-performing subset, built from bits of the virtual address, PC, and prefetcher delta). Feature selection is offline and greedy: rank all single-feature filters by geomean IPC speedup across the 218 seen workloads; start with the best one; add another feature only if it improves geomean IPC by <b>more than 0.3%</b> over the current best combination; repeat until every candidate has been tried. The optimization metric is IPC speedup specifically — not coverage (different misses matter differently) and not accuracy (forcing high accuracy leaves performance on the table).</p>
+
+      <table class="tbl">
+        <thead><tr><th>prefetcher</th><th>program feature</th><th>system features</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">Berti</td><td class="mono">Delta</td><td class="mono">sTLB MPKI, sTLB Miss Rate</td></tr>
+          <tr><td class="mono">BOP</td><td class="mono">PC⊕Delta</td><td class="mono">sTLB MPKI, sTLB Miss Rate</td></tr>
+          <tr><td class="mono">IPCP</td><td class="mono">PC⊕Delta</td><td class="mono">sTLB MPKI, sTLB Miss Rate</td></tr>
+        </tbody>
+      </table>
+      <p>All three DRIPPER instances converge on the same two system features. <b>sTLB MPKI</b> fires when sTLB MPKI is <i>low</i> — a phase where a page walk is unlikely anyway, so crossing is cheap if wrong and valuable if right. <b>sTLB Miss Rate</b> fires when miss rate is <i>high</i> — a phase where sTLB pressure is acute and a well-timed page-cross prefetch's page walk can double as a useful TLB prefetch. The two are deliberately complementary (Miss Rate is more sensitive to change than MPKI, so it catches phases MPKI would miss).</p>
+
+      <table class="tbl">
+        <thead><tr><th>component</th><th>sizing</th><th>storage</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">Program-feature WT</td><td class="mono">1 table × 512 entries × 5-bit weight</td><td class="mono">0.625 KB</td></tr>
+          <tr><td class="mono">System-feature weights</td><td class="mono">sTLB MPKI (5 bit) + sTLB Miss Rate (5 bit)</td><td class="mono">0.00125 KB</td></tr>
+          <tr><td class="mono">vUB</td><td class="mono">4 entries × (36+12) bit</td><td class="mono">0.024 KB</td></tr>
+          <tr><td class="mono">pUB</td><td class="mono">128 entries × (36+12) bit</td><td class="mono">0.768 KB</td></tr>
+          <tr class="best"><td class="mono">Total (as reported)</td><td class="mono">—</td><td class="mono">1.44 KB / core</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:.92rem;color:var(--ink-soft)">Recomputed check: summing the four rows above as printed gives 0.625 + 0.00125 + 0.024 + 0.768 = <b>1.418&nbsp;KB</b>, about 1.5% under the paper's stated 1.44&nbsp;KB total — almost certainly rounding in the source table rather than a real discrepancy (flagged in Reference &gt; Source notes). Either way, this is the same order of magnitude as a few cache-line's worth of metadata per core — deliberately small so it's implementable alongside any of the three prefetchers.</p>
+
+      <div class="callout takeaway"><span class="ic">●</span><div><b>Why this budget matters.</b> The paper explicitly tests whether the problem is "not enough prefetcher state": the <b>ISO Storage</b> baseline hands DRIPPER's 1.44&nbsp;KB budget to the underlying prefetcher's own structures instead of building a filter, and it performs like Permit PGC — no page-cross benefit. The lesson: the win comes from a <i>dedicated</i>, cross-page-specific, phase-aware filter, not from a bigger prefetcher.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Put real numbers on it</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Three calculations redone by hand from the paper's own tables, then an interactive widget that runs the actual DRIPPER-for-Berti decision rule (Table II, Fig. 6).</p>
+    </div>
+
+    <div class="card">
+      <h3>Example 1 — the cost of one wrong page-cross prefetch</h3>
+      <p>The paper states the cost of an inaccurate page-cross prefetch directly (Sections I &amp; II-A), in memory accesses, not cycles — we keep it that way rather than inventing a latency number the paper doesn't give.</p>
+      <ol class="seq">
+        <li><b>If the target page's translation is not TLB-resident</b>, a speculative page walk is triggered: up to <b>4 memory accesses</b>, one per uncached level of the 5-level radix page table (fewer if the Page Structure Caches — 1/2/8/32-entry across L5–L2 — serve some levels).</li>
+        <li><b>The prefetch request itself</b> adds <b>1</b> more memory access to fetch the (as it turns out, unwanted) cache block.</li>
+        <li><b>Total: up to 4 + 1 = 5 useless memory accesses</b> for one inaccurate page-cross prefetch — exactly the figure the paper repeats in its abstract, introduction, and motivation.</li>
+        <li>This is a <i>ceiling</i>, not an average: a hit in a Page Structure Cache serves that level from a tiny on-chip structure rather than memory, so most real speculative walks cost fewer than 4 accesses. The paper does not report an average speculative-walk depth, so treat "5" as the worst case it explicitly analyzes, not a per-prefetch average — <i>this qualification is our own interpretive framing, not stated numerically in the paper</i>.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> this 5-access ceiling, multiplied across every cross-page prefetch a prefetcher fires, is why "always permit" (Permit PGC) can lose to "never permit" (Discard PGC) even though crossing is sometimes hugely beneficial — the downside is asymmetric and pays out in extra memory traffic and TLB/cache pollution, not just a missed opportunity.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 2 — reconciling DRIPPER's geomean numbers (a ratio, not a subtraction)</h3>
+      <p>Table V reports Berti+Permit&nbsp;PGC and Berti+DRIPPER geomean speedups, both measured <i>over the same baseline</i>, Berti+Discard&nbsp;PGC: Permit&nbsp;PGC = <b>−0.8%</b> (seen), DRIPPER = <b>+1.7%</b> (seen). Section V-B1's prose separately states "DRIPPER outperforms Permit PGC... by 2.5%... in geomean." Let's check that claim ourselves.</p>
+      <ol class="seq">
+        <li><b>Treat Discard PGC as the reference point</b>, value 1.000. Then Permit PGC ≈ 1 − 0.008 = <b>0.992</b>, and DRIPPER ≈ 1 + 0.017 = <b>1.017</b> (both relative to Discard PGC).</li>
+        <li><b>Geomean speedups compose multiplicatively, not additively.</b> DRIPPER's speedup over Permit PGC is the <i>ratio</i> of their speedups over the common baseline: 1.017 / 0.992 = <b>1.0252</b>, i.e. <b>+2.52%</b>.</li>
+        <li>That matches the paper's stated <b>+2.5%</b> almost exactly (rounding accounts for the last 0.02 points) — confirming the numbers in Table V and Section V-B1 are internally consistent once you compose them correctly.</li>
+        <li><b>Same check for unseen workloads:</b> Permit PGC = −0.9% → 0.991; DRIPPER = +1.2% → 1.012. Ratio = 1.012/0.991 = <b>1.0212</b> → <b>+2.1%</b>, matching Section V-B8's stated "DRIPPER outperforms... Permit PGC... by 2.1%... for the unseen workloads" exactly.</li>
+      </ol>
+      <div class="callout warn" style="margin-top:6px"><span class="ic">▲</span><div><b>Misconception it kills:</b> naively <i>subtracting</i> the two percentages (1.7 − (−0.8) = 2.5) happens to land close to the correct answer here only because the percentages involved are small — it's a first-order approximation of the true multiplicative ratio, not the actual method. At larger percentages the two would visibly diverge; always compose geomean speedups as ratios of (1 + speedup), never as differences.</div></div>
+      <p style="font-size:.92rem;color:var(--ink-soft)">Source-ordering note: the paper's abstract states these same four numbers (1.7%, 1.2%, 2.5%, 2.1%) but pairs them with Permit/Discard PGC in the opposite order from the body text (Section V-B1, V-B8) and Table V. We follow the body text and table, which agree with each other and with the ratio arithmetic above — see Reference &gt; Source notes.</p>
+    </div>
+
+    <div class="card">
+      <h3>Example 3 — what DRIPPER's 8-core numbers say about workload mixing</h3>
+      <p>Single-core (Berti, seen workloads): DRIPPER beats Permit PGC by <b>+2.5%</b> and Discard PGC by <b>+1.7%</b>. Across <b>300 randomly generated 8-core mixes</b>, the margins widen: <b>+3.3%</b> over Permit PGC and <b>+2.0%</b> over Discard PGC (Section V-B10).</p>
+      <ol class="seq">
+        <li>Both margins grow from single-core to 8-core — <b>+2.5%→+3.3%</b> over Permit PGC, <b>+1.7%→+2.0%</b> over Discard PGC.</li>
+        <li>The paper's own explanation is qualitative, not a decomposed number: shared last-level cache and shared memory bandwidth across 8 cores make an inaccurate page-cross prefetch's pollution and extra memory traffic costlier system-wide than in isolation — and DRIPPER was <i>not even re-tuned</i> for the 8-core context, so the paper notes further exploration could do better still.</li>
+        <li><i>Our framing, not the paper's:</i> this is consistent with a general pattern in shared-resource systems — a filter that avoids wasted memory traffic tends to pay off more as contention for that shared resource increases, since the "waste" it prevents competes with more consumers.</li>
+      </ol>
+      <div class="callout note" style="margin-top:6px"><span class="ic">◇</span><div><b>Grounded vs. framing:</b> the four percentages (2.5%, 1.7%, 3.3%, 2.0%) are directly from the paper. The general "shared-resource contention amplifies filtering value" explanation in step 3 is our interpretation for a broader mental model — the paper does not decompose <i>why</i> the multi-core margin is larger beyond noting it is untuned.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 4 — run DRIPPER's actual decision rule</h3>
+      <p>This is DRIPPER's real feature set for <b>Berti</b> (Table II): one program feature (<b>Delta</b>) plus two system features (<b>sTLB MPKI</b>, active when <i>low</i>; <b>sTLB Miss Rate</b>, active when <i>high</i>). Weights are modeled as 5-bit signed saturating counters (the same bit-width the storage table uses), range −16…+15. Move the sliders to see exactly the pipeline from How It Works §4 (Fig. 6) run on one candidate page-cross prefetch.</p>
+
+      <figure class="viz" id="dripperFig" style="box-shadow:var(--shadow-sm);margin-top:10px">
+        <div class="viz-title">DRIPPER decision simulator (Berti configuration)</div>
+        <div class="viz-kicker">stage 1 (program feature weight) + stage 2 (gated system features) + stage 3 (sum) + stage 4 (threshold)</div>
+        <div class="legend">
+          <span><i style="background:var(--mech)"></i> program feature — always counted</span>
+          <span><i style="background:var(--huge)"></i> system feature — counted only when its condition holds</span>
+          <span><i style="background:var(--cost)"></i> discard outcome</span>
+        </div>
+        <div class="part-viz">
+          <div class="part-controls">
+            <label for="wDelta" style="min-width:190px">Delta weight (w₁): <span id="wDeltaVal">4</span></label>
+            <input type="range" id="wDelta" min="-16" max="15" step="1" value="4">
+          </div>
+          <div class="part-controls">
+            <label for="stlbMpki" style="min-width:190px">live sTLB MPKI: <span id="stlbMpkiVal">3.0</span></label>
+            <input type="range" id="stlbMpki" min="0" max="15" step="0.5" value="3">
+            <label for="wSF1" style="min-width:150px">weightSF1 (sTLB MPKI): <span id="wSF1Val">3</span></label>
+            <input type="range" id="wSF1" min="-16" max="15" step="1" value="3">
+          </div>
+          <div class="part-controls">
+            <label for="stlbMr" style="min-width:190px">live sTLB Miss Rate (%): <span id="stlbMrVal">8</span></label>
+            <input type="range" id="stlbMr" min="0" max="40" step="1" value="8">
+            <label for="wSF2" style="min-width:150px">weightSF2 (Miss Rate): <span id="wSF2Val">2</span></label>
+            <input type="range" id="wSF2" min="-16" max="15" step="1" value="2">
+          </div>
+          <div class="part-controls">
+            <label for="taSlider" style="min-width:190px">activation threshold Ta: <span id="taVal">5</span></label>
+            <input type="range" id="taSlider" min="-16" max="30" step="1" value="5">
+            <div class="preset-row">
+              <button class="tbtn" data-preset="low">low sTLB pressure phase</button>
+              <button class="tbtn" data-preset="high">high sTLB pressure phase</button>
+              <button class="tbtn" data-preset="calm">neither phase active</button>
+            </div>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">SF1 active? <b id="sf1Active">—</b></div>
+            <div class="pstat">SF2 active? <b id="sf2Active">—</b></div>
+            <div class="pstat">w_final <b id="wFinal">—</b></div>
+            <div class="pstat">Ta <b id="taEcho">—</b></div>
+          </div>
+          <div class="pverdict off" id="dVerdict">…</div>
+        </div>
+        <figcaption>Thresholds used here: sTLB MPKI is "active" (contributes weightSF1) when it's <b>below 4</b> — a low-pressure phase where a page walk is cheap odds-wise; sTLB Miss Rate is "active" (contributes weightSF2) when it's <b>above 15%</b> — a high-pressure phase where a good page-cross prefetch can double as a TLB prefetch. These specific numeric thresholds are illustrative — the paper names the two features and their qualitative direction (Section III-E) but does not publish the exact <code>T_sTLB_MPKI</code> / <code>T_sTLB_MissRate</code> values, so treat the 4 and 15% cutoffs as our stand-ins for the mechanism, not paper-reported constants.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Check yourself</div>
+      <h2>Practice</h2>
+      <p class="sub">Work the answer before opening it. Each answer ends with the misconception the question is designed to catch.</p>
+    </div>
+
+    <div class="prob">
+      <span class="ptag easy">Warm-up</span>
+      <div class="qtext">Why does the paper say an inaccurate page-cross prefetch can cost "up to 5" memory accesses, and where do the two numbers (4 and 1) that make up that 5 come from?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        <b>4</b> comes from the speculative page walk needed to fetch the target page's translation if it isn't already TLB-resident — up to one memory access per uncached level of the paper's 5-level radix page table. <b>1</b> is the actual prefetch request fetching the (unwanted) cache block. 4 + 1 = <b>5</b>.
+        <span class="mis">Catches: assuming a wrong prefetch only wastes "one fetch." For page-cross prefetches specifically, the translation lookup itself can be the larger part of the waste.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">A colleague argues: "Just always let L1D prefetchers cross pages — vendors already do it, and accurate crossing clearly helps." Using the paper's own Figure 3 finding, what's wrong with "always"?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Figure 3 shows that under an always-permit policy, only <b>~50%</b> of issued page-cross prefetches are useful on average, across Berti, BOP, and IPCP — the other half are useless and each one can cost up to 5 wasted memory accesses plus TLB/cache pollution. "Always" bakes in that ~50% waste rate; a per-request filter (DRIPPER) can keep the useful half's benefit while suppressing most of the useless half.
+        <span class="mis">Catches: treating "vendors permit it" as evidence that indiscriminate crossing is good policy — vendors disclose <i>that</i> they permit it, not <i>how</i> they decide, which is exactly the gap this paper studies.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">Table IV gives dTLB = 64 entries and sTLB = 1536 entries. Given that, explain why Figure 4 shows dTLB MPKI moving much more than sTLB MPKI when Permit PGC helps or hurts a workload.</div>
+      <details><summary>Show answer</summary><div class="ans">
+        dTLB is roughly 24× smaller than sTLB, so for the same number of translations added or removed by page-cross prefetching, dTLB's miss rate (misses per kilo-instruction) shifts much more than sTLB's — a small structure is more sensitive to the same absolute change in traffic. Also, a page-cross prefetch's translation gets installed in <i>both</i> dTLB and sTLB, so a useful prefetch that already hits dTLB doesn't even register as an sTLB event, further muting sTLB's response.
+        <span class="mis">Catches: assuming "TLB" is one undifferentiated resource — the two levels have very different capacities and therefore very different sensitivities to the same intervention.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">The paper's "ISO Storage" baseline gives the underlying prefetcher (not a filter) DRIPPER's 1.44 KB budget, and it performs like Permit PGC (no page-cross benefit). What does this rule out, and what does it NOT rule out, about why DRIPPER works?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        It rules out "the prefetcher just needed more state/history to be more accurate in general" — extra storage spent inside Berti/BOP/IPCP's own structures doesn't fix cross-page accuracy. It does <i>not</i> rule out that a differently-designed use of the same 1.44 KB (not shaped as a perceptron filter with program+system features+adaptive threshold) might also work — the experiment isolates "more prefetcher storage" as the wrong lever, but it isn't a proof that MOKA's specific architecture is the unique solution.
+        <span class="mis">Catches: over-reading a single ablation as proof of necessity rather than sufficiency — ISO Storage shows one alternative fails, not that no alternative could succeed.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">DRIPPER(filter@2MB) — which decides at 2&nbsp;MB granularity when large pages are used — underperforms plain DRIPPER (which always decides at 4&nbsp;KB granularity) by 0.5% geomean, even in a system that actually uses 2&nbsp;MB pages. Why doesn't page-size-aware filtering win here?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        The paper measures that <b>more than 99%</b> of page-cross prefetches never travel far enough to cross a 2&nbsp;MB boundary — they only cross 4&nbsp;KB boundaries, regardless of whether the underlying physical pages are 4&nbsp;KB or 2&nbsp;MB. A filter tuned to fire only at 2&nbsp;MB boundaries is therefore evaluating almost nothing; a filter that keeps discriminating at 4&nbsp;KB boundaries (plain DRIPPER) still catches nearly all the real decisions, whether or not the memory underneath happens to be backed by a large page.
+        <span class="mis">Catches: assuming "page-size-aware" automatically means "better" once large pages are in play — the right granularity to filter at is set by how far the prefetcher's own deltas actually reach, not by the page size the OS happens to be using.</span>
+      </div></details>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Loose ends</div>
+      <h2>Frequently asked</h2>
+      <p class="sub">The questions that come up once the mechanism clicks.</p>
+    </div>
+    <div class="faq">
+
+      <details><summary><span class="q">Q</span>Why doesn't this paper also filter page-cross prefetching at the L2/LLC?<span class="chev">▾</span></summary>
+        <div class="a">Because L2C/LLC prefetchers operate on <i>physical</i> addresses (PIPT caches) — they don't have the L1D's direct, pre-translation view of the address stream. Crossing physical page boundaries at those levels is also a documented security concern (physical-address contiguity isn't guaranteed, and prior work has shown side-channel exploits from page-cross prefetching at lower-level caches on real hardware). The paper scopes its study to L1D specifically because that's where the VIPT/virtual-address decision is architecturally available.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Is DRIPPER one fixed design, or does it change per prefetcher?<span class="chev">▾</span></summary>
+        <div class="a">It changes per prefetcher, but only in which features it uses — the mechanism (hashed perceptrons + system features + adaptive threshold) is identical. Table II: Berti's DRIPPER uses <code>Delta</code> as its program feature; BOP and IPCP both use <code>PC⊕Delta</code>. All three share the same two system features, <code>sTLB MPKI</code> and <code>sTLB Miss Rate</code>. This is what "MOKA is a framework, DRIPPER is an instance" means concretely.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>How does DRIPPER compare to prior prefetch filters like PPF?<span class="chev">▾</span></summary>
+        <div class="a">PPF (ISCA'19) was designed to filter <i>in-page</i> L2C prefetches from the SPP prefetcher, using only program features tied to SPP's own metadata and a static threshold. The paper adapts PPF into a page-cross filter for comparison and finds it doesn't improve over Discard PGC — it lacks system features entirely, and its program features were never designed for this task. DRIPPER outperforms adapted-PPF by 2.4%/1.4%/1.6% geomean for Berti/BOP/IPCP respectively.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does DRIPPER need to be retrained for every new workload?<span class="chev">▾</span></summary>
+        <div class="a">No — the weight tables train continuously online via vUB/pUB during execution, and the adaptive threshold re-tunes every epoch at runtime. The <i>feature selection</i> (which program/system features to include, Table II) is done once, offline, on 218 "seen" workloads. The paper explicitly tests generalization on 178 "unseen" workloads never used during that offline selection, and DRIPPER still gains +2.1%/+1.2% over Permit/Discard PGC there.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does an L2C prefetcher underneath Berti change DRIPPER's benefit?<span class="chev">▾</span></summary>
+        <div class="a">The trend holds regardless: with NoL2Pref, SPP, IPCP, or BOP as the L2C prefetcher, Permit PGC still degrades performance vs. Discard PGC and DRIPPER still delivers the highest speedups (Fig. 17). The benefit is slightly larger with no L2C prefetcher present, because then there's no L2C prefetcher independently catching the misses that an accurate L1D page-cross prefetch would also have caught.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Is this paper about memory tiering, CXL, or DRAM/NVM at all?<span class="chev">▾</span></summary>
+        <div class="a">No. This is entirely about L1D cache prefetching and TLB/page-walk cost within a single memory tier — it never discusses NVM, CXL, or OS-managed tiering. The connection to that world is indirect: this paper's careful accounting of TLB MPKI sensitivity and speculative-page-walk cost is background machinery that also underlies tiering-adjacent questions (e.g., how expensive address-translation misses are, why TLB reach matters), but treat any bridge to tiering/CXL in this guide as our own framing, not the paper's claim — see Reference &gt; Source notes.</div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Reference</h2>
+      <p class="sub">Glossary, a dated summary card, further reading, and the honest provenance notes.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Page-cross prefetch</b><span>A prefetch request whose target address lies on a different page than the triggering access — requires a TLB lookup (and possibly a page walk) for the new page.</span></div>
+      <div class="term-def"><b>In-page prefetch</b><span>A prefetch request that stays within the current page's translation — no additional TLB/page-walk work needed.</span></div>
+      <div class="term-def"><b>VIPT / PIPT</b><span>Virtually-Indexed-Physically-Tagged (L1D — sees virtual addresses, enabling page-cross decisions) vs. Physically-Indexed-Physically-Tagged (L2C/LLC — physical addresses only).</span></div>
+      <div class="term-def"><b>Permit PGC / Discard PGC</b><span>The two static baselines: always permit vs. never permit page-cross prefetching. Neither wins across all workloads (Fig. 2).</span></div>
+      <div class="term-def"><b>MOKA</b><span>The general framework for building Page-Cross Filters: hashed-perceptron program features + threshold-gated system features + epoch-based adaptive threshold.</span></div>
+      <div class="term-def"><b>DRIPPER</b><span>A MOKA-built Page-Cross Filter prototyped for Berti, BOP, and IPCP (Table II), 1.44 KB/core.</span></div>
+      <div class="term-def"><b>Page-Cross Filter</b><span>The microarchitectural gate (Fig. 5, step B) that decides issue-or-discard for candidate page-cross prefetches.</span></div>
+      <div class="term-def"><b>Activation threshold (Ta)</b><span>The cutoff that <code>w_final</code> must exceed for a page-cross prefetch to be issued; re-tuned every epoch.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Program feature</b><span>A feature derived from the current request (PC, VA bits, delta, XOR combinations) — 55 candidates in MOKA, best subset in Table I.</span></div>
+      <div class="term-def"><b>System feature</b><span>A live runtime metric (sTLB/L1D/LLC MPKI or miss rate) gated by its own threshold — 6 candidates in MOKA.</span></div>
+      <div class="term-def"><b>Weight Table (WT)</b><span>Hashed-perceptron table of saturating-counter weights, one per program feature.</span></div>
+      <div class="term-def"><b>vUB / pUB</b><span>Virtual/Physical Update Buffers — training structures capturing false negatives (vUB) and outcomes of issued prefetches (pUB).</span></div>
+      <div class="term-def"><b>Page Cross Bit (PCB)</b><span>Extra per-L1D-block bit marking whether the block was fetched by a page-cross prefetch, used to trigger training on hit/eviction.</span></div>
+      <div class="term-def"><b>dTLB / sTLB</b><span>First-level data TLB (64-entry, per Table IV) and unified second-level/last-level TLB (1536-entry) in the paper's simulated core.</span></div>
+      <div class="term-def"><b>MPKI</b><span>Misses per kilo-instruction — the paper's standard sensitivity metric for TLB and cache levels.</span></div>
+      <div class="term-def"><b>Speculative page walk</b><span>A page-table walk triggered by a prefetch (not a demand access) to resolve a translation ahead of need; up to 4 memory accesses in the paper's 5-level model.</span></div>
+      <div class="term-def"><b>Coverage / Accuracy</b><span>Coverage = fraction of demand misses eliminated by prefetching; accuracy = fraction of issued prefetches later used at least once.</span></div>
+      <div class="term-def"><b>Discard PTW</b><span>Baseline that permits page-cross prefetching only when the translation is already TLB-resident (never triggers a speculative walk).</span></div>
+      <div class="term-def"><b>ISO Storage</b><span>Baseline that spends DRIPPER's 1.44 KB budget enlarging the underlying prefetcher's own structures instead of building a filter.</span></div>
+      <div class="term-def"><b>ChampSim / SimPoint</b><span>The trace-driven simulator used for all experiments; SimPoint selects representative execution intervals (weight &lt; 0.05 discarded).</span></div>
+    </div>
+
+    <div class="card" style="background:var(--mech-soft);border-color:#bcbfe8;margin-top:26px">
+      <h3 style="color:#3a409a">📌 Summary card <span style="font-family:var(--mono);font-size:.7rem;font-weight:500;color:#5A61B4">· as of 2026-08-30 · HPCA 2025</span></h3>
+      <ul style="margin:0;padding-left:20px;color:#3a409a">
+        <li><b>What:</b> the first characterization of page-cross prefetching for VIPT L1D caches, plus MOKA, a framework for building learned Page-Cross Filters, prototyped as DRIPPER.</li>
+        <li><b>Why:</b> vendors permit L1D prefetchers to cross pages but disclose no policy; academia forbids it entirely; neither extreme is right — Permit PGC and Discard PGC each win on disjoint workload subsets.</li>
+        <li><b>Core measurement:</b> under always-permit, only ~50% of issued page-cross prefetches are useful (Fig. 3); a wrong one costs up to 5 memory accesses (4-access speculative walk + 1 fetch).</li>
+        <li><b>Mechanism:</b> hashed-perceptron program features (always counted) + threshold-gated system features (counted only when their condition holds) summed into <code>w_final</code>, compared to an epoch-adaptive <code>Ta</code>.</li>
+        <li><b>DRIPPER (Berti):</b> 1 program feature (Delta) + 2 system features (sTLB MPKI, sTLB Miss Rate), 1.44 KB/core.</li>
+        <li><b>Headline results (Berti, single-core geomean):</b> +2.5% over Permit PGC, +1.7% over Discard PGC (218 seen); +2.1%/+1.2% (178 unseen); +3.3%/+2.0% across 300 8-core mixes.</li>
+        <li><b>Coverage/accuracy story:</b> DRIPPER matches Permit PGC's ~4% coverage gain over Discard PGC while turning its −2.6% accuracy loss into a +1.2% accuracy gain.</li>
+        <li><b>Holds under large pages:</b> +2.2%/+1.3% geomean with 4 KB+2 MB pages mixed; filtering at 4 KB granularity beats filtering at 2 MB granularity (>99% of crossings never reach 2 MB boundaries).</li>
+        <li><b>Not about:</b> DRAM/NVM tiering, CXL, or OS-managed placement — purely L1D cache prefetching and TLB/page-walk cost within one memory tier.</li>
+      </ul>
+    </div>
+
+    <div class="subhead">Further reading</div>
+    <div class="read-item">
+      <h4>Berti: an accurate local-delta data prefetcher <span class="diff easy">primary prefetcher</span></h4>
+      <div class="meta">Navarro-Torres et al., MICRO 2022</div>
+      <p>The state-of-the-art L1D prefetcher DRIPPER is built for in most of this paper's evaluation; understand its base delta-prediction logic to see exactly what MOKA leaves untouched.</p>
+    </div>
+    <div class="read-item">
+      <h4>Perceptron-Based Prefetch Filtering (PPF) <span class="diff med">closest prior work</span></h4>
+      <div class="meta">Bhatia et al., ISCA 2019</div>
+      <p>The in-page prefetch filter DRIPPER is directly compared against (Section VI); read to see exactly which architectural choices (program-only features, static threshold, SPP-specific metadata) MOKA generalizes past.</p>
+    </div>
+    <div class="read-item">
+      <h4>Page Size Aware Cache Prefetching <span class="diff med">related large-page work</span></h4>
+      <div class="meta">Vavouliotis et al. (same senior authors), MICRO 2022, ref. [89]</div>
+      <p>Exploits knowledge of 2 MB pages to safely permit prefetching across 4 KB physical boundaries, but doesn't filter for usefulness — this paper's Section V-B6 shows DRIPPER significantly outperforms it once 2 MB pages are in use.</p>
+    </div>
+    <div class="read-item">
+      <h4>Bridging to CXL / OS-managed tiering <span class="diff hard">your framing, not the paper's</span></h4>
+      <div class="meta">Conceptual connection — not discussed in the source paper</div>
+      <p>This paper's dTLB/sTLB MPKI accounting and its explicit page-walk cost model (5-level radix walk, split PSCs, up to 4 accesses per speculative walk) are useful reference points for reasoning about address-translation overhead more generally — including in tiered-memory systems where page-table and TLB behavior interact with page placement and migration. The paper itself makes no such connection; treat this purely as a bridge for your own research context.</p>
+    </div>
+
+    <div class="subhead">Source notes — provenance &amp; honesty</div>
+    <div class="card" style="border-color:var(--line-strong)">
+      <p style="font-size:.96rem"><b>Kind:</b> paper-grounded field guide. Source: <code>_paper_txt/to-cross-or-not-to-cross-pages-for-prefe.txt</code> (full text ingested), "To Cross, or Not to Cross Pages for Prefetching?", Vavouliotis, Torrents, Grot, Kalaitzidis, Peled, Casas — HPCA 2025.</p>
+      <p style="font-size:.96rem"><b>Grounded &amp; stable (high confidence):</b> the motivational Permit/Discard PGC split and the ~50% useful/useless finding (Fig. 3); the 4+1=5 useless-access accounting for a bad speculative page walk; the five hardware components of the Page-Cross Filter and the four-stage prediction pipeline (Fig. 6); the three training triggers (Fig. 7) and the vUB-virtual/pUB-physical distinction; the adaptive thresholding rules (Fig. 8, steps i–vii); Table II's exact DRIPPER feature assignments per prefetcher; the System Config (Table IV) numbers; the 396 = 218 seen + 178 unseen workload split; the 300-8-core-mix multi-core methodology; the >99%-of-crossings-stay-under-2MB finding; PPF comparison numbers (2.4%/1.4%/1.6% geomean gaps).</p>
+      <p style="font-size:.96rem"><b>Recomputed and reconciled (flagged where non-trivial):</b> the "+2.5%/+1.7% over Permit/Discard PGC" pairing — the abstract's literal word order pairs these numbers with Permit/Discard PGC in the <i>opposite</i> way from Section V-B1's prose, Section V-B8's prose, and Table V, which all agree with each other; we followed the three-way agreement (body text × body text × table) and independently verified it by composing Table V's Discard-PGC-relative numbers multiplicatively (Worked Examples, Example 2), which reproduces 2.5%/2.1% exactly. The DRIPPER storage total: summing the four reported component sizes gives 1.418 KB against a stated total of 1.44 KB (~1.5% gap) — presented as printed, with the small discrepancy flagged rather than silently reconciled, most likely paper-side rounding.</p>
+      <p style="font-size:.96rem"><b>Explicitly illustrative / our framing (clearly labeled inline):</b> the Worked Examples decision-simulator's numeric thresholds for "low sTLB MPKI" and "high sTLB Miss Rate" (the paper names the features and their qualitative direction but not the exact threshold constants); the "shared-resource contention amplifies filtering value" explanation for why 8-core margins exceed single-core margins (paper states the numbers, not this mechanism); any bridge to CXL/DRAM-NVM/OS-managed tiering (this paper does not discuss tiering, CXL, or NVM at all — that connection is this guide's own framing for the reader's research context, per the FAQ and Further Reading above).</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> "To Cross, or Not to Cross Pages for Prefetching?" — Vavouliotis et al., HPCA 2025</span>
+    <span><b>Built from:</b> _paper_txt/to-cross-or-not-to-cross-pages-for-prefe.txt · house style from learn/sessions/2026-08-13-thp</span>
+    <span><b>Provenance:</b> paper-grounded (see Source notes) · illustrative numbers labeled · one abstract/body ordering ambiguity resolved and flagged</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- DRIPPER DECISION SIMULATOR ---- */
+  var wDelta = document.getElementById('wDelta');
+  var stlbMpki = document.getElementById('stlbMpki');
+  var wSF1 = document.getElementById('wSF1');
+  var stlbMr = document.getElementById('stlbMr');
+  var wSF2 = document.getElementById('wSF2');
+  var taSlider = document.getElementById('taSlider');
+
+  var MPKI_THRESH = 4;      // SF1 (sTLB MPKI) active when sTLB MPKI < 4  (illustrative threshold)
+  var MR_THRESH = 15;       // SF2 (sTLB Miss Rate) active when sTLB Miss Rate > 15%  (illustrative threshold)
+
+  function renderDripper(){
+    if(!wDelta) return;
+    var w1 = parseInt(wDelta.value,10);
+    var mpki = parseFloat(stlbMpki.value);
+    var sf1w = parseInt(wSF1.value,10);
+    var mr = parseFloat(stlbMr.value);
+    var sf2w = parseInt(wSF2.value,10);
+    var ta = parseInt(taSlider.value,10);
+
+    var sf1Active = mpki < MPKI_THRESH;
+    var sf2Active = mr > MR_THRESH;
+    var wFinal = w1 + (sf1Active ? sf1w : 0) + (sf2Active ? sf2w : 0);
+    var issue = wFinal > ta;
+
+    document.getElementById('wDeltaVal').textContent = w1;
+    document.getElementById('stlbMpkiVal').textContent = mpki.toFixed(1);
+    document.getElementById('wSF1Val').textContent = sf1w;
+    document.getElementById('stlbMrVal').textContent = mr.toFixed(0);
+    document.getElementById('wSF2Val').textContent = sf2w;
+    document.getElementById('taVal').textContent = ta;
+
+    document.getElementById('sf1Active').textContent = sf1Active ? 'yes (<'+MPKI_THRESH+')' : 'no';
+    document.getElementById('sf2Active').textContent = sf2Active ? 'yes (>'+MR_THRESH+'%)' : 'no';
+    document.getElementById('wFinal').textContent = wFinal;
+    document.getElementById('taEcho').textContent = ta;
+
+    var v = document.getElementById('dVerdict');
+    if(issue){
+      v.className = 'pverdict opt';
+      v.innerHTML = '✓ <b>Issue the page-cross prefetch:</b> w_final ('+wFinal+') &gt; Ta ('+ta+'). '+
+        (sf1Active||sf2Active ? 'A system feature tipped the balance — this is DRIPPER being phase-aware, not just PC-aware.' : 'The program feature (Delta) alone was enough here.');
+    } else {
+      v.className = 'pverdict sub';
+      v.innerHTML = '✋ <b>Discard:</b> w_final ('+wFinal+') ≤ Ta ('+ta+'). A demand miss here would be caught by vUB and could push weights up next time.';
+    }
+  }
+  [wDelta, stlbMpki, wSF1, stlbMr, wSF2, taSlider].forEach(function(el){
+    if(el) el.addEventListener('input', renderDripper);
+  });
+  document.querySelectorAll('#dripperFig [data-preset]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var p = b.dataset.preset;
+      if(p === 'low'){ stlbMpki.value = 1.5; stlbMr.value = 6; }
+      else if(p === 'high'){ stlbMpki.value = 9; stlbMr.value = 26; }
+      else { stlbMpki.value = 8; stlbMr.value = 8; }
+      renderDripper();
+    });
+  });
+  renderDripper();
+
+  /* ---- INIT ---- */
+  runReveals();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+<script src="../rate.js"></script>
+</body>
+</html>
