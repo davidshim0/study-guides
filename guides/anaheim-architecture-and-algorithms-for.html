@@ -1,0 +1,1058 @@
+<!DOCTYPE html>
+<!-- Anaheim field guide — "Architecture and Algorithms for Processing Fully Homomorphic
+     Encryption in Memory" (Kim, Yun, Ji, Choi, Kim, Ahn — Seoul National Univ., HPCA 2025).
+     Built in the house "friendly field guide" format, style/script reused from the THP guide
+     (learn/sessions/2026-08-13-thp/study-guide.html). Reader is a PhD researcher in OS-managed
+     memory tiering / CXL / the Linux memory stack — DRAM mechanics assumed, FHE/CKKS is new.
+     Semantic colors (repurposed per-paper):
+     honey  = the GPU's own compute path (NTT, BConv, automorphism — already fast, but cache-starved)
+     cost   = the bottleneck this paper found (element-wise ops, throttled by off-chip DRAM bandwidth)
+     mech   = the software glue (Anaheim's framework: reordering, kernel fusion, the PIM launch API)
+     huge   = PIM itself (compute moved inside DRAM — Anaheim's actual fix) -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Not NTT's Fault — Anaheim, a Field Guide to In-DRAM FHE Acceleration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --huge:#2C8C7C; --huge-soft:#DCEFE9;       /* teal   = PIM itself — compute moved inside DRAM     */
+  --mech:#5A61B4; --mech-soft:#E6E6F6;       /* indigo = the software glue (Anaheim's framework)    */
+  --cost:#C0563B; --cost-soft:#F7E1D8;       /* terracotta = the bottleneck (element-wise ops, DRAM BW) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:19ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--huge);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--mech);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--huge);font-weight:600}
+.rule-plaque .wo{color:var(--cost);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:64ch}
+
+/* PROSE / CARDS */
+.prose{max-width:76ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--mech-soft);color:var(--mech);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--huge-soft);border-left:3px solid var(--huge);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--cost)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-huge{background:var(--huge-soft);color:#1f5b51}
+.chip-base{background:var(--honey-soft);color:#6e4a09}
+.chip-mech{background:var(--mech-soft);color:#3a409a}
+.chip-cost{background:var(--cost-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--huge-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--cost-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-huge{border-color:#9fd2c7;background:var(--huge-soft)}
+.node.n-mech{border-color:#bcbfe8;background:var(--mech-soft)}
+.node.n-cost{border-color:#e3b4a5;background:var(--cost-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--huge-soft)}
+.tbl .best:hover td{background:#cfeae2}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-base{background:linear-gradient(90deg,#eab657,#C27D14)}
+.bf-mid{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-huge{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-giga{background:linear-gradient(90deg,#2f6f64,#1f5147)}
+
+/* COLLAPSE EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.cells{display:grid;grid-template-columns:repeat(32,1fr);gap:3px;margin:8px 0}
+.cell{aspect-ratio:1/1;border-radius:3px;background:var(--paper-2);border:1px solid var(--line);transition:background .15s,border-color .15s}
+.cell.touched{background:var(--honey);border-color:var(--honey-deep)}
+.cell.filled{background:var(--huge);border-color:#1f5b51}
+.cell.waste{background:repeating-linear-gradient(45deg,#e9c9be,#e9c9be 3px,#f7e1d8 3px,#f7e1d8 6px);border-color:#e3b4a5}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls label{font-family:var(--mono);font-size:.8rem;color:var(--ink-soft);font-weight:700}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--mech)}
+.part-controls input[type=number]{width:74px;font-family:var(--mono);padding:6px 8px;border:1.5px solid var(--line-strong);border-radius:8px}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--huge-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--cost-soft);color:#9a3a22;border:1px solid #e3b4a5}
+.pverdict.off{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--mech);color:var(--mech)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--huge-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--cost-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--cost);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--huge-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--cost-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}.cells{grid-template-columns:repeat(16,1fr)}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>FHE Acceleration · A Field Guide</span>
+    <h1>It's not the math that's slow — <span class="swash">it's moving the bytes</span></h1>
+    <p class="lede">Fully homomorphic encryption (FHE) lets a cloud compute on data it can never see. Everyone assumed the bottleneck was the heavyweight number-theoretic transform (NTT). <strong>Anaheim</strong> measures real GPUs and finds the opposite: boring element-wise arithmetic, starved of DRAM bandwidth, is what actually eats bootstrapping time — so it moves exactly those ops into the DRAM itself.</p>
+    <div class="hero-meta">
+      <span>🔐 FHE CKKS on GPUs + processing-in-memory (PIM) · HPCA 2025</span>
+      <span>🎓 Assumes DRAM/CXL memory-systems background; CKKS terms defined in Start Here</span>
+      <span>⏱ ~40 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🔀</div>
+      <p>Send only the <span class="ro">element-wise ops</span> to PIM units living inside DRAM — leave NTT, BConv, and automorphism on the GPU — because <span class="wo">DRAM bandwidth, not compute throughput or cache size, is what actually gates FHE on GPUs</span>.<br><em style="font-size:.9rem">GPUs have plenty of TOPS. What they don't have is a 512MB ASIC-style cache — and that single fact rewrites which ops matter.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Eight ideas Anaheim builds on</h2>
+      <p class="sub">You know DRAM banks, bandwidth, and the general shape of PIM already. What's new here is CKKS — the FHE scheme this paper accelerates — and the specific way its op sequences interact with GPU hardware limits. Tap any open; read in order the first time.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--honey-deep)"></i> GPU compute — NTT, BConv, automorphism (fast, but cache-starved)</span>
+      <span><i style="background:var(--cost)"></i> the bottleneck — element-wise ops, throttled by DRAM bandwidth</span>
+      <span><i style="background:var(--mech)"></i> the software glue — Anaheim's framework (reordering, fusion, PIM launch)</span>
+      <span><i style="background:var(--huge)"></i> PIM — compute moved inside DRAM, Anaheim's fix</span>
+    </div>
+
+    <div class="primer-grid">
+
+      <details class="primer" open>
+        <summary><span class="pnum">1</span>Polynomials, RNS limbs, and the L×N matrix<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>CKKS encrypts vectors as polynomials in a ring <code>R_Q = Z_Q[X]/(X^N+1)</code>, with <b>N typically 2^16</b> and a huge modulus <b>Q ~ 2^1300</b>. To make arithmetic on such a large modulus tractable, CKKS uses the <b>residue number system (RNS)</b>: pick <b>L</b> smaller primes Q₀…Q_{L-1} whose product is Q, and represent a polynomial as <b>L limbs</b> — one residue per prime. Any op on the polynomial can then be done <i>limb-wise</i>, in parallel, with ordinary machine-word arithmetic.</p>
+          <p>The mental model that matters for everything downstream: <b>a polynomial is an L × N matrix</b> — L rows (limbs), N columns (coefficients) — and most FHE ops are either "do this per-row" (NTT, modular arithmetic) or "combine rows" (basis conversion). Anaheim's whole data layout story (Tab 4) is about how you place that matrix in DRAM.</p>
+          <div class="ready"><b>Now you're ready:</b> whenever you see "L limbs," picture L independent rows of N numbers that can all be processed at once — that's where the parallelism (and the DRAM-layout decisions) come from.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">2</span>Ciphertexts and the four basic ops<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A plaintext ⟨u⟩ is an encoded (not yet encrypted) polynomial. Encrypting it with a secret <b>s</b> gives a ciphertext <b>[⟨u⟩] = (b, a)</b> — a <i>pair</i> of polynomials in R_Q. Four ops cover most computation: <b>HADD</b> (ciphertext+ciphertext, cheap), <b>PMULT</b> (ciphertext×plaintext, cheap), <b>HMULT</b> (ciphertext×ciphertext, expensive), and <b>HROT</b> (cyclic rotation of the encrypted vector's slots, expensive).</p>
+          <p>HADD and PMULT are "low computational complexity" per the paper — essentially element-wise. HMULT and HROT are the expensive ones, and they're expensive for a specific, structural reason covered next.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's central finding is really about <i>where the time inside HMULT/HROT/bootstrapping goes</i> — not that they're expensive (everyone knew that), but which sub-operations inside them dominate on real GPUs.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">3</span>Evaluation keys — why HMULT/HROT need extra, huge objects<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>HMULT and HROT can't be done with the ciphertext alone — they need an <b>evaluation key (evk)</b>, computed once from the secret and reused across many ops. An evk lives in an <i>extended</i> modulus <b>PQ</b> (P = extra primes P₀…P_{α-1}) and is composed of <b>2·D polynomials</b>, where <b>D = L/α</b> is the "decomposition number." With the paper's default <b>D = 4</b>, that's <b>8 polynomials</b> per evk, each carrying <b>L+α</b> limbs (more than a plain ciphertext's L).</p>
+          <p>This is why evks are enormous: the paper states a single polynomial can be ~17MB while a full evk is ~136MB — and <b>136/17 ≈ 8</b>, matching 2·D = 8 almost exactly (the extended-modulus limbs add a bit more). Every HROT with a distinct rotation amount needs its <i>own</i> evk unless you're clever about reuse — which is exactly the fork in Primer 6.</p>
+          <div class="ready"><b>Now you're ready:</b> evks are the paper's "expensive furniture" — too big to keep resident, and moving them is a large fraction of what a GPU implementation spends its DRAM bandwidth on.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">4</span>NTT, BConv, ModSwitch — the compute-heavy trio<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>NTT</b> (an integer FFT) turns an O(N²) polynomial multiplication into O(N log N) element-wise multiplication — indispensable, and the operation almost every prior FHE accelerator paper optimized hardest. <b>BConv</b> (basis conversion) switches a polynomial's limb-basis from Q to the extended PQ (or back) via a dense matrix-multiply-like operation. <b>ModSwitch</b> is the sequence <b>INTT → BConv → NTT</b> that appears constantly whenever moduli change — which is most of the time in HMULT/HROT.</p>
+          <p>All three are genuinely compute-bound: more arithmetic per byte moved than the element-wise ops in Primer 2. That's exactly why they were the traditional target for custom silicon — and exactly why the paper's discovery (Primer 7) is surprising.</p>
+          <div class="ready"><b>Now you're ready:</b> NTT/BConv/ModSwitch = honey-colored, GPU-resident, compute-bound. Keep this trio mentally separate from the element-wise ops — the paper's whole architecture hinges on that separation.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">5</span>Bootstrapping and T_boot,eff — the metric this paper optimizes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Every HMULT/rescale consumes one "level" (reduces L). Levels can't go negative, so FHE periodically runs <b>bootstrapping</b> to refresh L — a defining, expensive feature of the whole field. Because bootstrapping dominates real workload time, the paper (following prior work) tracks <b>T_boot,eff = (bootstrapping time) / L_eff</b>, where <b>L_eff</b> is how many more multiplications you get to do before the <i>next</i> bootstrap. This normalizes across parameter choices so architectures can be compared fairly.</p>
+          <p>Bootstrapping itself is mostly <b>homomorphic linear transforms</b> (>60% of bootstrapping time) plus polynomial function evaluation. A linear transform is built from K parallel HROT+PMULT pairs summed together — the paper uses <b>D=4, K=8</b> as its running example throughout.</p>
+          <div class="ready"><b>Now you're ready:</b> when the paper says "we improve T_boot,eff," read it as "we make FHE workloads cheaper per useful multiplication," which is the real currency of practical FHE.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">6</span>Hoisting vs. MinKS — one optimization forecloses the other<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A linear transform needs K HROT evaluations that all start with the same expensive ModSwitch step (ModUp). <b>Hoisting</b> exploits this: do ModUp <i>once</i> instead of K times, and similarly batch the back-half (ModDown) after accumulating. This cuts (I)NTT op count dramatically (2.47× in the paper's CoeffToSlot example) — at the price of slightly larger intermediate plaintexts, because the batched ops now run in the extended modulus.</p>
+          <p><b>MinKS</b> (minimum key-switching) attacks the <i>other</i> cost — evk memory — by reusing a single evk₁ iteratively (HROT by 2 = HROT by 1, applied twice) instead of holding K distinct evks. It cuts evk footprint ~4× but does <i>not</i> reduce computation, and it only pays off if you can keep that one evk (plus a few ciphertexts, ~217MB total) resident in cache. The paper is explicit: <b>you cannot use both hoisting and MinKS together</b> — they optimize incompatible op orderings.</p>
+          <div class="ready"><b>Now you're ready:</b> this is a real fork, not a footnote. Which one wins depends entirely on your hardware's cache size — which is exactly the GPU-vs-ASIC gap in the next primer.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">7</span>GPUs vs. ASICs: same math, wildly different cache budgets<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The paper frames three concrete hardware gaps (D1–D3) between GPUs and prior custom FHE ASICs. <b>D1, the crucial one:</b> ASIC proposals assumed 180–512MB of on-chip cache and 72–92TB/s of effective cache bandwidth; a real A100 80GB has only 40MB of L2 and under 2TB/s of DRAM bandwidth. <b>D2:</b> ASICs assumed 25–170 TOPS of dedicated modular-multiply throughput vs. an A100's 19.5 TOPS of general integer multiply (each modular mult costs several GPU instructions, so the effective gap exceeds 40×). <b>D3:</b> ASICs have datapaths custom-built for NTT/BConv's data-exchange patterns; GPUs don't (though newer ones, like H100's NoC, are closing this).</p>
+          <p>D1 is why MinKS (which needs hundreds of MB of cache to actually reuse evks) works on ASICs but not GPUs — GPU libraries (100×, Cheddar) use hoisting instead, because trading more computation for less DRAM traffic is the right call when you have compute to spare but no cache.</p>
+          <div class="ready"><b>Now you're ready:</b> "GPUs have less cache" isn't a throwaway detail — it's the reason the whole rest of the paper exists. Every algorithm choice downstream traces back to D1.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">8</span>DRAM banks, ACT/PRE, and where PIM sits<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>You already know this shape: a DRAM bank holds an array plus row/column decoders and I/O sense amplifiers (IOSAs); an <b>ACT</b> copies a row into the IOSAs, <b>RD/WR</b> pulls chunks out via the column decoder, and <b>PRE</b> restores the row for the next access. Normally different banks hide each other's ACT/PRE behind a shared I/O channel. Realized PIM products (UPMEM, HBM-PIM, GDDR6-AiM) place small compute units right next to each bank to exploit the bank's own <i>internal</i> bandwidth instead of shipping data out over that shared channel.</p>
+          <p>The one wrinkle that matters for Anaheim specifically: when <b>every bank fires a PIM op simultaneously</b> ("all-bank" operation, which Anaheim uses for parallelism), there's no longer another bank's transfer to hide ACT/PRE behind — that overhead becomes fully exposed. Anaheim's data-layout contribution (Tab 4) exists specifically to amortize this.</p>
+          <div class="ready"><b>Now you're ready:</b> you already understand PIM's mechanism; the new part is that Anaheim's all-bank parallelism turns ACT/PRE from "usually hidden" into "the thing you now have to engineer around."</div>
+        </div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Anaheim in a nutshell</h2>
+      <p class="sub">The false assumption everyone shared, the measurement that broke it, and the narrow, surgical fix that follows once you believe the measurement.</p>
+    </div>
+    <div class="prose">
+      <p>For years, FHE hardware research assumed the bottleneck was <span class="mem-chip chip-base">NTT/BConv</span> — the compute-heavy transforms behind every polynomial multiplication — and built ASICs with hundreds of megabytes of cache and tens of TB/s of internal bandwidth to feed them. GPUs can't match that: an A100 80GB has 40MB of L2 versus the 180–512MB ASIC designs assumed, and under 2TB/s of DRAM bandwidth versus 72–92TB/s of assumed cache bandwidth. So GPU libraries reach for <b>hoisting</b> instead of the cache-hungry <b>MinKS</b>, trading more computation for less data movement — a reasonable, well-understood adaptation.</p>
+      <p>Except that adaptation has a side effect nobody had measured carefully: hoisting shrinks ModSwitch time so much, and pushes the remaining <span class="mem-chip chip-cost">element-wise ops</span> (HADD, PMULT, accumulation) into the wider extended modulus, that those "trivial" ops balloon to <b>45–48% of bootstrapping time on an A100</b> and <b>68–69% on an RTX 4090</b> — dwarfing NTT and BConv. These ops have under 2 ops/byte of arithmetic intensity (GPUs want 10–40), so they are flatly DRAM-bandwidth-bound, and no amount of extra compute throughput or kernel fusion fixes that.</p>
+      <p><strong>Anaheim's fix is narrow by design.</strong> Rather than accelerating everything, it offloads <i>only</i> the element-wise ops into <span class="mem-chip chip-huge">PIM units placed next to each DRAM bank</span> (or on HBM's logic die, in a custom-HBM variant), where internal bandwidth is far higher than the external DRAM interface. NTT, BConv, and automorphism — the parts that are actually compute-bound or need complex data movement — stay on the GPU. A software framework (<span class="mem-chip chip-mech">the "glue"</span>) reorders op sequences, fuses automorphism with accumulation, and exposes a CUDA-style API so PIM kernels slot into an existing GPU pipeline with only microseconds of transition overhead.</p>
+      <p><strong>The upshot:</strong> across six real FHE/DNN workloads, Anaheim delivers <b>1.06–1.74× workload speedup</b> and <b>1.62–3.14× energy-delay-product improvement</b>, using PIM units that add only <b>≈7.6–9.9% area overhead</b> per DRAM die — no new DRAM process, no custom ASIC, and GPU hardware modifications the paper argues are "manageable."</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>The debunked assumption: FHE-on-GPU is <b>not</b> primarily bottlenecked by NTT/BConv — it's bottlenecked by <b>element-wise ops</b> starved of DRAM bandwidth.</li>
+        <li>The mechanism: <b>hoisting</b> (the right GPU-side algorithm given limited cache, D1) shrinks ModSwitch time and grows the element-wise share to 45–69% of bootstrapping.</li>
+        <li>The fix is surgical: offload <b>only</b> element-wise ops to PIM; keep NTT/BConv/automorphism on the GPU, where they're already efficient.</li>
+        <li>Software makes it work: reordering + automorphism fusion + a CUDA-style PIM-launch API, with microsecond (not millisecond) transition overhead.</li>
+        <li>A data layout (column partitioning / PolyGroups) is required to amortize ACT/PRE once every bank fires a PIM op at once — without it, gains vanish (2.1–2.2× slower, per the paper's ablation).</li>
+        <li>Two microarchitecture variants: <b>near-bank PIM</b> (like HBM-PIM/GDDR6-AiM) and <b>custom-HBM</b> (PIM on the logic die, avoiding DRAM-process constraints).</li>
+        <li>Net results: <b>1.06–1.74×</b> speedup, <b>1.38–2.05×</b> energy reduction, <b>1.62–3.14×</b> EDP improvement, at <b>≈7.6–9.9%</b> die-area overhead.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole idea in one picture: what bootstrapping time is actually made of</div>
+      <div class="viz-kicker">measured with Cheddar, D=4, hoisting — the algorithm real GPU libraries actually use</div>
+      <div class="legend">
+        <span><i style="background:var(--honey-deep)"></i> everything else — NTT, BConv, automorphism, memcpy (compute- or movement-bound, stays on GPU)</span>
+        <span><i style="background:var(--cost)"></i> element-wise ops — HADD/PMULT/accumulation (DRAM-bandwidth-bound — the target for PIM)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 260" role="img" aria-label="On A100 80GB, element-wise ops are 45 to 48 percent of bootstrapping time; on RTX 4090 they are 68 to 69 percent">
+        <text x="20" y="28" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">A100 80GB</text>
+        <rect x="20" y="40" width="720" height="46" rx="8" fill="#FBEACB" stroke="#EFD9AC" stroke-width="1.2"/>
+        <rect x="20" y="40" width="342" height="46" rx="8" fill="#C0563B"/>
+        <text x="191" y="68" text-anchor="middle" font-family="JetBrains Mono" font-size="13" font-weight="700" fill="#fff">element-wise: 45–48%</text>
+        <text x="562" y="68" text-anchor="middle" font-family="JetBrains Mono" font-size="12.5" fill="#6e4a09">NTT + BConv + Aut + memcpy: 52–55%</text>
+
+        <text x="20" y="128" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">RTX 4090</text>
+        <rect x="20" y="140" width="720" height="46" rx="8" fill="#FBEACB" stroke="#EFD9AC" stroke-width="1.2"/>
+        <rect x="20" y="140" width="500" height="46" rx="8" fill="#C0563B"/>
+        <text x="270" y="168" text-anchor="middle" font-family="JetBrains Mono" font-size="13" font-weight="700" fill="#fff">element-wise: 68–69%</text>
+        <text x="630" y="168" text-anchor="middle" font-family="JetBrains Mono" font-size="12.5" fill="#6e4a09">rest: 31–32%</text>
+
+        <text x="20" y="222" font-family="JetBrains Mono" font-size="11" fill="#9A8E7C">Regardless of parameter choice (decomposition number D swept 3–10 in the paper). Bars are to scale within each row; the two rows are not on a shared time axis.</text>
+        <text x="20" y="242" font-family="JetBrains Mono" font-size="11" fill="#9A8E7C">If MinKS is used instead of hoisting, the A100 element-wise share drops to ~28% — comparable to a normal HMULT/HROT — because hoisting is what pushes it this high.</text>
+      </svg>
+      <figcaption><b>Read it as the paper's whole thesis in two bars.</b> Every prior FHE-accelerator architecture optimized for NTT/BConv. On a real GPU running the algorithm real libraries actually use (hoisting), those ops are the <i>minority</i> of bootstrapping time — element-wise arithmetic, throttled by off-chip DRAM bandwidth, is the majority. That's the gap Anaheim's PIM units are built to close. (Precise sub-splits of the "everything else" bucket are not broken out in the source figure; only the element-wise share is stated as an exact range in the text.)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">wrong assumption → measurement → diagnosis → surgical fix → result</div>
+      <div class="flow-row">
+        <div class="node n-cost"><div class="nt">Problem</div><div class="nd">GPUs lack ASIC-scale cache (D1); element-wise ops turn out to dominate bootstrapping time (45–69%)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-honey" style="border-color:#EFD9AC;background:var(--honey-soft)"><div class="nt">Diagnosis</div><div class="nd">Hoisting (the right choice given D1) shrinks ModSwitch but grows element-wise share; these ops are &lt;2 ops/byte — flatly DRAM-bound</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-huge"><div class="nt">Fix</div><div class="nd">Offload only element-wise ops to PIM units beside every DRAM bank; leave NTT/BConv/automorphism on the GPU</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-mech"><div class="nt">Enable</div><div class="nd">Anaheim software framework: op reordering, automorphism fusion, CUDA-style PIM launch API, column-partitioned data layout</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Result</div><div class="nd">1.06–1.74× speedup · 1.62–3.14× EDP improvement · ≈7.6–9.9% die-area overhead</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about Anaheim</h2>
+      <p class="sub">Each picture stands alone — read in any order. Every card ends with an honest note about where the analogy stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="10" y="40" width="60" height="18" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2"/>
+          <path d="M14 49 h52" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="40" y="70" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#2C8C7C">highway (NTT/BConv)</text>
+          <g fill="#FBEACB" stroke="#C27D14" stroke-width="1.2">
+            <rect x="86" y="28" width="10" height="10"/><rect x="100" y="28" width="10" height="10"/><rect x="114" y="28" width="10" height="10"/>
+            <rect x="86" y="42" width="10" height="10"/><rect x="114" y="42" width="10" height="10"/>
+            <rect x="86" y="56" width="10" height="10"/><rect x="100" y="56" width="10" height="10"/><rect x="114" y="56" width="10" height="10"/>
+          </g>
+          <text x="107" y="76" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#9a3a22">many stops (elementwise)</text>
+        </svg></div>
+        <span class="term">The core discovery · where the time goes</span>
+        <h3>The highway vs. the errands</h3>
+        <p>NTT and BConv are the highway: dense, fast, high-throughput — a truck moving a lot of cargo per mile of road (per byte fetched). Element-wise ops are the local errands: dozens of tiny stops, each one paying the full cost of getting the truck moving again. Nobody times the errands because the highway <i>looks</i> like the hard part — until you clock a real delivery day and find the errands ate the afternoon.</p>
+        <div class="breaks"><b>Where it breaks:</b> the errands aren't slow because there are many of them — they're slow because each one is starved of bandwidth (&lt;2 ops/byte). A faster truck (more GPU compute) doesn't help; you need more/faster roads to each stop (more effective bandwidth), which is exactly what PIM supplies.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="16" width="34" height="64" rx="4" fill="#fff" stroke="#5A61B4" stroke-width="2"/>
+          <text x="31" y="46" text-anchor="middle" font-family="monospace" font-size="7" fill="#5A61B4">GPU</text>
+          <text x="31" y="58" text-anchor="middle" font-family="monospace" font-size="6.5" fill="#5A61B4">40MB L2</text>
+          <rect x="92" y="16" width="34" height="64" rx="4" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2"/>
+          <rect x="96" y="20" width="26" height="56" fill="#5A61B4" opacity=".18"/>
+          <text x="109" y="46" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">ASIC</text>
+          <text x="109" y="58" text-anchor="middle" font-family="monospace" font-size="6.5" fill="#3a409a">180–512MB</text>
+        </svg></div>
+        <span class="term">The constraint · D1 (cache gap)</span>
+        <h3>The studio apartment vs. the mansion</h3>
+        <p>An ASIC accelerator is a custom-built mansion with a walk-in pantry the size of a small house (180–512MB of cache) — you can stockpile the evk and never restock. A GPU is a studio apartment (40MB L2 on an A100): you simply cannot hoard 136MB evks and 27MB ciphertexts on the shelf. So GPU "cooking" (algorithm choice) has to change — smaller trips, more prep — not because GPUs are worse chefs, but because the pantry is smaller.</p>
+        <div class="breaks"><b>Where it breaks:</b> the studio-apartment dweller can't just "buy a bigger fridge" — DRAM bandwidth itself is power-limited (the paper cites this explicitly), so brute-force scaling isn't on the table the way it might be for a literal apartment upgrade.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="20" width="46" height="56" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="1.5"/>
+          <path d="M62 48 h18" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3"/>
+          <rect x="86" y="20" width="38" height="56" rx="4" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2.5"/>
+          <circle cx="105" cy="48" r="10" fill="#2C8C7C"/>
+          <text x="39" y="86" text-anchor="middle" font-family="monospace" font-size="7" fill="#6E6456">central kitchen</text>
+          <text x="105" y="86" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">chef in the pantry</text>
+        </svg></div>
+        <span class="term">The fix · PIM offload</span>
+        <h3>Sending the sous-chef into the pantry</h3>
+        <p>Instead of hauling ingredients (evks, plaintexts) across the kitchen to one central chef every time, Anaheim puts a small sous-chef (a PIM unit with 8 modular multiply-accumulate units) right inside the pantry (next to each DRAM bank). The sous-chef only does the simple prep work — chopping, mixing (element-wise ops) — while the head chef (GPU) still handles the technique-heavy dishes (NTT/BConv) at the main station.</p>
+        <div class="breaks"><b>Where it breaks:</b> the sous-chef can't do <i>everything</i> in the pantry — complex plating (automorphism's data shuffling) still has to go to the head chef, and every pantry-chef needs the shelf organized a specific way (column partitioning) or they spend more time hunting for ingredients than cooking.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="48" r="18" fill="none" stroke="#5A61B4" stroke-width="2"/>
+          <path d="M30 48 L45 40 M30 48 L45 56 M30 48 L48 48" stroke="#5A61B4" stroke-width="1.6"/>
+          <text x="30" y="80" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">hoist: 1 trip, K riders</text>
+          <circle cx="106" cy="34" r="7" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.5"/>
+          <circle cx="106" cy="52" r="7" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.5"/>
+          <circle cx="106" cy="70" r="7" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.5"/>
+          <path d="M106 34 L106 70" stroke="#C0563B" stroke-width="1.4" stroke-dasharray="2 2"/>
+          <text x="106" y="86" text-anchor="middle" font-family="monospace" font-size="7" fill="#9a3a22">MinKS: same key, K times</text>
+        </svg></div>
+        <span class="term">The fork · hoisting vs. MinKS</span>
+        <h3>The shared shuttle vs. the reused key card</h3>
+        <p>Hoisting is a shared airport shuttle: instead of K separate cars each driving the same first leg (ModUp) to the terminal, one shuttle does that leg once carrying all K passengers, then they split up. MinKS is a reused key card: instead of issuing K different master keys (evks), you issue one and swipe it K times in sequence — cheaper to mint, but you now do K sequential swipes instead of one parallel batch.</p>
+        <div class="breaks"><b>Where it breaks:</b> you can't run both systems at once — the shuttle needs everyone traveling together (batched, extended-modulus ops); the reused key needs sequential access. The paper is explicit that hoisting and MinKS are mutually exclusive within one linear transform.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <g fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1">
+            <rect x="14" y="20" width="14" height="14"/><rect x="30" y="20" width="14" height="14"/><rect x="46" y="20" width="14" height="14"/><rect x="62" y="20" width="14" height="14"/>
+            <rect x="14" y="36" width="14" height="14"/><rect x="30" y="36" width="14" height="14"/><rect x="46" y="36" width="14" height="14"/><rect x="62" y="36" width="14" height="14"/>
+          </g>
+          <text x="45" y="66" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e4a09">scattered orders</text>
+          <g fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1">
+            <rect x="92" y="20" width="10" height="30"/><rect x="104" y="20" width="10" height="30"/><rect x="116" y="20" width="10" height="30"/>
+          </g>
+          <text x="106" y="66" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">grouped by shelf</text>
+        </svg></div>
+        <span class="term">The layout · column partitioning &amp; PolyGroup</span>
+        <h3>Organizing the warehouse shelf by order, not by arrival</h3>
+        <p>If a warehouse shelves items in the order they arrived, filling one order means walking the whole aisle. Anaheim's <b>PolyGroup</b> layout instead pre-plans the shelf: related polynomials (the ones a PIM instruction will touch together) sit in the <i>same row</i>, so one aisle visit (one DRAM row activation) serves many chunks of the order at once — amortizing the walk (ACT/PRE) instead of paying it per item.</p>
+        <div class="breaks"><b>Where it breaks:</b> this only works because FHE's computation pattern is entirely static and known in advance — the warehouse can pre-plan because every "order" (op sequence) is identical every time. A workload with unpredictable access patterns couldn't pre-organize the shelf this way.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="24" width="50" height="48" rx="4" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="2"/>
+          <text x="41" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">136MB evk</text>
+          <path d="M70 48 h16" stroke="#9A8E7C" stroke-width="2"/>
+          <path d="M86 44 l-6 4 l6 4" stroke="#9A8E7C" stroke-width="2" fill="none" transform="translate(0,0) scale(-1,1) translate(-166,0)"/>
+          <rect x="90" y="30" width="36" height="36" rx="4" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="108" y="52" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#1f5b51">used once,<br/>discarded</text>
+        </svg></div>
+        <span class="term">The waste eliminated · one-time-use data</span>
+        <h3>Packing material that never needs to leave the warehouse</h3>
+        <p>evks and the plaintexts p̂ᵢ are "one-time-use data that never leaves DRAM" — like packing peanuts used once inside the warehouse and thrown away on the spot. A GPU-only pipeline still trucks that packing material to the loading dock (GPU cache/registers) and back, even though it was never meant to travel. PIM lets the peanuts stay exactly where they were used: Anaheim eliminates <b>1.20GB</b> of such DRAM traffic in its D=4, K=8 running example alone.</p>
+        <div class="breaks"><b>Where it breaks:</b> it's not entirely free — some data (like ModUp(a), up to 68MB in the running example) still has to be written back from GPU cache to DRAM first, so PIM can find it. The saving is large, not total.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Section by section</div>
+      <h2>How Anaheim actually works</h2>
+      <p class="sub">The hardware gap that forces the algorithm choice → the measurement that finds the real bottleneck → the software framework that offloads it → the PIM microarchitecture and data layout that make offloading pay off.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The hardware gap that decides the algorithm (§III)</h3>
+      <p>Table III (below, reconstructed from the paper) makes D1 concrete: an A100 80GB has <b>1802GB/s</b> of DRAM bandwidth and 40MB of L2 cache; an RTX 4090 has <b>939GB/s</b> and even less cache headroom. Prior ASIC proposals assumed 180–512MB of cache and 72–92TB/s of effective cache bandwidth — orders of magnitude beyond what any GPU offers. Given that gap, GPU FHE libraries (100×, Cheddar) correctly choose <b>hoisting</b> over <b>MinKS</b>: hoisting trades more computation for less DRAM traffic, which is the right trade when compute is relatively cheap and DRAM bandwidth is the scarce resource.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Cache and bandwidth: what a GPU has vs. what ASIC papers assumed</div>
+        <div class="viz-kicker">approximate scale — the ratio is the point, not the pixel-perfect width</div>
+        <div class="bars shown">
+          <div class="bar-row"><div class="bar-label">A100 L2<small>on-chip cache</small></div><div class="bar-track"><div class="bar-fill bf-base" style="width:9%"><span>40MB</span></div></div></div>
+          <div class="bar-row"><div class="bar-label">ASIC cache<small>prior proposals</small></div><div class="bar-track"><div class="bar-fill bf-huge" style="width:100%"><span>180–512MB</span></div></div></div>
+          <div class="bar-row"><div class="bar-label">A100 DRAM BW<small>off-chip</small></div><div class="bar-track"><div class="bar-fill bf-base" style="width:2%"><span>1.8TB/s</span></div></div></div>
+          <div class="bar-row"><div class="bar-label">ASIC cache BW<small>on-chip</small></div><div class="bar-track"><div class="bar-fill bf-mid" style="width:100%"><span>72–92TB/s</span></div></div></div>
+        </div>
+        <figcaption>Both gaps run roughly one to two orders of magnitude. Because MinKS only pays off once an evk (136MB) and a few ciphertexts (~217MB total) fit resident in cache, a GPU simply cannot exploit it the way an ASIC can — hence hoisting on GPUs, and everything that follows from it.</figcaption>
+      </figure>
+
+      <h3>2 · Hoisting vs. MinKS, quantified (§III-B/C)</h3>
+      <p>The paper's running example (D=4, K=8, CoeffToSlot linear transform inside bootstrapping) gives exact figures for the trade:</p>
+      <table class="tbl">
+        <thead><tr><th>Algorithm</th><th>evks</th><th>Plaintexts</th><th># (I)NTT (limbs)</th><th>Cache needed for reuse</th></tr></thead>
+        <tbody>
+          <tr><td>Baseline</td><td class="mono">4.03GB</td><td class="mono">1.14GB</td><td class="mono">12,792</td><td class="mono">—</td></tr>
+          <tr class="best"><td>Hoisting</td><td class="mono">4.03GB</td><td class="mono">1.46GB</td><td class="mono">5,188</td><td class="mono">&gt;8MB</td></tr>
+          <tr><td>MinKS</td><td class="mono">1.02GB</td><td class="mono">1.14GB</td><td class="mono">12,792</td><td class="mono">&gt;217MB</td></tr>
+        </tbody>
+      </table>
+      <p>Hoisting cuts (I)NTT limb-ops from 12,792 to 5,188 — a <b>2.47×</b> reduction — at the cost of larger plaintexts (1.14→1.46GB) but needs only ~8MB of cache to realize (well within GPU L2). MinKS cuts evk memory 4.03→1.02GB (<b>~4×</b>) but needs &gt;217MB resident to actually reuse that single evk — squarely in ASIC territory, not GPU. This single table is why GPU libraries hoist and ASICs (with MinKS) go a different direction.</p>
+
+      <h3>3 · The measurement that changes everything (§IV)</h3>
+      <p>Using Cheddar (a fast, modern GPU FHE library), the paper measures T_boot,eff while sweeping the decomposition number D on both A100 80GB and RTX 4090. The result: element-wise ops consume <b>45–48%</b> of bootstrapping time on A100, <b>68–69%</b> on RTX 4090 — regardless of D. Switching from hoisting to MinKS on the same GPU drops the element-wise share to <b>~28%</b> on A100 (comparable to a normal HMULT/HROT's 20–27%), confirming hoisting itself is the mechanism inflating this share. Kernel fusion (already state-of-the-art in Cheddar) and increasing <code>fftIter</code> (decomposing linear-transform matrices further) both fail to meaningfully help — fusion is limited because evks/b/p̂ᵢ must still be loaded from DRAM, and higher fftIter trades element-wise time for a worse L_eff.</p>
+
+      <div class="callout why"><span class="ic">◆</span><div><b>Why this is genuinely surprising.</b> Every architectural paper before this one (BTS, ARK, SHARP, CraterLake, F1) built custom datapaths for NTT/BConv. On a real GPU running the algorithm real libraries actually use, that's optimizing the minority of the time. Compute-throughput improvements (RTX 4090's 2.1× higher integer TOPS over A100) do speed up NTT/BConv (2.0×) and BConv (1.4×) — confirming they're compute-bound — but do nothing for element-wise ops, which need bandwidth, not FLOPs.</div></div>
+
+      <h3>4 · Offloading element-wise ops to PIM (§V-A/B)</h3>
+      <p>The paper first tries a "cheat": measure a hoisted linear transform, then simulate 4× higher DRAM bandwidth by underclocking the GPU core to 1/4 (which also cuts cache bandwidth 1/4) while holding the DRAM clock fixed, then dividing execution time by 4. Result: element-wise ops get <b>2.84×</b> faster and automorphism <b>2.54×</b> faster — but ModSwitch variants (NTT/BConv-bound) barely move, confirming those are compute-, not bandwidth-, bound. Quadrupling real external DRAM bandwidth is power-infeasible, so Anaheim instead exploits DRAM's much higher <i>internal</i> bandwidth via PIM — reaching similar per-op speedups without touching the external interface.</p>
+      <p>Crucially, Anaheim restricts PIM to <i>only</i> element-wise ops: NTT/BConv (inside ModSwitch) are compute-bound and gain little from more bandwidth, and automorphism's complex data permutation is hard for PIM to execute cheaply. Element-wise ops, by contrast, are "embarrassingly parallel" — an op over L limbs × N coefficients decomposes into L×N independent scalar ops — which is exactly the shape a highly parallel, simple PIM unit wants.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">PIM offloading inside one linear transform</div>
+        <div class="viz-kicker">rebuilt from Fig. 5 — reordering + automorphism fusion expose a large PIM-offloadable block</div>
+        <svg class="full" viewBox="0 0 760 220" role="img" aria-label="A linear transform: GPU does ModUp, writes back a to DRAM, PIM does KeyMult MAC PMult Aut Accum for all K rotations, GPU does ModDown">
+          <rect x="10" y="70" width="120" height="60" rx="8" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.6"/>
+          <text x="70" y="95" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#6e4a09">GPU</text>
+          <text x="70" y="113" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">ModUp(a)</text>
+          <path d="M132 100 h26" stroke="#9A8E7C" stroke-width="2"/>
+          <text x="145" y="90" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">write-back</text>
+          <rect x="160" y="40" width="420" height="140" rx="10" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="370" y="60" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#1f5b51">PIM (inside DRAM) — one big offloaded block</text>
+          <g font-family="JetBrains Mono" font-size="10" fill="#1f5b51">
+            <rect x="176" y="74" width="80" height="26" rx="5" fill="#fff" stroke="#2C8C7C"/><text x="216" y="91" text-anchor="middle">KeyMult×K</text>
+            <rect x="266" y="74" width="60" height="26" rx="5" fill="#fff" stroke="#2C8C7C"/><text x="296" y="91" text-anchor="middle">MAC</text>
+            <rect x="336" y="74" width="70" height="26" rx="5" fill="#fff" stroke="#2C8C7C"/><text x="371" y="91" text-anchor="middle">PMult×K</text>
+            <rect x="416" y="74" width="60" height="26" rx="5" fill="#fff" stroke="#2C8C7C"/><text x="446" y="91" text-anchor="middle">Aut</text>
+            <rect x="486" y="74" width="76" height="26" rx="5" fill="#fff" stroke="#2C8C7C"/><text x="524" y="91" text-anchor="middle">Accum</text>
+          </g>
+          <text x="370" y="118" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">reordered: Aut moved before PMult (preprocess p instead) — fuses Aut+Accum into one PIM kernel</text>
+          <text x="370" y="136" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">eliminates 2K extra DRAM reads + 2K writes vs. the original op order</text>
+          <path d="M582 100 h26" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="610" y="70" width="130" height="60" rx="8" fill="var(--honey-soft)" stroke="#C27D14" stroke-width="1.6"/>
+          <text x="675" y="95" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#6e4a09">GPU</text>
+          <text x="675" y="113" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">ModDown</text>
+        </svg>
+        <figcaption>Only D=4 polynomials (ModUp(a)) need writing back before the whole KeyMult→MAC→Aut→Accum block runs inside DRAM. Reordering automorphism to occur on preprocessed plaintexts instead of after MAC — using [⟨(m≪R)⊙p⟩] = [⟨(m⊙(p≫R))≪R⟩] — removes 2K reads and 2K writes that the naive op order would otherwise force through GPU cache.</figcaption>
+      </figure>
+
+      <h3>5 · The software framework (§V-C)</h3>
+      <p>Four design goals shape it: minimize GPU hardware changes, keep the PIM device abstract (chip designers need not know its microarchitecture), minimize PIM↔GPU transition overhead, and make PIM effortless for programmers. Concretely: a new CUDA Runtime API call (<code>cudaLaunchPIMKernel</code>) queues PIM kernels asynchronously in the existing stream-ordered execution model — transitions cost only microseconds against PIM kernels that run hundreds of microseconds. Because FHE's computation graph is entirely static, memory addresses can be predetermined ahead of time. A software-inserted, clflush-like write-back (without cache invalidation) keeps DRAM coherent with GPU L2 before PIM reads it. A high-level library hides all of this behind ordinary-looking code (<code>LinearTransform lt(matrix, context); lt.Evaluate(...)</code>).</p>
+
+      <h3>6 · PIM microarchitecture (§VI-A)</h3>
+      <p>Each PIM unit sits beside a DRAM bank (near-bank variant) or on HBM's logic die serving several banks (custom-HBM variant). It contains an instruction decoder, <b>8 modular multiply-accumulate (MMAC) units</b> — matching the 256-bit DRAM global I/O datapath at 32 bits/word — a 224-bit-wide data buffer, and control logic. The MMAC units are general-purpose modular arithmetic (not fixed per-op logic, since logic on a DRAM process node is costly), support Montgomery reduction (exploiting that eligible primes satisfy Qᵢ ≡ 1 mod 2N), and use small <b>28-bit primes</b> with double-prime scaling to keep area/energy low without sacrificing precision. Table II's instruction set spans basic ops (Add, Mult, MAC), constant-embedded ops (CMAC), and compound ops (PAccum⟨K⟩, CAccum⟨K⟩, Tensor) that fuse an entire accumulation chain into one instruction.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Anaheim PIM unit, next to one DRAM bank</div>
+        <div class="viz-kicker">rebuilt from Fig. 6</div>
+        <svg class="full" viewBox="0 0 760 210" role="img" aria-label="A DRAM bank feeds its I/O sense amplifier into a PIM unit containing an instruction decoder, eight MMAC units, and a data buffer">
+          <rect x="20" y="30" width="150" height="150" rx="8" fill="var(--paper-2)" stroke="var(--line-strong)" stroke-width="1.5"/>
+          <text x="95" y="52" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#332C24">DRAM bank</text>
+          <rect x="36" y="66" width="118" height="40" rx="6" fill="#fff" stroke="#9A8E7C" stroke-width="1.3"/>
+          <text x="95" y="90" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">cell array</text>
+          <rect x="36" y="118" width="118" height="30" rx="6" fill="#fff" stroke="#9A8E7C" stroke-width="1.3"/>
+          <text x="95" y="137" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">IOSA (256-bit)</text>
+          <path d="M170 133 h30" stroke="#9A8E7C" stroke-width="2.2"/>
+          <rect x="210" y="20" width="530" height="170" rx="10" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="475" y="42" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#1f5b51">PIM unit</text>
+          <rect x="226" y="56" width="110" height="40" rx="6" fill="#fff" stroke="#2C8C7C" stroke-width="1.3"/>
+          <text x="281" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">Inst. decoder</text>
+          <rect x="226" y="106" width="110" height="70" rx="6" fill="#fff" stroke="#2C8C7C" stroke-width="1.3"/>
+          <text x="281" y="128" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">Data buffer</text>
+          <text x="281" y="144" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">224-bit wide</text>
+          <text x="281" y="160" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">B entries</text>
+          <g font-family="JetBrains Mono" font-size="8.7" fill="#1f5b51">
+            <rect x="356" y="56" width="60" height="26" rx="4" fill="#fff" stroke="#2C8C7C"/><text x="386" y="73" text-anchor="middle">MMAC 0</text>
+            <rect x="420" y="56" width="60" height="26" rx="4" fill="#fff" stroke="#2C8C7C"/><text x="450" y="73" text-anchor="middle">MMAC 1</text>
+            <rect x="484" y="56" width="60" height="26" rx="4" fill="#fff" stroke="#2C8C7C"/><text x="514" y="73" text-anchor="middle">MMAC 2</text>
+            <rect x="548" y="56" width="60" height="26" rx="4" fill="#fff" stroke="#2C8C7C"/><text x="578" y="73" text-anchor="middle">MMAC 3</text>
+            <rect x="356" y="90" width="60" height="26" rx="4" fill="#fff" stroke="#2C8C7C"/><text x="386" y="107" text-anchor="middle">MMAC 4</text>
+            <rect x="420" y="90" width="60" height="26" rx="4" fill="#fff" stroke="#2C8C7C"/><text x="450" y="107" text-anchor="middle">MMAC 5</text>
+            <rect x="484" y="90" width="60" height="26" rx="4" fill="#fff" stroke="#2C8C7C"/><text x="514" y="107" text-anchor="middle">MMAC 6</text>
+            <rect x="548" y="90" width="60" height="26" rx="4" fill="#fff" stroke="#2C8C7C"/><text x="578" y="107" text-anchor="middle">MMAC 7</text>
+          </g>
+          <text x="475" y="140" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">8 × 28-bit MMAC = 224 bits ≈ 256-bit DRAM I/O datapath</text>
+          <text x="475" y="158" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">±a×b±c mod p, with Montgomery reduction (Qᵢ ≡ 1 mod 2N)</text>
+          <rect x="620" y="56" width="100" height="60" rx="6" fill="#fff" stroke="#2C8C7C" stroke-width="1.3"/>
+          <text x="670" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">Constant &amp;</text>
+          <text x="670" y="94" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">prime control</text>
+        </svg>
+        <figcaption>Eight MMAC units line up exactly with the 256-bit DRAM global I/O datapath at 32-bit granularity (28 bits used, truncated from the 32-bit storage format). Constants and primes are broadcast from the decoder rather than stored per-MMAC, saving data-buffer ports.</figcaption>
+      </figure>
+
+      <h3>7 · Column partitioning &amp; PolyGroups (§VI-B/C)</h3>
+      <p>When every bank fires a PIM op simultaneously (all-bank operation), no other bank's transfer is available to hide ACT/PRE behind — so Anaheim's data layout is designed to amortize that cost across many chunk accesses per row activation. Data is partitioned into <b>die groups</b> (e.g., one HBM stack per group on A100, each handling L/5 limbs), then within a bank into <b>column groups</b> holding several 256-bit chunks each, with limbs wrapped across adjacent rows to form a <b>row group</b>. A programmer-visible <b>PolyGroup</b> allocation places the polynomials one PIM instruction will touch together in the same row/column groups, so accessing 8 chunks at a time (for example) never triggers an extra ACT/PRE. Skipping this (allocating contiguously instead) makes element-wise ops <b>2.24×</b> (A100) and <b>2.11×</b> (RTX 4090) slower in the paper's ablation — enough to erase most of the benefit.</p>
+
+      <h3>8 · Two realizations: near-bank PIM vs. custom-HBM (§V-D/§VI-D)</h3>
+      <p><b>Near-bank PIM</b> follows real products (HBM-PIM, GDDR6-AiM): the PIM unit sits directly beside each DRAM bank, inside the DRAM die. <b>Custom-HBM</b> instead places all PIM units on HBM's logic die, connected to multiple banks via additional through-silicon vias (TSVs), exploiting advanced packaging (hybrid bonding) to add TSV density cheaply. The paper considers custom-HBM "especially practical" because it avoids modifying the restrictive DRAM process node at all — only the logic die, which can use a normal logic process (from HBM4 onward).</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Put real numbers on it</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations recomputed from the paper's own stated figures, then an interactive estimator for the gap between a naive bandwidth argument and Anaheim's actual reported speedups.</p>
+    </div>
+
+    <div class="card">
+      <h3>Example 1 — sizing an evk from first principles</h3>
+      <p>The paper states a polynomial can be as large as <b>17MB</b> and a full evk <b>136MB</b>, with D = 4 by default and evk = 2·D polynomials in the extended modulus.</p>
+      <ol class="seq">
+        <li><b>Polynomial count:</b> 2·D = 2×4 = <b>8</b> polynomials per evk.</li>
+        <li><b>Naive check:</b> 8 × 17MB = <b>136MB</b> — matches the paper's stated evk size exactly, even though evk polynomials technically carry L+α limbs (slightly more than a plain L-limb polynomial), which the 17MB figure evidently already reflects as a "large" polynomial size.</li>
+        <li><b>Takeaway:</b> every evk-heavy op (HMULT, HROT) moves ~8× the data of a single polynomial op — which is exactly why evk traffic, not raw polynomial size, dominates FHE's memory footprint.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> D isn't just an algorithm knob — it's a direct multiplier on evk size (2·D polynomials) and, per Primer 6, also on L_eff. Every D you increase buys more multiplications between bootstraps at the cost of proportionally larger evks.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 2 — hoisting's and MinKS's numbers, reconciled</h3>
+      <p>From the D=4, K=8 CoeffToSlot table (Tab 4, section 2): Baseline 12,792 (I)NTT limb-ops, Hoisting 5,188; Baseline 4.03GB evks, MinKS 1.02GB.</p>
+      <ol class="seq">
+        <li><b>Hoisting's (I)NTT reduction:</b> 12,792 / 5,188 = <b>2.4657…× ≈ 2.47×</b> — matches the paper's claim exactly.</li>
+        <li><b>MinKS's evk reduction:</b> 4.03GB / 1.02GB = <b>3.95× ≈ "4× fewer evks"</b> as stated (K=8 rotations sharing one evk instead of eight explains the near-exact 4× — the paper's 8 rotations reduce to roughly 2 effective evk-equivalents of traffic due to reuse patterns not fully detailed in the text; treat "~4×" as the paper's own summary figure).</li>
+        <li><b>MinKS's cache requirement, checked:</b> the paper says MinKS needs ">217MB [1 evk + 3 ciphertexts]." One evk = 136MB; three ciphertexts at 27MB each = 81MB. <b>136 + 81 = 217MB</b> — exact match.</li>
+      </ol>
+      <div class="callout warn" style="margin-top:6px"><span class="ic">▲</span><div><b>Misconception it kills:</b> "MinKS is strictly better since it needs 4× less evk memory." It needs 4× less <i>total</i> evk memory, but only pays off if 217MB of it stays <i>resident</i> simultaneously — a GPU's 40MB L2 can't hold that, so MinKS's smaller footprint is irrelevant without ASIC-scale cache.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 3 — how much DRAM traffic PIM actually removes</h3>
+      <p>For the D=4, K=8 running example, the paper states PIM eliminates <b>1.20GB</b> of evk/plaintext DRAM access while adding back up to <b>68MB</b> of ModUp(a) write-back. At the full bootstrapping-workload level (simulated), PIM cuts GPU-side DRAM access to <b>6.03GB</b>, a stated <b>6.15×</b> reduction versus the no-PIM baseline, and only <b>1.86×</b> above an idealized no-PIM case (MinKS + unlimited cache).</p>
+      <ol class="seq">
+        <li><b>Net win in the running example:</b> 1.20GB eliminated vs. 68MB added back → a <b>~17.6×</b> ratio of traffic removed to traffic added (1200MB / 68MB ≈ 17.6), so the trade is heavily favorable even before counting the compute-side benefits.</li>
+        <li><b>Recomputing the baseline:</b> if PIM's 6.03GB is 6.15× lower than the no-PIM baseline, the baseline must be 6.03 × 6.15 ≈ <b>37.1GB</b> of GPU-side DRAM access for the full bootstrapping workload.</li>
+        <li><b>Recomputing the ideal case:</b> if PIM's 6.03GB is only 1.86× above the ideal (MinKS, unlimited cache) case, the ideal must be 6.03 / 1.86 ≈ <b>3.24GB</b>.</li>
+        <li><b>Energy:</b> despite element-wise-op DRAM access converting to PIM-side access (and even growing slightly in raw amount), the much shorter physical distance data travels yields a <b>2.87×</b> overall DRAM-access energy reduction.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> PIM doesn't just move the bottleneck — it lands close to the theoretical ideal (1.86× above a cache-unlimited fantasy) without requiring any actual cache expansion, because it exploits internal DRAM bandwidth instead.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 4 — a naive bandwidth estimate vs. what Anaheim actually delivers</h3>
+      <p>The paper's own "cheat" experiment (§V-A) quadruples effective DRAM bandwidth by underclocking the GPU core to 1/4 and dividing execution time by 4: element-wise ops speed up <b>2.84×</b>, automorphism <b>2.54×</b>. Real Anaheim (PIM) achieves an effective internal-bandwidth increase of <b>16×</b> (A100, near-bank) or <b>8×</b> (RTX 4090, near-bank) per Table III — but the <i>overall workload</i> speedup is only <b>1.24–1.74×</b> (A100) or <b>1.06–1.49×</b> (RTX 4090), because element-wise ops are only part of total time and PIM adds its own overheads (write-backs, exposed ACT/PRE, kernel-launch transitions).</p>
+      <p>Try the estimator below — it applies a simple Amdahl's-law-style model (<em>this formula is my framing, not the paper's</em>) to see how far a naive "just multiply the memory-bound fraction's speedup" prediction lands from what the paper actually measured.</p>
+
+      <figure class="viz" id="pimFig" style="box-shadow:var(--shadow-sm);margin-top:10px">
+        <div class="viz-title">PIM speedup estimator (Amdahl-style — my framing)</div>
+        <div class="viz-kicker">workload speedup ≈ 1 / [(1 − f) + f / BW], f = fraction of time in memory-bound ops</div>
+        <div class="legend">
+          <span><i style="background:var(--cost)"></i> memory-bound fraction (element-wise, from Tab 2's signature figure)</span>
+          <span><i style="background:var(--huge)"></i> effective PIM bandwidth multiplier (Table III)</span>
+        </div>
+        <div class="part-viz">
+          <div class="part-controls">
+            <label for="fracRange">memory-bound time fraction: <span id="fracVal">47</span>%</label>
+            <input type="range" id="fracRange" min="10" max="90" step="1" value="47">
+          </div>
+          <div class="part-controls">
+            <label for="bwRange">assumed effective bandwidth multiplier: <span id="bwVal">16</span>×</label>
+            <input type="range" id="bwRange" min="1" max="16" step="1" value="16">
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-frac="47" data-bw="4" data-real="components only: 2.84× (elementwise), 2.54× (automorphism) — not a full-workload number" data-label="A100 · naive 4×BW test (§V-A)">A100, naive 4×BW test</button>
+            <button class="tbtn" data-frac="47" data-bw="16" data-real="1.24–1.74×" data-label="A100 · Anaheim near-bank PIM">A100, Anaheim (16×)</button>
+            <button class="tbtn" data-frac="68" data-bw="8" data-real="1.06–1.49×" data-label="RTX 4090 · Anaheim near-bank PIM">RTX 4090, Anaheim (8×)</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">Amdahl estimate<b id="sAmdahl">1.00×</b></div>
+            <div class="pstat">Anaheim reports<b id="sReal">pick a preset</b></div>
+          </div>
+          <div class="pverdict off" id="pimVerdict">Move the sliders, or pick a preset, to compare the naive estimate against what the paper actually measured.</div>
+        </div>
+        <figcaption>The Amdahl formula treats the memory-bound fraction as scaling perfectly with the bandwidth multiplier and everything else as fixed — a best case. The gap between this estimate and Anaheim's real range is where write-backs, exposed ACT/PRE under all-bank operation, kernel-transition overhead, and non-offloadable ops (automorphism, ModSwitch) actually live. This gap-reading is my interpretation; the underlying numbers (47%, 68%, 4×, 8×, 16×, 2.84×, 1.24–1.74×, 1.06–1.49×) are all stated in the paper.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Check yourself</div>
+      <h2>Practice</h2>
+      <p class="sub">Work the answer before opening it. Each answer ends with the misconception the question is designed to catch.</p>
+    </div>
+
+    <div class="prob">
+      <span class="ptag easy">Warm-up</span>
+      <div class="qtext">An evk is composed of 2·D polynomials in the extended modulus PQ. With the paper's default D=4, how many polynomials is that, and does it match the paper's 17MB polynomial / 136MB evk figures?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        2·D = 2×4 = <b>8</b> polynomials. 8 × 17MB = <b>136MB</b>, matching the paper's evk size exactly.
+        <span class="mis">Catches: treating an evk as "roughly the same size as a ciphertext." A ciphertext is 2 polynomials; an evk (D=4) is 8 — 4× more polynomials, in a larger modulus besides.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">A colleague says "just add more on-chip cache to the GPU and MinKS will work great, since it needs less evk memory overall." Using D1 and the >217MB cache figure, explain why this doesn't fix the GPU case the way it does for ASICs.</div>
+      <details><summary>Show answer</summary><div class="ans">
+        MinKS's benefit requires holding <b>one evk (136MB) plus several ciphertexts (~217MB total)</b> resident simultaneously to actually reuse it across K sequential rotations. A100's L2 is 40MB — even a large cache bump wouldn't close a 5×+ gap without approaching ASIC-scale (180–512MB) cache, which changes the chip's economics entirely (die area, cost, and yield), not just a parameter tweak. Meanwhile hoisting achieves its benefit with only ~8MB of cache — already within reach.
+        <span class="mis">Catches: treating "needs less total memory" as equivalent to "needs less cache." MinKS's memory savings are in total DRAM footprint; its performance benefit specifically requires on-chip residency, which is the actually scarce resource.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">Why does hoisting — an optimization that reduces the amount of computation and (I)NTT ops — end up increasing the fraction of time spent on element-wise ops, rather than decreasing overall time spent everywhere proportionally?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Hoisting shrinks ModSwitch (INTT/BConv/NTT) time by a large factor (2.47× fewer (I)NTT limb-ops in the example) by batching ModUp/ModDown once instead of K times. But it also moves the PMULT and accumulation ops into the <b>extended modulus PQ</b> (larger plaintexts, 1.14→1.46GB in the example) to make that batching possible. So the numerator (element-wise op time) grows somewhat while the denominator (total time) shrinks a lot — the ratio swings hard toward element-wise, even though hoisting is an unambiguous net win in absolute time.
+        <span class="mis">Catches: assuming "the fraction went up" means "that category got worse." Here the category's absolute cost is roughly flat-to-slightly-up while everything else dropped sharply — a classic Amdahl's-law illusion.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">Anaheim reports PIM cuts GPU-side DRAM access to 6.03GB, stated as 6.15× lower than the no-PIM baseline and 1.86× above an idealized (MinKS, unlimited cache) case. Recompute the baseline and ideal figures in GB, and explain why the ideal case still isn't zero.</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Baseline = 6.03GB × 6.15 ≈ <b>37.1GB</b>. Ideal = 6.03GB / 1.86 ≈ <b>3.24GB</b>. The ideal case isn't zero because even with unlimited cache and MinKS's reduced evk footprint, <b>compulsory cache misses</b> still occur the first time each evk/plaintext is fetched from DRAM — an infinite cache eliminates repeated fetches, not the first one. PIM's 6.03GB sits much closer to this compulsory-miss floor (1.86×) than to the realistic no-PIM baseline (6.15× away), which is the paper's real claim: PIM gets most of the theoretical benefit without needing the cache that would be required to get there conventionally.
+        <span class="mis">Catches: assuming "ideal" means literally zero DRAM traffic. Even a perfect cache still pays for compulsory misses — the ideal case is a floor, not an absence of cost.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">RTX 4090 has a higher element-wise-op share of bootstrapping time (68–69%) than A100 (45–48%), yet Anaheim's measured speedup on RTX 4090 (1.06–1.49×) is lower than on A100 (1.24–1.74×). Using Table III's numbers, explain the apparent contradiction.</div>
+      <details><summary>Show answer</summary><div class="ans">
+        A higher memory-bound fraction only translates into a bigger PIM speedup if PIM can also deliver a large effective bandwidth multiplier on that fraction. Table III gives A100 near-bank PIM a <b>16×</b> effective bandwidth increase (5 HBM2E stacks, 64 banks/die, one PIM die group per 8-die stack) versus only <b>8×</b> for RTX 4090 near-bank PIM (12 GDDR6X dies, 32 banks/die, one PIM die group per 4 dies) — GDDR6X's architecture simply offers less internal bandwidth headroom to exploit per die than HBM2E's. So RTX 4090 has "more of the pie" to attack but a smaller lever to attack it with, and the paper explicitly attributes its lower speedup to this lower BW-increase factor, not to the element-wise share.
+        <span class="mis">Catches: assuming the bottleneck's size alone determines the achievable speedup. The size of the fix's lever (here, the internal-vs-external bandwidth ratio a given DRAM technology and PIM placement can expose) matters just as much as the size of the problem.</span>
+      </div></details>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Loose ends</div>
+      <h2>Frequently asked</h2>
+      <p class="sub">The questions that come up once the mechanism clicks.</p>
+    </div>
+    <div class="faq">
+
+      <details><summary><span class="q">Q</span>Is Anaheim an ASIC that replaces GPUs for FHE?<span class="chev">▾</span></summary>
+        <div class="a">No — it's an augmentation. The GPU keeps doing NTT, BConv, and automorphism exactly as before; only element-wise ops move to PIM units living inside DRAM. The paper is explicit that this "requires only manageable hardware modifications to the GPU," pointing to Samsung's MI100-PIM (a real AMD MI100 GPU integrated with HBM-PIM stacks) as an existence proof that GPU+PIM integration is practical today.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>If NTT isn't the bottleneck, why did every prior FHE accelerator paper target it?<span class="chev">▾</span></summary>
+        <div class="a">Because on custom ASICs with hundreds of MB of cache, NTT/BConv genuinely can dominate — those designs can afford MinKS and keep evks resident, so the remaining time really is compute-bound. The paper's finding is specific to <i>GPUs running the algorithm GPU libraries actually use (hoisting)</i>; it doesn't claim NTT was never a bottleneck anywhere, only that the field's dominant hardware target (GPUs, as a practical near-term solution) has a different bottleneck than assumed.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>What exactly gets sent to PIM vs. stays on the GPU?<span class="chev">▾</span></summary>
+        <div class="a">Element-wise ops only: HADD, PMULT, MAC, and the compound accumulation instructions (PAccum, CAccum, Tensor). NTT, INTT, BConv (all inside ModSwitch, compute-bound) and automorphism (complex data permutation, hard for PIM) stay on the GPU. The one exception the paper adds is automorphism <i>fusion</i> — automorphism itself runs on GPU, but gets algebraically reordered and fused with the accumulation step around it to cut redundant DRAM traffic.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Why propose two different PIM microarchitectures (near-bank and custom-HBM)?<span class="chev">▾</span></summary>
+        <div class="a">Near-bank PIM mirrors existing shipped products (HBM-PIM, GDDR6-AiM), so it's the lower-risk, precedented option. Custom-HBM avoids modifying the DRAM die's process node at all — a genuinely hard, expensive thing to do — by moving all PIM logic to HBM's logic die (which can use an ordinary logic process) and adding more through-silicon vias for internal bandwidth. The paper finds custom-HBM "especially practical" for exactly this reason, even though it shows a slightly lower assumed bandwidth increase (4× vs. 16×) in the paper's configuration.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does using 28-bit primes and PIM offloading hurt precision?<span class="chev">▾</span></summary>
+        <div class="a">The paper states they checked that all optimizations (reordering, fusion, small-prime PIM arithmetic) "do not damage the precision." Small 28-bit primes are used with <b>double-prime scaling</b> — a known technique (also used by Cheddar) for maintaining high precision despite a smaller word size — and data is still stored at 32-bit granularity in DRAM, truncated to 28 bits only when actually fed into a PIM unit.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>How much silicon does this actually cost?<span class="chev">▾</span></summary>
+        <div class="a">Per Table III, near-bank PIM adds about <b>9.69%</b> of die area on A100 (10.7mm² per die) and <b>7.58%</b> on RTX 4090 (7.26mm² per die); the custom-HBM variant adds <b>9.94%</b> to HBM's logic die. All were deliberately kept within roughly 10% of die area as a design target.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does DRAM capacity, not just bandwidth, become a problem?<span class="chev">▾</span></summary>
+        <div class="a">Yes — the paper flags this as an emerging limiter that prior architectural studies didn't elaborate on. RTX 4090's 24GB DRAM hit out-of-memory failures even on ResNet20, and ResNet18-AESPA (ImageNet-scale) needs over 40GB. Prior ASIC designs with only two HBM stacks, or FPGA boards with 8GB HBM2, face the same wall — capacity, not just bandwidth, will matter more as FHE workloads scale up.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does this generalize beyond the CKKS scheme studied here?<span class="chev">▾</span></summary>
+        <div class="a"><i>Explicitly flagged as future work in the paper, not demonstrated.</i> The authors note BGV and BFV (other FHE schemes) share the same KeyMult operation structure, and FHEW/TFHE require a similar parallel-multiplication process for their evks — so a direct extension seems plausible — but they state that the same detailed hardware/algorithm analysis (§III–IV) would need to be redone for those schemes before concluding the same bottleneck applies.</div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Reference</h2>
+      <p class="sub">Glossary, a dated summary card, and the honest provenance notes.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>CKKS</b><span>The FHE scheme this paper accelerates — handles real/complex numbers, ideal for private ML. Operates on polynomials in a ring R_Q via RNS limbs.</span></div>
+      <div class="term-def"><b>Limb / RNS</b><span>A polynomial's modulus Q is split into L smaller primes; each limb is the polynomial reduced mod one prime, enabling parallel, machine-word arithmetic.</span></div>
+      <div class="term-def"><b>Evaluation key (evk)</b><span>Extra data (2·D polynomials in extended modulus PQ) required for HMULT and HROT; ~136MB with the paper's default D=4.</span></div>
+      <div class="term-def"><b>HROT / linear transform</b><span>Ciphertext rotation; K parallel HROT+PMULT pairs, summed, form a homomorphic linear transform (this paper's D=4, K=8 running example).</span></div>
+      <div class="term-def"><b>ModSwitch</b><span>INTT → BConv → NTT sequence for changing a polynomial's modulus; compute-bound, dominant in prior ASIC designs.</span></div>
+      <div class="term-def"><b>Bootstrapping / L_eff / T_boot,eff</b><span>Periodic level-refresh required by FHE; L_eff = mults available before the next bootstrap; T_boot,eff = bootstrap time / L_eff, the paper's core efficiency metric.</span></div>
+      <div class="term-def"><b>Hoisting</b><span>Batches ModUp once across K rotations instead of K times; cuts (I)NTT ops 2.47× in the paper's example but grows plaintext size and element-wise-op share.</span></div>
+      <div class="term-def"><b>MinKS</b><span>Minimum key-switching; reuses one evk iteratively instead of K distinct evks; cuts evk memory ~4× but needs &gt;217MB resident cache to pay off — ASIC-only in practice.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Decomposition number (D)</b><span>D = L/α; controls evk size (2·D polynomials) and L_eff; the paper defaults to D=4.</span></div>
+      <div class="term-def"><b>NTT / INTT / BConv</b><span>Number-theoretic transform (integer FFT) and its inverse; basis conversion between moduli Q and PQ — the compute-bound trio inside ModSwitch.</span></div>
+      <div class="term-def"><b>Automorphism</b><span>Coefficient-permutation step specific to HROT; complex data movement, kept on the GPU rather than offloaded to PIM.</span></div>
+      <div class="term-def"><b>Near-bank PIM</b><span>PIM units placed directly beside each DRAM bank inside the DRAM die (as in HBM-PIM, GDDR6-AiM); one of Anaheim's two microarchitecture variants.</span></div>
+      <div class="term-def"><b>Custom-HBM</b><span>Anaheim's alternative: PIM units on HBM's logic die (not the DRAM die), connected via added TSVs — avoids modifying the DRAM process node.</span></div>
+      <div class="term-def"><b>MMAC unit</b><span>Modular multiply-accumulate unit; 8 per PIM unit, matching the 256-bit DRAM I/O datapath at 28-bit (Montgomery-reducible) prime granularity.</span></div>
+      <div class="term-def"><b>PolyGroup / column partitioning</b><span>Anaheim's DRAM data layout: places co-accessed polynomials/limbs in the same row/column groups so PIM's all-bank operation amortizes ACT/PRE overhead.</span></div>
+      <div class="term-def"><b>EDP</b><span>Energy-delay product; Anaheim's headline result is a 1.62–3.14× EDP improvement across workloads and PIM architectures.</span></div>
+    </div>
+
+    <div class="card" style="background:var(--mech-soft);border-color:#bcbfe8;margin-top:26px">
+      <h3 style="color:#3a409a">📌 Summary card <span style="font-family:var(--mono);font-size:.7rem;font-weight:500;color:#5A61B4">· as of 2026-08-30 · HPCA 2025 paper</span></h3>
+      <ul style="margin:0;padding-left:20px;color:#3a409a">
+        <li><b>What:</b> Anaheim offloads only the DRAM-bandwidth-bound element-wise ops of FHE CKKS to PIM units inside DRAM, leaving compute-bound NTT/BConv/automorphism on the GPU.</li>
+        <li><b>Why:</b> real GPU measurement (Cheddar) shows element-wise ops are 45–48% (A100) to 68–69% (RTX 4090) of bootstrapping time — not NTT/BConv, which prior architecture work targeted.</li>
+        <li><b>Root cause:</b> GPUs lack ASIC-scale cache (40MB vs. 180–512MB assumed), forcing hoisting over MinKS — and hoisting is precisely what inflates the element-wise share.</li>
+        <li><b>The fix:</b> a software framework (reordering, automorphism fusion, CUDA-style PIM launch API) plus a near-bank or custom-HBM PIM unit (8 MMAC units, 28-bit primes) and a column-partitioned/PolyGroup data layout.</li>
+        <li><b>Results:</b> 1.06–1.74× workload speedup, 1.38–2.05× energy reduction, 1.62–3.14× EDP improvement, at ≈7.6–9.9% die-area overhead; PIM-instruction-level speedups of 1.65–10.33×.</li>
+        <li><b>Limits acknowledged:</b> DRAM capacity (not just bandwidth) becomes limiting at scale (RTX 4090 OoM on ResNet20/ResNet18-AESPA); ASICs with MinKS + massive cache (e.g., SHARP) still outperform Anaheim by 8.9–17.2× on raw latency.</li>
+        <li><b>Not yet shown:</b> extension to BGV/BFV/TFHE (structurally plausible, explicitly left as future work); pipelining PIM and GPU kernels (judged low-value given how much time PIM already removes).</li>
+      </ul>
+    </div>
+
+    <div class="subhead">Source notes — provenance &amp; honesty</div>
+    <div class="card" style="border-color:var(--line-strong)">
+      <p style="font-size:.96rem"><b>Kind:</b> paper-grounded field guide. Source: "Anaheim: Architecture and Algorithms for Processing Fully Homomorphic Encryption in Memory," Kim, Yun, Ji, Choi, Kim, Ahn (Seoul National University), HPCA 2025. Every number in Tabs 2, 4, 5, and 6 is either quoted directly from the paper's text/tables or recomputed from those quoted figures (recomputations are labeled inline, e.g. "recompute," "check").</p>
+      <p style="font-size:.96rem"><b>Grounded &amp; stated directly (high confidence):</b> all percentages, GB/MB figures, speedup/EDP/energy ranges, Table III/IV parameter values, the hoisting/MinKS comparison table (Fig. 1), the 1.20GB/68MB/6.03GB/6.15×/1.86×/2.87× DRAM-access figures, the 8-MMAC/224-bit/28-bit PIM design, and the SHARP comparison (Table V) are all quoted or directly derivable from the paper's prose and tables.</p>
+      <p style="font-size:.96rem"><b>My framing (conceptual, clearly marked in place):</b> the four-color semantic system (honey/cost/mech/huge mapped to GPU-compute/bottleneck/software-glue/PIM); all six analogies in Tab 3; the Amdahl's-law-style speedup estimator in Worked Example 4 (the paper never uses this formula — it measures real workloads, not an idealized model); the concept-map arrangement in Tab 2; and the derived per-die total area figures implied by the area-overhead percentages (not stated directly by the paper, only the mm² and % overhead are).</p>
+      <p style="font-size:.96rem"><b>Deliberately not used (low confidence):</b> the paper's Figs. 8, 9, and 10 (workload-by-workload absolute execution times, PIM microbenchmark sweeps over buffer size B, and the fusion-ablation bar charts) were extracted from the source PDF via OCR and the individual bar/label alignment could not be reliably reconstructed from that text dump. This guide relies only on the paper's prose-stated ranges and the cleanly tabular Table III/IV/V data instead of those scrambled chart values — flagged here so you know to consult the original PDF's figures directly if you need per-workload absolute numbers from Fig. 8–10.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Anaheim — Architecture and Algorithms for Processing FHE in Memory (Kim et al., SNU, HPCA 2025)</span>
+    <span><b>Built from:</b> the paper's full text · house style reused from learn/sessions/2026-08-13-thp/study-guide.html</span>
+    <span><b>Provenance:</b> paper-grounded numbers throughout · conceptual framing flagged in Reference · Figs. 8–10 raw chart values deliberately excluded (see Source notes)</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- PIM SPEEDUP ESTIMATOR (Amdahl-style) ---- */
+  var fracRange = document.getElementById('fracRange');
+  var bwRange = document.getElementById('bwRange');
+  var fracVal = document.getElementById('fracVal');
+  var bwVal = document.getElementById('bwVal');
+  var sAmdahl = document.getElementById('sAmdahl');
+  var sReal = document.getElementById('sReal');
+  var pimVerdict = document.getElementById('pimVerdict');
+  var currentRealText = null;
+  var currentLabel = null;
+
+  function updatePim(){
+    var f = parseInt(fracRange.value,10) / 100;
+    var bw = parseInt(bwRange.value,10);
+    fracVal.textContent = Math.round(f*100);
+    bwVal.textContent = bw;
+    var amdahl = 1 / ((1 - f) + f / bw);
+    sAmdahl.textContent = amdahl.toFixed(2) + '×';
+    if(currentRealText){
+      sReal.innerHTML = currentRealText + (currentLabel ? '<br><small style="font-weight:500">'+currentLabel+'</small>' : '');
+    } else {
+      sReal.textContent = 'pick a preset';
+    }
+    if(!currentRealText){
+      pimVerdict.className = 'pverdict off';
+      pimVerdict.innerHTML = 'Move the sliders, or pick a preset, to compare the naive estimate against what the paper actually measured.';
+    } else if(/components only/.test(currentRealText)){
+      pimVerdict.className = 'pverdict off';
+      pimVerdict.innerHTML = '◇ This preset reproduces the paper\'s naive "4× DRAM bandwidth" thought experiment — it reports <b>per-op-category</b> speedups (2.84×/2.54×), not an overall workload number, so there is nothing to directly compare the Amdahl estimate ('+amdahl.toFixed(2)+'×) against here.';
+    } else {
+      pimVerdict.className = amdahl <= 2.2 ? 'pverdict opt' : 'pverdict sub';
+      pimVerdict.innerHTML = '⚠ Amdahl predicts <b>'+amdahl.toFixed(2)+'×</b>; Anaheim actually reports <b>'+currentRealText+'</b>. The gap is real overhead — write-backs, exposed ACT/PRE under all-bank PIM operation, kernel-launch transitions, and ops (automorphism, ModSwitch) that never leave the GPU.';
+    }
+  }
+  if(fracRange && bwRange){
+    fracRange.addEventListener('input', function(){ currentRealText=null; currentLabel=null; updatePim(); });
+    bwRange.addEventListener('input', function(){ currentRealText=null; currentLabel=null; updatePim(); });
+    document.querySelectorAll('#pimFig [data-bw]').forEach(function(b){
+      b.addEventListener('click', function(){
+        fracRange.value = b.dataset.frac;
+        bwRange.value = b.dataset.bw;
+        currentRealText = b.dataset.real;
+        currentLabel = b.dataset.label;
+        updatePim();
+      });
+    });
+    // initialize with the A100/Anaheim preset
+    var initBtn = document.querySelector('#pimFig [data-label="A100 · Anaheim near-bank PIM"]');
+    if(initBtn){ initBtn.click(); } else { updatePim(); }
+  }
+
+  /* ---- INIT ---- */
+  runReveals();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+<script src="../rate.js"></script>
+</body>
+</html>
