@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<!-- Field guide — "Multi-Dimensional ML-Pipeline Optimization in Cost-Effective Disaggregated
+     Datacenter" (Huo, Devulapally, Al Maruf, Chandramoorthy, Arunachalam, Gudukbay Akbulut,
+     Kandemir, Narayanan — MICRO'25). Source: _paper_txt/multi-dimensional-ml-pipeline-optimizati.txt.
+     House style reused verbatim from learn/sessions/2026-08-13-thp/study-guide.html.
+     Semantic colors (paper-specific remap of the same tokens):
+     teal(--huge)  = local DRAM / the Phase-1 throughput win / Bayesian Optimization ·
+     honey(--honey)= CXL memory / the search-space dimension (ratios, threads) ·
+     indigo(--mech)= eBPF kernel machinery (the low-overhead monitor) ·
+     terracotta(--cost) = the costs — SLA violations, power, baseline (Caption/TPP/NI) limits. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Don't Binary-Search the Memory Tier — A Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --huge:#2C8C7C; --huge-soft:#DCEFE9;       /* teal   = the 2MB huge page & the TLB win     */
+  --mech:#5A61B4; --mech-soft:#E6E6F6;       /* indigo = kernel machinery (fault/khugepaged) */
+  --cost:#C0563B; --cost-soft:#F7E1D8;       /* terracotta = the costs (stalls, bloat, splits) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:19ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--huge);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--mech);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--huge);font-weight:600}
+.rule-plaque .wo{color:var(--cost);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:64ch}
+
+/* PROSE / CARDS */
+.prose{max-width:76ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--mech-soft);color:var(--mech);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--huge-soft);border-left:3px solid var(--huge);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--cost)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-huge{background:var(--huge-soft);color:#1f5b51}
+.chip-base{background:var(--honey-soft);color:#6e4a09}
+.chip-mech{background:var(--mech-soft);color:#3a409a}
+.chip-cost{background:var(--cost-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--huge-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--cost-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-huge{border-color:#9fd2c7;background:var(--huge-soft)}
+.node.n-mech{border-color:#bcbfe8;background:var(--mech-soft)}
+.node.n-cost{border-color:#e3b4a5;background:var(--cost-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--huge-soft)}
+.tbl .best:hover td{background:#cfeae2}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-base{background:linear-gradient(90deg,#eab657,#C27D14)}
+.bf-mid{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-huge{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-giga{background:linear-gradient(90deg,#2f6f64,#1f5147)}
+
+/* SLIDER EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.cells{display:grid;grid-template-columns:repeat(32,1fr);gap:3px;margin:8px 0}
+.cell{aspect-ratio:1/1;border-radius:3px;background:var(--paper-2);border:1px solid var(--line);transition:background .15s,border-color .15s}
+.cell.touched{background:var(--honey);border-color:var(--honey-deep)}
+.cell.filled{background:var(--huge);border-color:#1f5b51}
+.cell.waste{background:repeating-linear-gradient(45deg,#e9c9be,#e9c9be 3px,#f7e1d8 3px,#f7e1d8 6px);border-color:#e3b4a5}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls label{font-family:var(--mono);font-size:.8rem;color:var(--ink-soft);font-weight:700}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--mech)}
+.part-controls input[type=number]{width:74px;font-family:var(--mono);padding:6px 8px;border:1.5px solid var(--line-strong);border-radius:8px}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--huge-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--cost-soft);color:#9a3a22;border:1px solid #e3b4a5}
+.pverdict.off{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--mech);color:var(--mech)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--huge-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--cost-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--cost);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--huge-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--cost-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}.cells{grid-template-columns:repeat(16,1fr)}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>CXL / NUMA Memory Tiering · A Field Guide</span>
+    <h1>Don't binary-search the memory tier — <span class="swash">let a Gaussian process do it</span></h1>
+    <p class="lede">Every ML inference pipeline on a CXL-attached NUMA box hides a knob per stage: what fraction of its pages sit in local DRAM vs. the CXL pool, and how many threads to run. This paper turns that knob-per-stage into one continuous, SLA-constrained search problem — and answers it from inside the kernel, with Bayesian Optimization, in minutes instead of hours.</p>
+    <div class="hero-meta">
+      <span>📄 Huo et al., MICRO '25 (Seoul)</span>
+      <span>🎓 Assumes you know NUMA, CXL.mem, and page placement</span>
+      <span>⏱ ~40 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🎛️</div>
+      <p>Model each pipeline stage's <span class="ro">DRAM:CXL ratio</span> and the thread count as one vector, let a <span class="ro">Bayesian-Optimization</span> core search it under an SLA-penalized objective (Phase 1), then hand the top-k configs to a <span class="ro">Pareto-optimality</span> pass that trades a little throughput for real power savings (Phase 2) — all measured by an <span class="wo">eBPF monitor</span> that lives in kernel space so watching costs almost nothing.<br><em style="font-size:.9rem">The knob was always there. The paper's contribution is refusing to tune it by hand.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Nine ideas this paper builds on</h2>
+      <p class="sub">You already know NUMA and CXL memory pooling, so these skip straight to the paper's specific machinery: the weighted-interleave knob, eBPF as a monitor, and why Bayesian Optimization — not a trained model, not binary search — is the right tool for this exact search problem. Tap any open; read in order the first time.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--huge)"></i> local DRAM · the Phase-1 throughput win</span>
+      <span><i style="background:var(--honey-deep)"></i> CXL memory · the search-space dimension</span>
+      <span><i style="background:var(--mech)"></i> eBPF kernel machinery</span>
+      <span><i style="background:var(--cost)"></i> the costs · SLA violations, power, baseline limits</span>
+    </div>
+
+    <div class="primer-grid">
+
+      <details class="primer" open>
+        <summary><span class="pnum">1</span>CXL as "just another NUMA node" — and why that's the whole trick<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>CXL.mem's Home Agent presents attached memory to the OS as ordinary NUMA-node memory, reachable by normal load/store — no new syscalls. The paper's Figure 1 puts local DRAM access at roughly <b>80–140 ns</b> and the CXL/remote path at roughly <b>170–250 ns</b>. Because it's "just a node," every existing NUMA tool — <code>numactl</code>, <code>cpubind</code>/<code>membind</code>, interleaving — already applies to it.</p>
+          <div class="ready"><b>Now you're ready:</b> the entire optimization problem in this paper is really "how many pages on node 0 (DRAM) vs. node 1 (CXL)" — a page-placement ratio, not a new abstraction.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">2</span>The literal knob: weighted interleave<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Linux 6.9 added <b>weighted interleave</b>: instead of plain round-robin interleaving (50:50), you set an explicit <b>N:M</b> ratio between NUMA nodes, and the page allocator enforces that ratio when placing new pages. The paper writes this into <code>/kernel/mm/weight_interleave</code> and drives it via <code>numactl --weight_interleave=N,M</code>.</p>
+          <div class="ready"><b>Now you're ready:</b> every "Stage[N:M]" you'll see in this guide means exactly that — N parts of that stage's pages go to local DRAM, M parts to CXL, committed through this one sysfs-style interface.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">3</span>An ML pipeline is a DAG of "stages," each wanting a different ratio<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>DLRM = Bottom MLP → Top MLP → Sparse-Length-Sum (embedding) stages; Stable Diffusion = encoder → ViT/U-Net → decoder. The paper's running example (its "C1" challenge): a compute-intensive stage (DenseNet-like) wants low-latency local DRAM, while a bandwidth-intensive stage (SparseNet-like, or DLRM's embedding lookup) wants CXL's extra pooled bandwidth.</p>
+          <div class="ready"><b>Now you're ready:</b> one system-wide NUMA policy can't be optimal for a pipeline whose stages disagree about what they want — the search vector must have one ratio <i>per stage</i>.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">4</span>eBPF, compressed to the essentials<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>eBPF programs attach to kernel events (syscalls, tracepoints, kprobes), are JIT-compiled to native code, and exchange data with user space through <b>BPF maps</b> (per-CPU hash maps, perf event arrays, ring buffers) instead of triggering a context switch per event. That's the whole reason it's used here instead of a traditional profiling daemon.</p>
+          <div class="ready"><b>Now you're ready:</b> "monitor in kernel space" isn't a stylistic choice — it's how the paper avoids the 2–8× overhead the paper attributes to daemon-based tools like auditd.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">5</span>The search space, and why it explodes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Each stage's DRAM:CXL ratio ranges from 1:100 to 100:1; thread count ranges 1–192. The paper states plainly: a 3-stage pipeline over just the ratio dimension already gives a search space of <b>100³</b>; adding thread count for even a modest number of stages pushes it "over 1 million combinations." Brute force — or 1990s-style binary search over one ratio at a time — is not viable here.</p>
+          <div class="ready"><b>Now you're ready:</b> this is challenge <b>C1</b> in the paper's own framing — a genuinely high-dimensional, continuous-ish, nonlinear space, not the small 1-D space that prior binary-search approaches (e.g., Caption) were built for.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">6</span>Bayesian Optimization, in one paragraph<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>BO fits a <b>Gaussian Process</b> surrogate model, <code>f(x) ~ GP(μ(x), k(x,x'))</code>, over the (expensive-to-evaluate) objective, then uses an <b>acquisition function</b> to pick the next point to actually try — trading off "likely good" (exploitation) against "uncertain, could be great" (exploration). The paper uses <b>Expected Improvement</b>: <code>α_EI(x) = E[max(0, f(x) − f_best)]</code>.</p>
+          <div class="ready"><b>Now you're ready:</b> BO needs only a handful of real measurements (each one is a live deployment!) to model the whole space — unlike DQN/RL, which needs far more training data than a per-workload tuner can afford.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">7</span>SLA-aware objectives: hard vs. soft penalty<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The naive objective zeroes out any configuration that violates the latency SLA: <code>f(x)=QPS(x)</code> if <code>L_max(x) ≤ L_SLA</code>, else <code>0</code>. That's overly punitive — a config that misses the SLA by a hair gets thrown away even if it's otherwise excellent. The paper's fix is a <b>soft penalty</b>: <code>f(x) = QPS(x) · exp(−λ·max(0, L_max(x) − L_SLA))</code>, which decays smoothly instead of cutting off.</p>
+          <div class="ready"><b>Now you're ready:</b> the objective the optimizer actually maximizes already has the SLA baked in — "maximize throughput" in this paper always means "maximize throughput, discounted for how close you are to breaking the SLA."</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">8</span>Pareto optimality, for the second phase<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Phase 2 is a genuinely different objective: minimize power at a tolerable throughput cost. A configuration is <b>Pareto-optimal</b> if you cannot improve one objective (power) without worsening the other (QPS). The output isn't a single "best" answer — it's a <b>frontier</b> of tradeoffs, from which an operator picks a point.</p>
+          <div class="ready"><b>Now you're ready:</b> Phase 1's job is "find the best throughput"; Phase 2's job is "given several near-best throughput configs, find which one is also power-cheap" — two different searches, chained.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">9</span>Why the prior art falls short (the paper's C1–C3)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>C1 — limited search space:</b> Caption's binary search adjusts one CXL-allocation ratio at a time and can converge to a local minimum in a high-dimensional space. <b>C2 — lack of generality / high overhead:</b> vendor tools (Intel PCM, AMD uProf) don't cross platforms, and daemon-based monitors (sysdig, auditd) cost 2–8× overhead. <b>C3 — unawareness of dynamic behavior:</b> datacenter load shifts bottleneck type (compute-bound ↔ bandwidth-bound) through the day; prior "outlier"/"noisy-neighbor" detectors don't adapt continuously.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's four contributions map 1:1 onto these three gaps — that mapping is the spine of the next tab.</div>
+        </div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>The paper in a nutshell</h2>
+      <p class="sub">The problem, the two-phase framework that solves it, and why Bayesian Optimization specifically wins against the space's usual competitors.</p>
+    </div>
+    <div class="prose">
+      <p>CPUs still run most lightweight inference in datacenters — the paper cites roughly 70% of such workloads — and increasingly they sit on NUMA hosts with <span class="mem-chip chip-base">CXL-attached memory</span> as an extra, bandwidth-heavy but higher-latency tier. Every multi-stage ML pipeline (DLRM's MLPs and embedding lookups; Stable Diffusion's encoder/ViT/U-Net/decoder) then has, per stage, a page-placement ratio between <span class="mem-chip chip-huge">local DRAM</span> and CXL, plus a global thread count. Getting this right by hand — or with a binary search built for a much smaller space — doesn't scale: the paper measures search spaces exceeding a million configurations even for modest pipelines.</p>
+      <p>The paper's answer is a <b>two-phase, self-adaptive auto-tuner</b>. An <span class="mem-chip chip-mech">eBPF-based monitor</span> lives entirely in kernel space, hooking per-thread execution via <code>bpf_get_current_pid_tgid()</code>/<code>bpf_ktime_get_ns()</code> and tracking per-stage memory allocation via <code>kmalloc</code> events — so it can compute QPS and coordinate stage transitions without expensive kernel↔user context switches (measured at 4.7% overhead vs. 25.1% for the Linux <code>auditd</code> baseline). Those measurements feed <b>Optimization Phase 1</b>: a customized <b>Bayesian Optimization</b> core that treats the configuration vector <code>x = (w₁,…,wₙ,t)</code> — one DRAM:CXL weight per stage plus one thread count — as a black-box function to maximize, subject to an SLA-penalized objective. The resulting top-k throughput configurations then feed <b>Optimization Phase 2</b>, which applies <b>Pareto optimality</b> to trade a small amount of throughput for real power savings, because CXL's power profile relative to DRAM is genuinely ambiguous (it depends on DDR generation and refresh-rate vs. voltage effects) and hand-picking the power-efficient point isn't obvious.</p>
+      <p><strong>The upshot:</strong> across DLRM, Stable Diffusion, LPQ, Amber Alert, Video QA, and a synthesized OLAP workload, the BO-driven framework reaches <span class="mem-chip chip-huge">90% of a 27,000-configuration pseudo-exhaustive baseline's throughput at just 23% of its search cost</span> (5–17 minutes), beats a state-of-the-art CXL binary search (Caption), PSO, and a Genetic Algorithm at every search budget, and — against TPP and plain NUMA interleaving on real-world traces — delivers up to <span class="mem-chip chip-cost">48% higher QPS</span> with far fewer SLA violations, plus up to 7.3% (CXL-preferred power model) or 4.2% (DRAM-preferred model) power savings at a small throughput cost from Phase 2. <em>(The paper's abstract separately states "up to 14.3% power savings" — flagged as a discrepancy in Reference § Source notes; the number reproduced in the body text and Figure 11 discussion is 7.3%.)</em></p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Config vector <code>x = (w₁,…,wₙ,t)</code>: one DRAM:CXL weight per pipeline stage, plus one global thread count.</li>
+        <li><b>Two phases, two objectives:</b> Phase 1 (BO) maximizes SLA-penalized QPS; Phase 2 (Pareto) trades some QPS for power.</li>
+        <li>eBPF monitor runs entirely in kernel space: <b>4.7% overhead</b> vs. <b>25.1%</b> for auditd, transferring only 96 bits/event, batched 16 at a time.</li>
+        <li>BO hits <b>90%</b> of a 27,000-config pseudo-exhaustive baseline's throughput at <b>23%</b> search cost — 5–17 minutes across workloads.</li>
+        <li>Against Caption/TPP/NUMA-interleave baselines: up to <b>48% higher QPS</b>, up to <b>77% lower search cost</b>, up to <b>7.3%</b> power savings (CXL-preferred model).</li>
+        <li>Weighted interleave (Linux 6.9) turns "CXL is just another NUMA node" into a literal, per-stage N:M ratio the optimizer can dial.</li>
+        <li>Not a GPU-replacement pitch: the paper explicitly reserves GPUs for compute-heavy, high-load workloads (LLMs, Stable Diffusion at scale) when budget allows.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE: BO vs baselines, search-cost efficiency -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole idea in one picture: search cost buys throughput — unevenly</div>
+      <div class="viz-kicker">approximate midpoints of the ranges reported in §4.1.2 (Figure 6), low search cost → high search cost</div>
+      <div class="legend">
+        <span><i style="background:var(--huge)"></i> Bayesian Optimization (this paper)</span>
+        <span><i style="background:var(--honey-deep)"></i> PSO / Genetic Algorithm (alternative search)</span>
+        <span><i style="background:var(--cost)"></i> Caption (2-D binary search baseline)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 340" role="img" aria-label="As search cost rises, BO's throughput climbs from about 80 percent to 95 percent of the pseudo-exhaustive baseline; GA climbs from about 65 to 86 percent; PSO climbs from about 22 to 84 percent; Caption starts around 78 percent and falls to about 28 percent as search cost increases, illustrating it converging to a local minimum">
+        <!-- axis -->
+        <line x1="70" y1="26" x2="70" y2="316" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="316" x2="700" y2="316" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10.5" fill="#9A8E7C">
+          <text x="70" y="332" text-anchor="middle">0%</text>
+          <text x="228" y="332" text-anchor="middle">25%</text>
+          <text x="385" y="332" text-anchor="middle">50%</text>
+          <text x="542" y="332" text-anchor="middle">75%</text>
+          <text x="700" y="332" text-anchor="middle">100%</text>
+        </g>
+        <text x="385" y="20" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456">throughput, as % of the 27K-config pseudo-exhaustive baseline</text>
+        <!-- gridlines -->
+        <g stroke="#E7DBC6" stroke-width="1"><line x1="228" y1="26" x2="228" y2="316"/><line x1="385" y1="26" x2="385" y2="316"/><line x1="542" y1="26" x2="542" y2="316"/></g>
+        <!-- row labels -->
+        <g font-family="Fraunces" font-size="14" font-weight="600">
+          <text x="30" y="74" text-anchor="middle" fill="#2C8C7C" transform="rotate(-90 30,74)">BO</text>
+          <text x="30" y="144" text-anchor="middle" fill="#5A61B4" transform="rotate(-90 30,144)">GA</text>
+          <text x="30" y="214" text-anchor="middle" fill="#5A61B4" transform="rotate(-90 30,214)">PSO</text>
+          <text x="30" y="284" text-anchor="middle" fill="#9a3a22" transform="rotate(-90 30,284)">Caption</text>
+        </g>
+        <!-- BO: 80 -> 95, teal, rising -->
+        <line x1="574" y1="70" x2="669" y2="70" stroke="#2C8C7C" stroke-width="4"/>
+        <circle cx="574" cy="70" r="7" fill="#fff" stroke="#2C8C7C" stroke-width="3"/>
+        <circle cx="669" cy="70" r="8" fill="#2C8C7C"/>
+        <text x="574" y="54" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">~80% (low cost)</text>
+        <text x="669" y="54" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">~95% (high cost)</text>
+        <!-- GA: 65 -> 86, indigo -->
+        <line x1="480" y1="140" x2="612" y2="140" stroke="#5A61B4" stroke-width="4"/>
+        <circle cx="480" cy="140" r="7" fill="#fff" stroke="#5A61B4" stroke-width="3"/>
+        <circle cx="612" cy="140" r="8" fill="#5A61B4"/>
+        <text x="480" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">~65%</text>
+        <text x="612" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">~86%</text>
+        <!-- PSO: 22 -> 84, indigo (dashed to distinguish) -->
+        <line x1="209" y1="210" x2="599" y2="210" stroke="#5A61B4" stroke-width="4" stroke-dasharray="9 5"/>
+        <circle cx="209" cy="210" r="7" fill="#fff" stroke="#5A61B4" stroke-width="3"/>
+        <circle cx="599" cy="210" r="8" fill="#5A61B4"/>
+        <text x="209" y="194" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">~22%</text>
+        <text x="599" y="194" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">~84%</text>
+        <!-- Caption: 78 -> 28, terracotta, falling -->
+        <line x1="561" y1="280" x2="246" y2="280" stroke="#C0563B" stroke-width="4"/>
+        <circle cx="561" cy="280" r="7" fill="#fff" stroke="#C0563B" stroke-width="3"/>
+        <circle cx="246" cy="280" r="8" fill="#C0563B"/>
+        <text x="561" y="264" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">~78% (moderate cost)</text>
+        <text x="246" y="300" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">falls to ~28%</text>
+      </svg>
+      <figcaption><b>Read the direction of each line, not just its endpoints.</b> BO, GA, and PSO all improve as you let them search longer — but only BO gets close to the ceiling, and it gets there fastest. Caption is the outlier: it peaks at moderate search cost, then <i>degrades</i> as search cost increases further, which the paper attributes to its 2-D binary search converging into a local minimum in a space that's actually much higher-dimensional. Endpoints here are this guide's midpoint reading of the ranges the paper reports (BO 78–83%→94–97%; GA 56–75%→84–89%; PSO 11–34%→79–89%; Caption 75–82% peak→16–41%) — illustrative positioning, exact per-workload curves are in the paper's Figure 6.</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">three challenges → eBPF monitor → Phase 1 (BO) → top-k configs → Phase 2 (Pareto) → deployed config</div>
+      <div class="flow-row">
+        <div class="node n-cost"><div class="nt">C1–C3</div><div class="nd">Huge search space, vendor lock-in + daemon overhead, dynamic bottleneck shifts</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">eBPF Monitor</div><div class="nd">Kernel-space hooks, 96 bits/event, 4.7% overhead vs. 25.1% for auditd</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">Phase 1 — BO</div><div class="nd">GP surrogate + EI over x=(w₁,…,wₙ,t), SLA-penalized objective</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-huge"><div class="nt">Top-k configs</div><div class="nd">Highest-throughput configurations found under the SLA constraint</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-huge"><div class="nt">Phase 2 — Pareto</div><div class="nd">Frontier of QPS-vs-power tradeoffs; pick the power-efficient point</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Deployed</div><div class="nd">numactl --weight_interleave + thread pinning · up to 48% ↑QPS, 77% ↓search cost, ≤7.3% ↓power</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about the framework</h2>
+      <p class="sub">Each picture stands alone — read in any order. Every card ends with an honest note about where the analogy stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M30 70 L30 30 A10 10 0 0 1 50 30 L50 50" stroke="#5A61B4" stroke-width="6" fill="none" stroke-linecap="round"/>
+          <path d="M90 70 L90 30 A10 10 0 0 0 70 30 L70 50" stroke="#C27D14" stroke-width="6" fill="none" stroke-linecap="round"/>
+          <rect x="50" y="50" width="20" height="26" rx="4" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="60" y="68" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">N:M</text>
+          <text x="40" y="88" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">DRAM</text>
+          <text x="80" y="88" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e4a09">CXL</text>
+        </svg></div>
+        <span class="term">The literal knob · weighted interleave</span>
+        <h3>The two-tap mixing valve</h3>
+        <p>Weighted interleave is a kitchen faucet with a hot (DRAM) and cold (CXL) tap and one dial that sets the mix — not a binary "hot or cold" switch, and not a fixed 50:50 mixer like plain NUMA interleaving. Set it to 99:1 for a latency-picky stage, 29:71 for a bandwidth-hungry one. Every "Stage[N:M]" in the paper is one setting of one such valve, and a pipeline has one valve per stage.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real mixing valve responds instantly; the OS's version has to actually place new pages under the new ratio, so changing a stage's mix mid-flight requires waiting for that stage's allocation to complete first (the paper's inter-stage semaphore handshake) — you can't just spin the dial while water is running.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="40" cy="48" r="24" fill="none" stroke="#D8C8AC" stroke-width="1.5" stroke-dasharray="3 3"/>
+          <circle cx="30" cy="40" r="4" fill="#2C8C7C"/><circle cx="52" cy="58" r="4" fill="#2C8C7C"/><circle cx="44" cy="30" r="3" fill="#9A8E7C"/>
+          <path d="M30 40 Q40 20 52 58" stroke="#2C8C7C" stroke-width="1.5" fill="none" stroke-dasharray="2 2"/>
+          <rect x="90" y="30" width="36" height="36" rx="4" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2"/>
+          <text x="108" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">next?</text>
+        </svg></div>
+        <span class="term">The engine · Bayesian Optimization</span>
+        <h3>The blindfolded taste tester with a notebook</h3>
+        <p>Imagine tasting a soup with an unknown, adjustable spice ratio, but every taste costs you a real production deployment. A brute-force cook tries every ratio in order. BO's taster instead keeps a notebook (the GP surrogate) of every taste so far, sketches a confidence curve over the untried ratios, and always samples wherever the curve says "probably great, or I truly don't know yet" — never wasting a taste in a region already known to be mediocre.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real taster's notebook doesn't need calculus; the GP's confidence curve is a genuine probability distribution that gets recomputed (not just glanced at) after every single taste — that recomputation is exactly what a trained RL model can't afford to redo per new workload.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="16" width="46" height="64" rx="4" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2"/>
+          <text x="37" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">lives</text>
+          <text x="37" y="63" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">here</text>
+          <path d="M70 48 h16" stroke="#9A8E7C" stroke-width="2"/>
+          <circle cx="100" cy="30" r="16" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="2"/>
+          <path d="M100 30 m-16 40 l32 0" stroke="#C0563B" stroke-width="1" stroke-dasharray="2 2"/>
+          <text x="100" y="34" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">badge</text>
+          <text x="100" y="70" text-anchor="middle" font-family="monospace" font-size="7" fill="#9a3a22">commutes in</text>
+        </svg></div>
+        <span class="term">The monitor · eBPF vs. daemon tools</span>
+        <h3>The in-house auditor vs. the outside inspector</h3>
+        <p>An outside inspector (auditd/sysdig) has to badge in through the front door every time they want to check something — a context switch, a real cost, every event. eBPF is an auditor who already <i>lives</i> in the building (JIT-compiled kernel code), scribbling notes on the office whiteboard (BPF maps) and only occasionally walking a stack of notes over to the user-space team, in batches.</p>
+        <div class="breaks"><b>Where it breaks:</b> the in-house auditor still isn't free — the paper measures 4.7% overhead, not 0%. "Lives in the building" reduces the tax; it doesn't eliminate it, and the batching (16 events/transfer, 96 bits/event) is a deliberate design choice, not a law of nature.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 76 Q50 20 70 46 T120 20" stroke="#2C8C7C" stroke-width="2.5" fill="none"/>
+          <circle cx="70" cy="46" r="6" fill="#E8A33D" stroke="#C27D14" stroke-width="2"/>
+          <circle cx="40" cy="60" r="4" fill="#9A8E7C"/>
+          <circle cx="100" cy="30" r="4" fill="#9A8E7C"/>
+          <text x="70" y="34" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e4a09">you pick a spot</text>
+        </svg></div>
+        <span class="term">The tradeoff · Pareto optimality</span>
+        <h3>Trading the V8 for the V6</h3>
+        <p>You're not looking for the single "best" car — you're looking at a lineup where every model that's cheaper to run also happens to be slower, and vice versa. The V6 trim saves real fuel for a bit less horsepower; the true V8 is fastest but drinks the most. Every trim <i>on the lineup</i> is defensible; a trim that's both slower <i>and</i> thirstier than another one isn't — that's what falls off the Pareto frontier.</p>
+        <div class="breaks"><b>Where it breaks:</b> car trims are fixed by the manufacturer; the paper's Pareto frontier is discovered empirically from whatever configurations Phase 1 already evaluated, so it's only as complete as that sample — a genuinely better tradeoff point that Phase 1 never tried simply won't appear on the frontier.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <line x1="20" y1="70" x2="120" y2="70" stroke="#D8C8AC" stroke-width="1.5"/>
+          <path d="M20 20 L70 20 L120 78" stroke="#C0563B" stroke-width="2.5" fill="none"/>
+          <path d="M20 20 Q75 22 120 62" stroke="#2C8C7C" stroke-width="2.5" fill="none" stroke-dasharray="4 3"/>
+          <line x1="70" y1="20" x2="70" y2="70" stroke="#9A8E7C" stroke-width="1" stroke-dasharray="2 2"/>
+          <text x="70" y="86" text-anchor="middle" font-family="monospace" font-size="7" fill="#9A8E7C">SLA</text>
+        </svg></div>
+        <span class="term">The objective · soft SLA penalty</span>
+        <h3>A late fee that scales with how late you are</h3>
+        <p>A hard SLA penalty is a library that burns your book the instant it's overdue, even by a minute — full value one second, zero the next. A soft penalty is a normal late fee: a little late costs a little, very late costs a lot, but a barely-late return that was otherwise a fantastic loan isn't thrown away entirely. That's exactly the shape of <code>QPS(x)·exp(−λ·max(0, L_max−L_SLA))</code> — smooth decay, not a cliff.</p>
+        <div class="breaks"><b>Where it breaks:</b> a library late fee is capped; the exponential penalty keeps shrinking toward (but never quite reaching) zero, so a config that's <i>wildly</i> over the SLA still contributes an infinitesimally positive score rather than being formally excluded — which is why the paper also offers the hard-constraint formulation (max QPS(x) subject to L_max(x) ≤ L_SLA) as an alternative.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="10" y="60" width="120" height="26" fill="#F3EADA"/>
+          <path d="M10 66 Q40 40 60 62 T90 50 T130 68" stroke="#C0563B" stroke-width="2.5" fill="none"/>
+          <circle cx="60" cy="62" r="5" fill="#C0563B"/>
+          <text x="60" y="50" text-anchor="middle" font-family="monospace" font-size="7" fill="#9a3a22">stuck here</text>
+          <path d="M100 30 L120 20 M100 30 L110 15" stroke="#9A8E7C" stroke-width="1.5"/>
+          <text x="90" y="20" font-family="monospace" font-size="7" fill="#9A8E7C">true peak, unseen</text>
+        </svg></div>
+        <span class="term">The failure mode · local minima</span>
+        <h3>Hill-climbing in fog</h3>
+        <p>A step-and-adjust binary search (Caption) is a hiker in dense fog who only feels the slope underfoot: step, check if it's higher, keep going the same way if yes, reverse with a smaller step if no. That hiker can absolutely summit a nearby hill and declare victory — with no idea a taller mountain sits just past the valley they'd have to cross to find it. BO instead builds a rough map of the whole range (the GP surrogate) before committing to a direction.</p>
+        <div class="breaks"><b>Where it breaks:</b> the fog-bound hiker's algorithm is cheap — one step per taste; BO's mapmaking costs real computation between samples (fitting/updating the GP). The paper's tradeoff is explicitly "spend a bit more thinking per sample to spend far fewer samples overall" — not a free lunch, a different budget.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Section by section</div>
+      <h2>How the framework actually works</h2>
+      <p class="sub">Problem formalization → the eBPF data path → Phase 1 (Bayesian Optimization) → Phase 2 (Pareto power) → from optimizer output to a running <code>numactl</code> command.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Problem formalization</h3>
+      <p>The system models an ML pipeline as <code>n</code> stages <code>C = {c₁,…,cₙ}</code>. Each stage <code>cᵢ</code> has a weight <code>wᵢ ∈ [w_min, w_max]</code> — its DRAM:CXL allocation ratio — and the whole system shares one thread-count parameter <code>t ∈ [t_min, t_max]</code>. The full configuration vector is <code>x = (w₁,…,wₙ,t)</code>. Let <code>Q(x)</code> be throughput (QPS) and <code>L(x)</code> be latency under configuration <code>x</code>. The constraints are exactly what you'd expect: <code>L(x) ≤ L_SLA</code>, each <code>wᵢ</code> within its bounds, and <code>t</code> within its bounds. The goal is to maximize <code>Q(x)</code> subject to those constraints — a continuous, high-dimensional, non-linear, constrained optimization problem.</p>
+
+      <div class="callout why"><span class="ic">◆</span><div><b>Why not a trained model (DQN/RL)?</b> The paper's stated reasoning: the search space is continuous and demands a large volume of training data, and training a fresh model per new workload is both inefficient and impractical for a system meant to adapt to whatever pipeline shows up. BO instead models the objective directly from a small number of live measurements — no training corpus required.</div></div>
+
+      <h3>2 · The eBPF data path</h3>
+      <p>The monitor bootstraps into the kernel, attaches to all NUMA cores, and spawns an <b>instance timer</b> per application thread. For the target function, it calls <code>bpf_get_current_pid_tgid()</code> for per-thread identification and <code>bpf_ktime_get_ns()</code> to time execution, from which QPS is derived (execution time × batch size). Separately, it tracks <code>kmalloc</code> events to know when a pipeline stage has finished its memory allocation — the signal that it's safe to change the NUMA configuration for the <i>next</i> stage without corrupting the current one's in-flight allocation. Stage-to-stage handoff itself uses POSIX semaphores (<code>sem_init</code>/<code>sem_wait</code>/<code>sem_post</code>) over shared memory: a producer stage posts after writing intermediate data, the consumer stage waits before reading it.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Kernel-space monitor vs. a user-space daemon</div>
+        <div class="viz-kicker">why 96 bits/event beats a full context-switch per event</div>
+        <div class="legend">
+          <span><i style="background:var(--mech)"></i> eBPF (this paper)</span>
+          <span><i style="background:var(--cost)"></i> daemon-based tools (auditd, sysdig)</span>
+        </div>
+        <svg class="full" viewBox="0 0 760 300" role="img" aria-label="eBPF path: kernel event triggers eBPF hook, data is stored in per-CPU BPF maps in kernel space, then batches of 16 events (96 bits each) are pushed to user space via a perf event array, all without a context switch until the batched transfer. Daemon path: kernel event requires a context switch to a user-space daemon for every single event.">
+          <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#3a409a">eBPF path — stays in kernel space until the batch is full</text>
+          <rect x="20" y="40" width="220" height="90" rx="8" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.5"/>
+          <text x="130" y="62" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">kernel space</text>
+          <rect x="34" y="72" width="90" height="26" rx="5" fill="#fff" stroke="#5A61B4" stroke-width="1.2"/><text x="79" y="89" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">JIT hook</text>
+          <rect x="134" y="72" width="92" height="26" rx="5" fill="#fff" stroke="#5A61B4" stroke-width="1.2"/><text x="180" y="89" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#3a409a">BPF map</text>
+          <path d="M124 85 h10" stroke="#5A61B4" stroke-width="1.5"/>
+          <text x="130" y="118" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#3a409a">×16 events, 96 bits each, no switch yet</text>
+          <path d="M240 85 h50" stroke="#5A61B4" stroke-width="2" marker-end="url(#arrM)"/>
+          <text x="265" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="8.5" fill="#3a409a">1 batched transfer</text>
+          <rect x="300" y="40" width="200" height="90" rx="8" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.5"/>
+          <text x="400" y="62" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">user space</text>
+          <text x="400" y="88" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">perf_event_output()</text>
+          <text x="400" y="106" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">→ BO optimization core</text>
+          <text x="130" y="152" text-anchor="middle" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="#3a409a">measured: 4.7% overhead</text>
+
+          <text x="20" y="196" font-family="Fraunces" font-size="14" font-weight="600" fill="#9a3a22">daemon path — a context switch per event</text>
+          <g font-family="JetBrains Mono" font-size="9.5">
+            <rect x="20" y="212" width="70" height="26" rx="5" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.2"/><text x="55" y="229" text-anchor="middle" fill="#9a3a22">event</text>
+            <path d="M90 225 h16" stroke="#C0563B" stroke-width="2" marker-end="url(#arrC)"/>
+            <rect x="106" y="212" width="90" height="26" rx="5" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.2"/><text x="151" y="229" text-anchor="middle" fill="#9a3a22">ctx switch</text>
+            <path d="M196 225 h16" stroke="#C0563B" stroke-width="2" marker-end="url(#arrC)"/>
+            <rect x="212" y="212" width="110" height="26" rx="5" fill="var(--cost-soft)" stroke="#C0563B" stroke-width="1.2"/><text x="267" y="229" text-anchor="middle" fill="#9a3a22">daemon reads</text>
+            <text x="360" y="229" fill="#9a3a22">… repeated for every single event</text>
+          </g>
+          <text x="130" y="266" text-anchor="middle" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="#9a3a22">measured: 25.1% overhead (~5.3× eBPF's)</text>
+          <defs>
+            <marker id="arrM" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5A61B4"/></marker>
+            <marker id="arrC" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#C0563B"/></marker>
+          </defs>
+        </svg>
+        <figcaption>The eBPF path pays a small, fixed cost per event (write to a per-CPU map) and only crosses into user space once per batch of 16. The daemon path pays a full context switch on every event. Overhead numbers (4.7% vs. 25.1%) are as measured in §4.1.1 against the dry-deployment baseline; the box internals here are a schematic of the mechanism, not a timing diagram.</figcaption>
+      </figure>
+
+      <h3>3 · Phase 1 — Bayesian Optimization</h3>
+      <p>The optimizer treats the objective as a black box: it observes tuples <code>⟨Stage₁[N:M], Stage₂[N:M], t, Q(x)⟩</code>, fits a Gaussian Process surrogate <code>f(x) ~ GP(μ(x), k(x,x'))</code> over them, and uses the Expected Improvement acquisition function <code>α_EI(x) = E[max(0, f(x) − f_best)]</code> to choose the next configuration to actually deploy and measure. Because sampling is adaptive rather than a fixed grid, BO might probe ratios at steps like <b>1, 37, 67</b> instead of sweeping <b>1, 25, 50, 75, 100</b> — concentrating measurements where the surrogate model expects them to matter. Thread-count effects are handled the same way: BO has no built-in notion that "more threads eventually hurts," but once it observes a performance drop past some thread count, that observation is folded straight into the GP and future sampling avoids that region.</p>
+      <p>SLA compliance is enforced through the objective itself (Primer 7): either the smooth penalty <code>f(x) = Q(x)·exp(−λ·max(0, L_max(x) − L_SLA))</code>, or, equivalently, a hard-constrained formulation that prunes any SLA-violating configuration from consideration outright. Each candidate configuration is evaluated by actually deploying it and sampling N (default 10) throughput measurements per stage — this is why each BO iteration has real wall-clock cost, and why minimizing the number of iterations (not just finding a good answer eventually) is a first-class design goal.</p>
+
+      <h3>4 · Phase 2 — Pareto power optimization</h3>
+      <p>Once Phase 1 has identified strong-throughput configurations, Phase 2 reformulates the problem as multi-objective: maximize QPS while minimizing power, still under the SLA constraint. Power modeling for CXL is genuinely uncertain, so the paper evaluates <i>both</i> directions: a <b>CXL-preferred</b> model where DDR4-based CXL's lower refresh rate dominates and it costs only <b>90%</b> of DDR5 DRAM's power, and a <b>DRAM-preferred</b> model where DDR4's higher supply voltage (1.2V vs. DDR5's 1.1V) plus CXL-interface overhead dominates instead, costing <b>1.1×</b> DRAM's power. The Pareto frontier is then traced over the throughput-optimal configurations already found by Phase 1, and an operator (or the framework, given a power budget) picks a point on it.</p>
+
+      <div class="callout takeaway"><span class="ic">●</span><div><b>Why bother with two separate phases instead of one combined objective?</b> Phase 1's job (find near-peak throughput) and Phase 2's job (find where power can be shaved without much throughput loss) use genuinely different objective shapes and act on a much smaller candidate set in Phase 2 — it explores the Pareto frontier only among Phase 1's already-good configurations, rather than re-searching the whole space with a blended objective from scratch.</div></div>
+
+      <h3>5 · From optimizer output to a running command</h3>
+      <p>Once a configuration is selected, its parameters map directly onto system mechanisms: the target <code>N:M</code> ratios are written into the kernel's weighted-interleave interface, which the kernel reads back and uses to program each NUMA node's per-core allocation weights; the page allocator then enforces an N:M round-robin policy across nodes for new pages. The optimizer emits an actual shell command — <code>numactl --weight_interleave=0,1 --cpunodebind=0 app_name</code> — and a generated shell script configures each stage's page-mapping behavior via <code>echo</code> commands into the kernel interface, with the thread parameter <code>t</code> determining how many threads are launched and bound to cores.</p>
+
+      <div class="callout note"><span class="ic">◇</span><div><b>Overhead accounting, so the "low-overhead" claim isn't hand-waved.</b> Shared-memory setup for inter-stage handoff (<code>shm_open</code>, <code>ftruncate</code>, <code>shm_unlink</code>, <code>mmap</code>) completes in under <b>7 ms</b> — about <b>2%</b> of DLRM's stated 0.4 s SLA. The eBPF monitor itself costs 4.7% vs. 25.1% for auditd. Both costs are paid continuously during normal operation, separate from — and much smaller than — the one-time cost of a BO search converging (minutes, per §4.1.2).</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Put real numbers on it</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Five calculations grounded in the paper's own numbers, then an interactive widget for the SLA soft-penalty. All arithmetic is shown; anything not directly stated in the paper is marked illustrative.</p>
+    </div>
+
+    <div class="card">
+      <h3>Example 1 — the search space, two ways</h3>
+      <p>The paper gives the DRAM:CXL ratio range as <b>1:100 to 100:1</b> (≈100 discrete values per stage) and the thread range as <b>1–192</b>.</p>
+      <ol class="seq">
+        <li><b>Ratio-only, 3 stages (§2.5.2):</b> 100 × 100 × 100 = <b>100³ = 1,000,000</b> combinations — matches the paper's own "search space of 100³" statement, before thread mapping is even considered.</li>
+        <li><b>Ratio + threads, 2 stages (§3.5):</b> 100 × 100 × 192 = <b>1,920,000</b> combinations — consistent with the paper's claim that "N model units … already creates over 1 million combinations" once thread count is folded in, even for modest N.</li>
+        <li><b>The point:</b> both readings clear a million configurations well before you've modeled a realistic 3+-stage pipeline with thread tuning — brute force was never viable, and neither was a 1-D binary search built for a single ratio.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> the exact multiplier (100³ vs. ~1.9M) depends on exactly which dimensions you fold in — but every reasonable reading the paper offers lands at "well over a million," which is the qualitative point it's making with C1.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 2 — how far BO's efficiency actually goes</h3>
+      <p>The paper's baseline is a <b>27,000-configuration</b> pseudo-exhaustive sweep (itself "a small fraction" of the ~10⁹ theoretically possible configurations). BO reaches 90% of that baseline's throughput at 23% search cost.</p>
+      <ol class="seq">
+        <li><b>Configurations actually evaluated:</b> 23% × 27,000 = <b>6,210</b> configurations — not 27,000, and nowhere near 10⁹.</li>
+        <li><b>As a fraction of the ~10⁹ theoretical space:</b> 6,210 / 10⁹ ≈ <b>0.0006%</b> of the full space, for 90% of the near-exhaustive throughput.</li>
+        <li><b>Wall-clock:</b> the paper reports this 90%-throughput point is reached in <b>5–17 minutes</b> across the studied workloads — i.e., each of those ~6,210-scale evaluations corresponds to real, fast, live deployments, not a simulation.</li>
+      </ol>
+      <div class="callout warn" style="margin-top:6px"><span class="ic">▲</span><div><b>Misconception it kills:</b> "search cost %" in the paper's Figure 6 is relative to the 27K pseudo-exhaustive baseline, <i>not</i> the full ~10⁹ combinatorial space — don't read "23% search cost" as "searched 23% of everything possible."</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 3 — eBPF's overhead advantage, recomputed</h3>
+      <p>Measured overheads (§4.1.1): eBPF <b>4.7%</b>, Linux <code>auditd</code> <b>25.1%</b>. Data volume: <b>96 bits/event</b> (32-bit pid + 64-bit QPS), default batch size <b>16</b>.</p>
+      <ol class="seq">
+        <li><b>Overhead ratio:</b> 25.1% / 4.7% ≈ <b>5.34×</b> — matches the paper's contributions claim of "over 5× less overhead than traditional Linux daemon-based tools."</li>
+        <li><b>Bits per batched transfer:</b> 16 events × 96 bits = <b>1,536 bits = 192 bytes</b> moved across the kernel/user boundary per transfer, instead of 16 separate context switches.</li>
+        <li><b>Why this matters for the optimizer, not just the app:</b> the monitor's own overhead is paid on <i>every</i> query while BO is searching — a 5.3× cheaper monitor doesn't just look good in a table, it means the throughput numbers BO is optimizing against are less polluted by the act of measuring them.</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h3>Example 4 — SLA soft-penalty vs. hard-penalty, side by side</h3>
+      <p>Formulas from §3.6.2: hard penalty <code>f(x) = Q(x)</code> if <code>L_max ≤ L_SLA</code> else <code>0</code>; soft penalty <code>f(x) = Q(x)·exp(−λ·max(0, L_max−L_SLA))</code>. Take an illustrative <code>L_SLA = 0.4 s</code> (the paper's stated DLRM SLA), <code>Q(x) = 5,000</code> QPS, and <code>λ = 15</code> — <i>the paper does not specify a value for λ, so this walkthrough picks one for arithmetic clarity.</i></p>
+      <ol class="seq">
+        <li><b>Config A</b>, <code>L_max = 0.39 s</code> (under SLA): hard penalty keeps <b>5,000</b>; soft penalty also keeps the full <b>5,000</b> (no excess latency, so the exponent is 0).</li>
+        <li><b>Config B</b>, <code>L_max = 0.42 s</code> (20 ms over): hard penalty <b>zeroes it out</b> — 0 QPS, discarded entirely. Soft penalty: <code>5,000 × exp(−15 × 0.02) = 5,000 × exp(−0.30) ≈ 5,000 × 0.741 ≈ 3,704</code> — a real, comparable score.</li>
+        <li><b>Config C</b>, <code>L_max = 0.55 s</code> (150 ms over, badly violating): hard penalty still <b>0</b>. Soft penalty: <code>5,000 × exp(−15 × 0.15) = 5,000 × exp(−2.25) ≈ 5,000 × 0.1054 ≈ 527</code> — small, but non-zero.</li>
+      </ol>
+      <p>Try the same math live, with your own λ and latency:</p>
+
+      <!-- INTERACTIVE: SLA soft-penalty explorer -->
+      <figure class="viz" id="slaFig" style="box-shadow:var(--shadow-sm);margin-top:10px">
+        <div class="viz-title">SLA penalty explorer</div>
+        <div class="viz-kicker">f(x) = Q(x)·exp(−λ·max(0, L_max−L_SLA)) vs. the hard cutoff — illustrative Q(x) and λ, L_SLA fixed at the paper's 0.4&nbsp;s DLRM figure</div>
+        <div class="part-viz">
+          <div class="part-controls">
+            <label for="lmaxRange">L_max (s): <span id="lmaxVal">0.40</span></label>
+            <input type="range" id="lmaxRange" min="0.20" max="0.70" step="0.01" value="0.40">
+          </div>
+          <div class="part-controls">
+            <label for="lambdaRange">λ: <span id="lambdaVal">15</span></label>
+            <input type="range" id="lambdaRange" min="1" max="50" step="1" value="15">
+            <div class="preset-row">
+              <button class="tbtn" data-lam="5">λ=5 (lenient)</button>
+              <button class="tbtn" data-lam="15">λ=15 (moderate)</button>
+              <button class="tbtn" data-lam="40">λ=40 (strict)</button>
+            </div>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">L_SLA<b>0.40 s</b></div>
+            <div class="pstat">excess latency<b id="sExcess">0.00 s</b></div>
+            <div class="pstat">hard-penalty f(x)<b id="sHard">5000</b></div>
+            <div class="pstat">soft-penalty f(x)<b id="sSoft">5000</b></div>
+          </div>
+          <div class="pverdict opt" id="slaVerdict">…</div>
+        </div>
+        <figcaption>Q(x) fixed at an illustrative 5,000 QPS. Drag L_max past 0.40&nbsp;s and watch the hard penalty cliff to zero while the soft penalty decays smoothly — the mechanism, not the exact λ, is what the paper specifies.</figcaption>
+      </figure>
+    </div>
+
+    <div class="card">
+      <h3>Example 5 — which power model "pays off" more per unit of throughput given up?</h3>
+      <p>Section 4.2: CXL-preferred saves <b>7.3%</b> power for <b>4.5%</b> QPS sacrificed; DRAM-preferred saves <b>4.2%</b> power for <b>2.7%</b> QPS sacrificed.</p>
+      <ol class="seq">
+        <li><b>CXL-preferred "exchange rate":</b> 7.3 / 4.5 ≈ <b>1.62%</b> power saved per 1% QPS given up.</li>
+        <li><b>DRAM-preferred "exchange rate":</b> 4.2 / 2.7 ≈ <b>1.56%</b> power saved per 1% QPS given up.</li>
+        <li><b>Reading it:</b> the two rates are close (1.62 vs. 1.56), but CXL-preferred offers a <i>larger absolute</i> power-savings ceiling (7.3% vs. 4.2%) for a correspondingly larger throughput sacrifice — which model actually applies to a given deployment depends on real DDR generation and voltage/refresh characteristics the paper says are hardware-specific, not something the framework can assume.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Check yourself</div>
+      <h2>Practice</h2>
+      <p class="sub">Work the answer before opening it. Each answer ends with the misconception the question is designed to catch.</p>
+    </div>
+
+    <div class="prob">
+      <span class="ptag easy">Warm-up</span>
+      <div class="qtext">A pipeline has 2 stages, each with a DRAM:CXL ratio range of 1:100 to 100:1 (≈100 discrete values), and a thread range of 1–192. How many total configurations are in the search space, and does this clear "over a million"?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        100 (stage 1 ratio) × 100 (stage 2 ratio) × 192 (threads) = <b>1,920,000</b> configurations — yes, well over a million, matching §3.5's claim for even modest pipelines.
+        <span class="mis">Catches: assuming "only 2 stages" means a small space. The thread dimension alone (192 values) is enough to push a 2-stage pipeline past a million combinations.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">In Figure 6, Caption's throughput starts around 75–82% at moderate search cost but falls to 16–41% at the highest search cost — it gets <i>worse</i> with more search budget. Why would a search algorithm perform worse with more time, and why doesn't BO have this problem?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Caption is a 2-D binary search: it adjusts the CXL allocation percentage with a step-and-reverse rule (continue if performance improves, reverse with a smaller step if it degrades). In the paper's genuinely high-dimensional space (per-stage ratios × threads), that local, greedy rule can walk itself into a <b>local minimum</b> and keep refining around it — more iterations just polish a bad answer. BO avoids this because its Gaussian Process surrogate models the <i>whole</i> space from all past observations, so its next sample is chosen for expected global improvement, not local slope-following.
+        <span class="mis">Catches: assuming "more search iterations" is monotonically good for any algorithm. It's only true for algorithms that use the extra budget to look more broadly, not ones that just refine a local direction.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Diagnose</span>
+      <div class="qtext">Batch size for eBPF map updates defaults to 16, and each event is 96 bits. Someone proposes setting batch size to 1 "for freshness." What does the paper's own reasoning say this would cost, concretely?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Batch size 1 means every single 96-bit event triggers its own <code>bpf_perf_event_output()</code> transfer instead of amortizing 16 events into one — which reintroduces exactly the per-event kernel↔user crossing overhead the batching was designed to avoid (the same class of cost that makes daemon-based tools like auditd measure 25.1% overhead vs. eBPF's 4.7%). It wouldn't be as bad as auditd (no full context switch, still eBPF-native), but it gives up a real, deliberate design choice for a freshness benefit the paper never claims BO's iteration cadence actually needs.
+        <span class="mis">Catches: treating "in-kernel" as automatically free regardless of transfer frequency. The mechanism (eBPF) reduces overhead; the batching policy (16 events/transfer) is what actually amortizes it, and the two are separate levers.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">The paper's C1 example: in a DLRM-like pipeline, one stage is compute-intensive (wants low-latency local DRAM) and another is bandwidth-intensive (wants CXL's pooled bandwidth). Explain concretely why a single, system-wide NUMA interleave policy (as opposed to the paper's per-stage weighted interleave) cannot be Pareto-optimal for both stages simultaneously.</div>
+      <details><summary>Show answer</summary><div class="ans">
+        A system-wide policy sets one ratio for the whole process — say a 50:50 interleave. The compute-bound stage would prefer close to 100:0 (all local DRAM, minimizing per-access latency since it isn't bandwidth-starved); the bandwidth-bound stage would prefer something closer to 30:70 or lower (leaning on CXL's pooled bandwidth to avoid saturating local DRAM channels). Any single system-wide ratio is a compromise that under-serves at least one stage relative to what a per-stage ratio could achieve — which is precisely why the paper's configuration vector <code>x = (w₁,…,wₙ,t)</code> has one weight <i>per stage</i>, not one weight for the whole pipeline, and why the eBPF monitor tracks per-stage <code>kmalloc</code> completion to safely retarget each stage's NUMA configuration independently.
+        <span class="mis">Catches: assuming "NUMA interleaving is good" is a single fact rather than a per-workload, even per-stage, tradeoff. The paper's entire architecture exists because "good" here is stage-dependent.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">The paper models CXL power two ways: CXL-preferred (CXL costs 90% of DDR5 DRAM's power, refresh-rate effects dominate) and DRAM-preferred (CXL costs 1.1× DRAM's power, voltage/interface overhead dominates). Why does the framework need to support <i>both</i> models rather than picking the physically "correct" one?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        The paper is explicit that which effect dominates — DDR4-based CXL's lower refresh rate (saves power) vs. its higher supply voltage and CXL-interface overhead (costs power) — depends on the specific CXL implementation and DDR generation in a given deployment, and can genuinely go either direction. There isn't one "correct" model across all hardware; a framework that hardcodes one assumption would give wrong power-optimization guidance on hardware where the other effect dominates. Supporting both models lets Phase 2's Pareto search be re-parameterized per deployment rather than re-derived from scratch.
+        <span class="mis">Catches: assuming "CXL uses cheaper DDR4, so CXL is more power-efficient" as a universal law. The paper's own DRAM-preferred model is a direct counterexample it takes seriously enough to evaluate.</span>
+      </div></details>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Loose ends</div>
+      <h2>Frequently asked</h2>
+      <p class="sub">The questions that come up once the two-phase mechanism clicks.</p>
+    </div>
+    <div class="faq">
+
+      <details><summary><span class="q">Q</span>Is this the same thing as TPP, or Pond, or Memstrata?<span class="chev">▾</span></summary>
+        <div class="a">No — related, but different layers. <b>TPP</b> [40] is a page-placement/promotion mechanism the paper directly compares against as a real-world baseline (and beats by up to 48% QPS, 23.9% lower average latency). <b>Pond</b> [37] and <b>Memstrata</b> [85] are capacity-driven memory-pooling systems for multi-VM environments, allocating remote memory until performance drops — the paper notes (§2.5.3) they don't target bandwidth-intensive workloads like model inference, which is exactly this paper's focus. <b>Caption</b> [69] is the closest prior CXL-tuning approach and is the paper's main search-algorithm baseline (the binary search compared throughout §4.1).</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Why not just train an RL agent (DQN) once and reuse it everywhere?<span class="chev">▾</span></summary>
+        <div class="a">The paper's stated reasoning (§3.6): the configuration space is continuous and RL-style training methods need a large volume of training data, so training a fresh model per new workload is impractical for a system meant to handle whatever pipeline shows up next. BO instead builds its model directly from a handful of live measurements of the workload in front of it — no offline training corpus, no assumption the new workload resembles past ones.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>What does "weighted interleave" give you that plain <code>numactl --interleave</code> doesn't?<span class="chev">▾</span></summary>
+        <div class="a">Plain NUMA interleaving is round-robin — effectively a fixed 50:50 split (or equal split across however many nodes are listed). Weighted interleave (Linux 6.9) lets you set an explicit <b>N:M</b> ratio, so a stage can lean 99:1 toward local DRAM or 29:71 toward CXL — the fine-grained control the paper's per-stage optimization actually needs. It's also vendor-agnostic, unlike NPS-mode-style hardware partitioning.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does this mean CPUs beat GPUs now?<span class="chev">▾</span></summary>
+        <div class="a">Not as a blanket claim — the paper is careful here (§5.1). It argues CPU+CXL inference wins on cost and throughput specifically for: bandwidth-intensive stages, lightweight ML mixed with non-ML stages, low-load or intermittent pipelines, and budget-constrained deployments (17–19× better cost-efficiency for DLRM at batch sizes 8–64, in the paper's tenant-cost analysis). For compute-intensive, high-load workloads — LLMs, Stable Diffusion at scale — it explicitly recommends GPUs when capital budget allows.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>How expensive is running the optimizer itself, on top of the app?<span class="chev">▾</span></summary>
+        <div class="a">Two separate costs, both small. Steady-state monitoring: eBPF overhead of 4.7% (vs. 25.1% for auditd), and inter-stage shared-memory handoff under 7 ms (~2% of DLRM's 0.4 s SLA). One-time search cost: BO reaches 90% of near-exhaustive throughput at 23% search cost — 5 to 17 minutes across the studied workloads, not hours.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Is the power savings 14.3% or 7.3%? The paper seems to say both.<span class="chev">▾</span></summary>
+        <div class="a">This guide flags it as a genuine discrepancy rather than silently picking one. The <b>abstract</b> states "up to 14.3% power savings"; the intro's contributions list and <b>§4.2</b>'s actual Pareto-frontier discussion report a maximum of <b>7.3%</b> (CXL-preferred model, at a 4.5% QPS cost) and <b>4.2%</b> (DRAM-preferred model, at a 2.7% QPS cost). No passage in the body text reproduces "14.3%." Treat 7.3% as the number backed by the paper's own detailed results; see Reference § Source notes.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does this extend to NVM or other tiers — relevant to LtRAM-style multi-tier memory?<span class="chev">▾</span></summary>
+        <div class="a"><i>Forward-looking, not evaluated in this paper.</i> §5.3 states the framework "can be readily extended to accommodate such heterogeneous memory configurations, since our algorithms are designed based on a high-dimensional search space," explicitly naming NVM and SSD as CXL-attachable device types, with the OS treating each as a NUMA memory node with its own latency configuration. No NVM/SSD experiments are reported — this is discussion, not a result, but it's the paper's own stated generalization path and lines up with a DRAM/NVM/CXL tiering research agenda.</div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Reference</h2>
+      <p class="sub">Glossary, a dated summary card, further reading, and the honest provenance notes.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>QPS</b><span>Queries Per Second — the paper's primary throughput metric, computed from per-thread execution time and batch size via the eBPF monitor.</span></div>
+      <div class="term-def"><b>SLA / P99 latency</b><span>Service Level Agreement on latency; P99 is the 99th-percentile (worst-case-ish) latency, the metric used to judge whether a config is acceptable, not just fast on average.</span></div>
+      <div class="term-def"><b>Weighted interleave</b><span>Linux 6.9 NUMA feature: an explicit N:M page-placement ratio between nodes, set via <code>numactl --weight_interleave</code>, enforced by the page allocator.</span></div>
+      <div class="term-def"><b>Stage[N:M]</b><span>The paper's notation for one pipeline stage's DRAM:CXL allocation ratio — the per-stage unit the optimizer searches over.</span></div>
+      <div class="term-def"><b>Bayesian Optimization (BO)</b><span>Phase 1's search method: a Gaussian Process surrogate plus an acquisition function, used to find near-optimal configs in far fewer evaluations than brute force.</span></div>
+      <div class="term-def"><b>Gaussian Process (GP) surrogate</b><span><code>f(x) ~ GP(μ(x), k(x,x'))</code> — the probabilistic model BO fits over observed (config, throughput) pairs to predict unobserved configs.</span></div>
+      <div class="term-def"><b>Expected Improvement (EI)</b><span>The acquisition function used here: <code>α_EI(x) = E[max(0, f(x) − f_best)]</code>, balancing exploring uncertain regions against exploiting known-good ones.</span></div>
+      <div class="term-def"><b>Pareto frontier / optimality</b><span>Phase 2's output: the set of configs where QPS can't be improved without hurting power (or vice versa) — a set of tradeoffs, not one answer.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>eBPF</b><span>Extended Berkeley Packet Filter — JIT-compiled kernel programs attached to kernel events; the paper's monitoring substrate, chosen for low, hardware-agnostic overhead.</span></div>
+      <div class="term-def"><b>BPF maps / perf event array</b><span>Kernel-resident data structures eBPF uses to store metrics and batch-transfer them to user space via <code>bpf_perf_event_output()</code>.</span></div>
+      <div class="term-def"><b>kmalloc tracking</b><span>How the monitor detects that a pipeline stage has finished allocating memory — the signal it's safe to retarget the NUMA config for the next stage.</span></div>
+      <div class="term-def"><b>CXL-preferred / DRAM-preferred</b><span>The paper's two power models for CXL memory: 90% of DDR5 DRAM's power (refresh-rate dominated) vs. 1.1× DRAM's power (voltage/interface-overhead dominated).</span></div>
+      <div class="term-def"><b>Caption [69]</b><span>Prior CXL-tuning baseline using a binary-search-like algorithm over a single CXL-allocation ratio; the paper's main search-algorithm comparison point.</span></div>
+      <div class="term-def"><b>TPP [40]</b><span>"Transparent Page Placement" — a real-world page-placement baseline for CXL-tiered memory, compared against in the paper's real-trace evaluation (§4.1.4).</span></div>
+      <div class="term-def"><b>NUMA Interleave (NI)</b><span>The classic 50:50 round-robin interleaving policy, used as a simpler baseline alongside TPP.</span></div>
+      <div class="term-def"><b>PPW optimization</b><span>Label appearing in the paper's Figure 4 for the power-aware allocation step inside Phase 2; the paper does not spell out the acronym in the source text — noted here as uncertain rather than guessed.</span></div>
+    </div>
+
+    <div class="card" style="background:var(--mech-soft);border-color:#bcbfe8;margin-top:26px">
+      <h3 style="color:#3a409a">📌 Summary card <span style="font-family:var(--mono);font-size:.7rem;font-weight:500;color:#5A61B4">· as of 2026-08-30 · MICRO '25</span></h3>
+      <ul style="margin:0;padding-left:20px;color:#3a409a">
+        <li><b>What:</b> a two-phase auto-tuner that finds, per ML-pipeline stage, a DRAM:CXL page-placement ratio plus one thread count, using Bayesian Optimization (throughput, SLA-constrained) then Pareto optimality (power).</li>
+        <li><b>Why:</b> the search space exceeds a million configurations even for modest pipelines; prior binary search (Caption) converges to local minima there; vendor tools and daemon monitors don't generalize or are too costly.</li>
+        <li><b>Monitor:</b> eBPF, entirely in kernel space — 4.7% overhead vs. 25.1% for auditd (~5.3× less), 96 bits/event, batched 16 at a time.</li>
+        <li><b>Phase 1:</b> GP surrogate + Expected Improvement over <code>x=(w₁,…,wₙ,t)</code>, SLA baked into the objective via a soft exponential penalty (or a hard constraint, alternatively).</li>
+        <li><b>Phase 2:</b> Pareto frontier over Phase 1's best configs, trading QPS for power under two competing CXL power models.</li>
+        <li><b>Headline results:</b> 90% of a 27K-config pseudo-exhaustive baseline's throughput at 23% search cost (5–17 min); up to 48% higher QPS and 77% lower search cost vs. TPP/NI/Caption/GPU baselines; up to 7.3% (CXL-preferred) or 4.2% (DRAM-preferred) power savings.</li>
+        <li><b>Real-trace results (§4.1.4, DLRM):</b> 23.9% lower average latency vs. TPP, 6.1% lower vs. NI; P99 latency 0.39 s (45.5% better than TPP, 24.7% better than NI); SLA violations 4.76% vs. TPP's 28.9% and NI's 16.45%.</li>
+        <li><b>Not a GPU-replacement claim:</b> CPU+CXL wins for bandwidth-bound, lightweight, low-load, or budget-constrained workloads; GPUs still recommended for compute-heavy, high-load workloads (LLMs, Stable Diffusion) when budget allows.</li>
+        <li><b>Discrepancy flagged:</b> abstract says "up to 14.3%" power savings; §4.2's actual results max out at 7.3% — see Source notes.</li>
+        <li><b>Forward-looking:</b> the paper states (not evaluates) extension to NVM/SSD-based heterogeneous memory, multi-tenancy, and GPU/XPU nodes via CXL Type 2.</li>
+      </ul>
+    </div>
+
+    <div class="subhead">Further reading (the paper's own closest relatives)</div>
+    <div class="read-item">
+      <h4>TPP: Transparent Page Placement for CXL-Enabled Tiered-Memory <span class="diff easy">baseline compared</span></h4>
+      <div class="meta">Al Maruf et al., ASPLOS 2023 — ref. [40]</div>
+      <p>The real-world page-placement baseline this paper beats by up to 48% QPS and 23.9% average latency on DLRM traces. Read this first if TPP is your reference point for CXL tiering.</p>
+    </div>
+    <div class="read-item">
+      <h4>Demystifying CXL Memory (Caption's context) <span class="diff med">search baseline</span></h4>
+      <div class="meta">Sun et al., MICRO 2023 — ref. [69], introduces the Caption-style binary search this paper's Fig. 6 repeatedly out-searches</div>
+      <p>Establishes the 2-D binary-search approach to CXL allocation ratio tuning that this paper argues doesn't scale past a low-dimensional space.</p>
+    </div>
+    <div class="read-item">
+      <h4>Pond: CXL-Based Memory Pooling Systems for Cloud Platforms <span class="diff med">adjacent, different problem</span></h4>
+      <div class="meta">Li et al., ASPLOS 2023 — ref. [37]</div>
+      <p>Capacity-driven, multi-VM memory pooling — useful contrast for seeing what this paper's bandwidth-and-throughput framing is <i>not</i> trying to solve.</p>
+    </div>
+    <div class="read-item">
+      <h4>MT2: Memory Bandwidth Regulation on Hybrid NVM/DRAM Platforms <span class="diff hard">relevant to LtRAM/NVM tiering</span></h4>
+      <div class="meta">Yi et al., FAST 2022 — ref. [81]</div>
+      <p>Addresses workload interference on NVM/DRAM hybrids without NUMA-awareness — a useful counterpoint given this paper's own stated (but unevaluated) ambition to extend to NVM.</p>
+    </div>
+
+    <div class="subhead">Source notes — provenance &amp; honesty</div>
+    <div class="card" style="border-color:var(--line-strong)">
+      <p style="font-size:.96rem"><b>Kind:</b> paper-grounded field guide. Source: <code>_paper_txt/multi-dimensional-ml-pipeline-optimizati.txt</code> — Huo, Devulapally, Al Maruf, Chandramoorthy, Arunachalam, Gudukbay Akbulut, Kandemir, Narayanan, "Multi-Dimensional ML-Pipeline Optimization in Cost-Effective Disaggregated Datacenter," MICRO '25.</p>
+      <p style="font-size:.96rem"><b>Grounded &amp; stable (high confidence, directly stated in the source text):</b> the problem formalization and all its symbols (§3.4); the BO/GP/EI equations and the hard/soft SLA-penalty formulas (§3.6); the eBPF architecture, overhead numbers (4.7% vs. 25.1%), and 96-bit/batch-16 data path (§3.1–3.2, §4.1.1); the two CXL power models and their percentages (§3.7.1, §4.2); every result percentage cited in this guide (48% QPS, 77% search cost, 90%/23% BO efficiency, per-stage ratio examples like 71:29 and 99:1, the scalability-test and latency/SLA-violation numbers in §4.1.3–4.1.4); Table 1's hardware costs.</p>
+      <p style="font-size:.96rem"><b>Illustrative / this guide's framing (clearly labeled):</b> the signature figure's exact line endpoints (readings of ranges the paper reports, not the paper's own plotted curves); the search-space arithmetic in Worked Example 1 (the paper states both "100³" and "over 1 million" separately — this guide shows the multiplication that reaches each); the SLA soft-penalty widget's λ value and Q(x)=5,000 baseline (the paper gives the formula but not a λ); all six analogies in Tab 3; the "connects to LtRAM/NVM tiering" framing in the FAQ, which reflects §5.3's own stated (but unevaluated) extension claim, not a new result.</p>
+      <p style="font-size:.96rem"><b>Known inconsistency in the source paper (reported, not resolved):</b> the abstract states "up to 14.3% power savings," while §4.2's detailed Pareto-frontier discussion reports a maximum of <b>7.3%</b> (CXL-preferred, 4.5% QPS cost) and <b>4.2%</b> (DRAM-preferred, 2.7% QPS cost), and no other passage in the source text reproduces "14.3%." Both numbers are quoted faithfully above rather than silently reconciled. Stated as of <b>2026-08-30</b>.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Huo et al., "Multi-Dimensional ML-Pipeline Optimization in Cost-Effective Disaggregated Datacenter," MICRO '25</span>
+    <span><b>Built from:</b> _paper_txt/multi-dimensional-ml-pipeline-optimizati.txt · house style in learn/sessions/2026-08-13-thp</span>
+    <span><b>Provenance:</b> paper-grounded (see Source notes) · illustrative numbers labeled · one abstract/§4.2 discrepancy flagged</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- SLA PENALTY EXPLORER ---- */
+  var LSLA = 0.40, QBASE = 5000;
+  function renderSla(lmax, lambda){
+    var excess = Math.max(0, lmax - LSLA);
+    var hard = lmax <= LSLA ? QBASE : 0;
+    var soft = QBASE * Math.exp(-lambda * excess);
+    document.getElementById('lmaxVal').textContent = lmax.toFixed(2);
+    document.getElementById('lambdaVal').textContent = lambda;
+    document.getElementById('sExcess').textContent = excess.toFixed(2) + ' s';
+    document.getElementById('sHard').textContent = Math.round(hard);
+    document.getElementById('sSoft').textContent = Math.round(soft);
+    var v = document.getElementById('slaVerdict');
+    if(excess === 0){ v.className='pverdict opt'; v.innerHTML='✓ Within SLA — both formulations agree: full score ('+Math.round(hard)+' QPS).'; }
+    else if(soft > QBASE*0.5){ v.className='pverdict sub'; v.innerHTML='⚠ Hard penalty zeroes this config entirely. Soft penalty keeps '+Math.round(soft)+' QPS ('+(100*soft/QBASE).toFixed(0)+'% of full value) — still competitive, might still be the best available option.'; }
+    else { v.className='pverdict off'; v.innerHTML='✋ Hard penalty: 0. Soft penalty: '+Math.round(soft)+' QPS ('+(100*soft/QBASE).toFixed(1)+'%) — decaying toward zero but never formally excluded.'; }
+  }
+  var lmaxRange = document.getElementById('lmaxRange');
+  var lambdaRange = document.getElementById('lambdaRange');
+  function updateSla(){ renderSla(parseFloat(lmaxRange.value), parseFloat(lambdaRange.value)); }
+  if(lmaxRange && lambdaRange){
+    lmaxRange.addEventListener('input', updateSla);
+    lambdaRange.addEventListener('input', updateSla);
+    document.querySelectorAll('[data-lam]').forEach(function(b){
+      b.addEventListener('click', function(){ lambdaRange.value = b.dataset.lam; updateSla(); });
+    });
+    updateSla();
+  }
+
+  /* ---- INIT ---- */
+  runReveals();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+<script src="../rate.js"></script>
+</body>
+</html>
+
+
+
