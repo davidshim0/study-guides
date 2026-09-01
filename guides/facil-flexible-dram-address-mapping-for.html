@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<!-- FACIL field guide — "FACIL: Flexible DRAM Address Mapping for SoC-PIM Cooperative
+     On-device LLM Inference" (Seo et al., HPCA 2025). Built in the house "friendly field
+     guide" format (see the THP guide at learn/sessions/2026-08-13-thp/study-guide.html).
+     Source: paper-radar/_paper_txt/facil-flexible-dram-address-mapping-for.txt (full text read).
+     Semantic colors (per-paper remap of the same four palette slots):
+     honey  = the SoC domain    (CPU/GPU/NPU, conventional row-major mapping, GEMM/prefill)
+     teal   = the PIM domain    (near-bank PIM processors, PIM-optimized mapping, GEMV/decode)
+     indigo = FACIL's machinery (mapping selector, pimalloc, MapID, PTE spare bits, MC muxes)
+     terracotta = the tax FACIL removes (2x weight duplication, on-demand re-layout latency) -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>One Page, Two Mappings — A FACIL Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --huge:#2C8C7C; --huge-soft:#DCEFE9;       /* teal   = PIM domain (PIM procs, PIM-optimized mapping, GEMV/decode) */
+  --mech:#5A61B4; --mech-soft:#E6E6F6;       /* indigo = FACIL machinery (MapID, pimalloc, PTE bits, MC muxes)      */
+  --cost:#C0563B; --cost-soft:#F7E1D8;       /* terracotta = the tax FACIL removes (duplication, re-layout stalls) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:19ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--huge);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--mech);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--huge);font-weight:600}
+.rule-plaque .wo{color:var(--cost);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:64ch}
+
+/* PROSE / CARDS */
+.prose{max-width:76ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--mech-soft);color:var(--mech);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--huge-soft);border-left:3px solid var(--huge);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--cost)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-huge{background:var(--huge-soft);color:#1f5b51}
+.chip-base{background:var(--honey-soft);color:#6e4a09}
+.chip-mech{background:var(--mech-soft);color:#3a409a}
+.chip-cost{background:var(--cost-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--huge-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--cost-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-huge{border-color:#9fd2c7;background:var(--huge-soft)}
+.node.n-mech{border-color:#bcbfe8;background:var(--mech-soft)}
+.node.n-cost{border-color:#e3b4a5;background:var(--cost-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--huge-soft)}
+.tbl .best:hover td{background:#cfeae2}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-base{background:linear-gradient(90deg,#eab657,#C27D14)}
+.bf-mid{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-huge{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-giga{background:linear-gradient(90deg,#2f6f64,#1f5147)}
+
+/* MAPID EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.mapid-track{position:relative;height:34px;background:var(--paper-2);border-radius:10px;border:1px solid var(--line);margin:6px 0 2px}
+.mapid-fill{position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,#6f76c9,#5A61B4);border-radius:10px 0 0 10px;transition:width .5s ease}
+.mapid-marker{position:absolute;top:-10px;width:2px;height:54px;background:var(--ink);transition:left .5s ease}
+.mapid-marker::after{content:attr(data-label);position:absolute;top:-22px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:10.5px;color:var(--ink);white-space:nowrap}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls label{font-family:var(--mono);font-size:.8rem;color:var(--ink-soft);font-weight:700}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--mech)}
+.part-controls input[type=number],.part-controls select{font-family:var(--mono);padding:6px 8px;border:1.5px solid var(--line-strong);border-radius:8px;background:#fff}
+.part-controls input[type=number]{width:100px}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--huge-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--cost-soft);color:#9a3a22;border:1px solid #e3b4a5}
+.pverdict.off{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--mech);color:var(--mech)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--huge-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--cost-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--cost);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--huge-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--cost-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HPCA 2025 · SoC-PIM Memory Systems · A Field Guide</span>
+    <h1>Same bytes, <span class="swash">two readings</span> — how FACIL lets PIM and the SoC share one weight matrix</h1>
+    <p class="lede">On-device LLM inference needs a near-bank PIM processor to chew through memory-bound GEMV, and a CPU/GPU/NPU to run compute-bound GEMM on the very same weights. Each side wants a different DRAM layout. <strong>FACIL</strong> stops that from meaning "make a copy" or "translate and wait" — it stamps a tiny mapping ID onto each huge page and lets the memory controller do the rest, for free.</p>
+    <div class="hero-meta">
+      <span>🧩 FACIL: Flexible DRAM Address Mapping · Seo et al., HPCA 2025</span>
+      <span>🎓 Assumes DRAM address mapping, virtual memory, and basic near-bank PIM</span>
+      <span>⏱ ~40 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🔀</div>
+      <p>Stamp each huge page with a small <span class="ro">MapID</span> in spare page-table bits, and let the memory controller apply <span class="ro">PIM's bank-contiguous layout or the SoC's row-major layout</span> to the very same physical bytes — the choice lives in address translation, not in a <span class="wo">re-layout pass or a second copy of the weights</span>.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Nine ideas FACIL builds on</h2>
+      <p class="sub">You already know DRAM address mapping and virtual memory, so these skip straight to the pieces FACIL actually leans on: why GEMV wants PIM and GEMM doesn't, what a "chunk" and "tile" are, why the interleaving bits fit inside a huge page's offset, and why sharing one weight matrix between PIM and the SoC is genuinely hard. Tap any open; read in order the first time.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--honey-deep)"></i> the SoC domain — CPU/GPU/NPU, conventional mapping, GEMM/prefill</span>
+      <span><i style="background:var(--huge)"></i> the PIM domain — near-bank PIM, PIM-optimized mapping, GEMV/decode</span>
+      <span><i style="background:var(--mech)"></i> FACIL's machinery — MapID, pimalloc, PTE bits, MC muxes</span>
+      <span><i style="background:var(--cost)"></i> the tax FACIL removes — duplication, re-layout stalls</span>
+    </div>
+
+    <div class="primer-grid">
+
+      <details class="primer" open>
+        <summary><span class="pnum">1</span>Why decode is GEMV and memory-bound, while prefill is GEMM and compute-bound<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>LLM inference has two phases. <b>Prefill</b> processes the whole input prompt at once — matrix<b>×matrix</b> (GEMM), high arithmetic intensity, favors compute throughput. <b>Decode</b> generates one token at a time, auto-regressively — matrix<b>×vector</b> (GEMV), one token's worth of work per weight-matrix pass, so it is starved for bandwidth, not FLOPs.</p>
+          <p>The paper profiles this directly (Fig. 2) on a Jetson AGX Orin running Llama3-8B: <b>&gt;90%</b> of decode-phase time goes to linear (GEMV) operations, and across the four linear-layer shapes in that model, <b>compute utilization stays below 1%</b> while memory-bandwidth utilization sits around <b>72–81%</b>.</p>
+          <div class="ready"><b>Now you're ready:</b> decode/GEMV wants a memory-side accelerator; prefill/GEMM wants a compute-side one. FACIL exists because both operate on the <i>same</i> weight matrix.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">2</span>Near-bank PIM: bringing the compute to the bank<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Processing-in-memory (PIM) puts a small compute unit next to (not inside) each DRAM bank, so many banks can do simple arithmetic in parallel using DRAM's own internal bandwidth — far higher than what escapes through the pins. Among PIM flavors (in-memory, near-bank, near-DIMM, buffer-die), the paper focuses on <b>near-bank</b> PIM (e.g. SK Hynix AiM, Samsung HBM-PIM), the class with real taped-out prototypes and commercial products.</p>
+          <p>The payoff is large: offloading GEMV to an AiM-style PIM on a Jetson AGX Orin running Llama3-8B gives a <b>3.32×</b> speedup even over a <i>hypothetical, ideal</i> NPU with infinite FLOPS and 100% peak-bandwidth utilization (Fig. 3) — because that ideal NPU is still capped by the external memory bus, and PIM isn't.</p>
+          <div class="ready"><b>Now you're ready:</b> PIM's advantage over even a perfect conventional processor comes from bandwidth internal to DRAM. That's worth protecting — which is exactly why the data layout matters so much (next primer).</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">3</span>Chunks and tiles: the unit of PIM-friendly placement<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>chunk</b> is the slice of the matrix one PIM processing unit (PU) works on per step; its shape (output-register size, input-register size) is fixed by the PU's hardware. AiM's input register holds a full DRAM row of the input vector and its output register holds one output element, giving a chunk dimension of <b>(1, 1024)</b> at FP16 (a 2KB LPDDR5/GDDR6 row ÷ 2 bytes). HBM-PIM has 8 input+8 output registers of 32B (HBM2 transfer size) each, but — lacking a reduction unit — each output register only accumulates 16 partial sums for one output element, so its usable chunk dimension is <b>(8, 128)</b>, not the naively expected (128,128).</p>
+          <p>A <b>tile</b> concatenates chunks row-wise across every bank of every channel, because banks in a rank move in lock-step (same command, same location). Placing chunks row-wise keeps every PU reading the same column index, which is what lets the input vector be broadcast cheaply to all of them.</p>
+          <div class="ready"><b>Now you're ready:</b> "PIM-optimized mapping" = keep each chunk contiguous within one bank, keep one matrix row entirely inside one bank, and tile row-wise across banks — three placement rules a conventional DRAM mapping was never designed to satisfy.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">4</span>Where the interleaving bits live inside a huge page<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Conventional DRAM address mapping puts <b>row</b> bits at the most-significant end of the physical address and the <b>channel/bank/rank</b> ("interleaving") bits toward the low end. For an edge device's small memory system (few channels, few ranks), those interleaving bits — plus the column and byte-offset bits — usually all fit inside the <b>21 least-significant bits</b> of the address, i.e. inside the <b>page offset</b> of a 2MB huge page.</p>
+          <p>That's the enabling fact behind everything else: software that controls where cache lines land <i>within</i> a huge page can realize any interleaving it wants — including PIM-optimized ones — without the OS ever having to change which physical page backs the huge page.</p>
+          <div class="ready"><b>Now you're ready:</b> a 2MB huge page's page offset is exactly wide enough to hold a full custom DRAM address mapping. That's the "slot" FACIL exploits.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">5</span>Why BLAS libraries can't just tolerate a PIM-optimized layout<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Highly-optimized GEMM kernels (Intel oneMKL, NVIDIA cuBLAS) assume a matrix in virtual address space is a plain 1D array in row-major or column-major order. A PIM-optimized mapping breaks that assumption at the physical level — but if it also changes what a program sees at the <i>virtual</i>-address level, every GEMM call downstream either needs a full re-layout back to row-/column-major, or a hand-written kernel for the PIM layout. Neither is acceptable on a resource-constrained edge SoC.</p>
+          <div class="ready"><b>Now you're ready:</b> the real challenge isn't storing data for PIM (huge pages already solve that) — it's letting the SoC's <i>existing, unmodified</i> GEMM kernels keep working on the same bytes.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">6</span>The three candidate fixes — and why two of them are bad<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>(a) <b>Weight duplication</b> — keep one copy in each layout. Simple, but doubles memory footprint, which resource-constrained edge devices can't spare. (b) <b>On-demand re-layout</b> — keep one PIM-optimized copy, and re-layout to conventional form right before each GEMM. Only a small, temporary footprint increase, but the re-layout itself is slow: on a Jetson AGX Orin running Llama3-8B, adding re-layout <b>roughly triples time-to-first-token</b>, from about 100ms to about 300ms, as prefill length grows (Fig. 6). (c) <b>FACIL</b> — one copy, no re-layout, transparent access from both sides.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the design space FACIL is judged against — memory-doubling vs. latency-tripling vs. neither.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">7</span>Why time-to-first-token (TTFT) is the metric that matters here<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>TTFT</b> (time until the first output token appears) is set entirely by the prefill phase; <b>TTLT</b> (time to the last token) also includes the whole decode phase. For interactive apps — chatbots, voice assistants, autocomplete — users perceive a system as instantaneous only below roughly <b>100ms</b>, and a voice assistant is claimed to need TTFT under about <b>250ms</b> to feel human. Because users read/listen while later tokens stream in, TTFT dominates perceived latency far more than TTLT does.</p>
+          <div class="ready"><b>Now you're ready:</b> re-layout overhead lands squarely on TTFT (it delays prefill), which is exactly the number users notice first. That's why the paper reports TTFT speedup as its headline metric.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">8</span>MapID, previewed<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>MapID</b> is a small integer, recorded once per huge page, that tells the memory controller which physical-address-to-DRAM-address (<b>PA-to-DA</b>) mapping to apply when translating requests to that page. FACIL supports a small, bounded number of mappings — for LPDDR5 with a 2MB huge page, the worst case (single channel, single rank, 8-bank mode) allows at most <b>13</b> (i.e. MapID 0–13, 14 total mappings), which fits in just <b>4</b> spare bits.</p>
+          <div class="ready"><b>Now you're ready:</b> MapID is the whole trick in miniature — a few bits, stored per page, that turn "which DRAM layout" from a data-movement problem into a lookup.</div>
+        </div>
+      </details>
+
+      <details class="primer">
+        <summary><span class="pnum">9</span>pimalloc, previewed<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><code>pimalloc</code> is FACIL's user-level allocation call. Give it a matrix's dimensions and datatype; a <b>mapping selector</b> (ordinary user-space software) computes the best MapID for that matrix given the memory and PIM configuration; the OS allocator then allocates huge pages and records both the physical addresses <i>and</i> the MapID in the page table; the caller gets back an ordinary virtual address. Every later load or store to that address is completely ordinary from the programmer's point of view — the page table and memory controller carry the MapID silently.</p>
+          <div class="ready"><b>Now you're ready:</b> you now have every ingredient. Tab 2 puts them together into the one idea; Tab 4 walks each mechanism in detail.</div>
+        </div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>FACIL in a nutshell</h2>
+      <p class="sub">The conflict, the insight that resolves it, and the numbers that justify the plumbing.</p>
+    </div>
+    <div class="prose">
+      <p>An on-device LLM's weight matrices are used twice, by two different masters. The <span class="mem-chip chip-huge">PIM domain</span> wants them GEMV-ready: each chunk contiguous within a bank, each matrix row entirely inside one bank, chunks tiled row-wise across banks — a layout that has almost nothing in common with conventional DRAM mapping. The <span class="mem-chip chip-base">SoC domain</span> — the CPU/GPU/NPU running GEMM during prefill, through unmodified oneMKL/cuBLAS-style kernels — wants the exact same matrix to look like an ordinary contiguous row-/column-major array in virtual memory. Naively reconciling the two costs either a full <span class="mem-chip chip-cost">second copy</span> of every weight matrix, or a <span class="mem-chip chip-cost">re-layout pass</span> before every GEMM that roughly triples TTFT on a Jetson AGX Orin (Section II-C, Fig. 6).</p>
+      <p><strong>FACIL's insight:</strong> the fields a PIM-optimized mapping needs to rearrange — column, row, and the channel/bank/rank "PU-changing" bits — all live inside the <b>page offset</b> of a huge page for an edge-scale memory system (Primer 4). So instead of moving data, move the <i>interpretation</i> of its address. FACIL's <span class="mem-chip chip-mech">machinery</span> — a user-level <code>pimalloc</code> plus a mapping selector — picks a small <b>MapID</b> per huge page at allocation time (Section IV-B–C) and stores it in bits of the page-table entry that huge pages leave unused; a lightly-augmented <b>memory controller</b> then reads that MapID alongside the physical address and routes each field (channel/bank/rank/row/column) through the layout the MapID specifies (Section V-B). The SoC still issues ordinary loads/stores to an ordinary virtual address; the PIM processor still gets its bank-contiguous chunks. Nothing moves twice.</p>
+      <p>The hardware/software cost is deliberately tiny: at most <b>4</b> spare page-table-entry bits (the paper bounds the worst case at 14 possible mappings, i.e. MapID 0–13), and on the memory-controller side just five <b>N-to-1 multiplexers</b> — one each for channel, rank, bank, row, and column — added to the frontend that already does PA-to-DA translation. No new memory components, no TLB changes (the MapID rides in bits huge pages already leave idle, so it's safe inside a normal TLB entry).</p>
+      <p><strong>The payoff:</strong> across four real edge platforms (Jetson AGX Orin, MacBook Pro M3 Max, Lenovo IdeaPad, iPhone 15 Pro), FACIL reaches geomean TTFT speedups of <b>2.37×</b> (Alpaca-style conversation) and <b>2.63×</b> (code autocompletion) over a SoC-PIM hybrid baseline that still pays the re-layout tax, with only a measured <b>0.1–2.1%</b> GEMM slowdown from running on the PIM-optimized layout, and a one-time, amortized huge-page allocation overhead of at most <b>1.90×</b> model-load time under heavy fragmentation.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>The conflict: <b>PIM wants bank-contiguous chunks; SoC/BLAS wants ordinary row-major arrays</b> — over the <i>same</i> weight matrix.</li>
+        <li>The naive fixes cost either <b>2× memory</b> (duplication) or <b>~3× TTFT</b> (on-demand re-layout, Fig. 6).</li>
+        <li>FACIL's move: encode the DRAM layout choice as a <b>MapID</b> stored per huge page, not as a copy of the data.</li>
+        <li>MapID lives in <b>page-table bits huge pages already leave unused</b> (≤4 bits suffice; max MapID = 13 in the worst case).</li>
+        <li>The memory controller applies the MapID with <b>five simple multiplexers</b> — no new memory, no TLB change.</li>
+        <li>Result: <b>2.37×/2.63×</b> geomean TTFT speedup (Alpaca / code-autocompletion) over the SoC-PIM hybrid baseline; GEMM-on-PIM-layout slowdown only <b>0.1–2.1%</b>.</li>
+        <li>FACIL leaves <b>non-shared memory's mapping untouched</b> — only huge pages holding PIM↔SoC-shared weights are affected.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole idea in one picture: one page offset, two readings</div>
+      <div class="viz-kicker">the same 21 physical bits of a 2MB huge page's page offset, read two ways depending on the page's MapID</div>
+      <div class="legend">
+        <span><i style="background:var(--honey-deep)"></i> fields the SoC's conventional mapping cares about</span>
+        <span><i style="background:var(--huge)"></i> fields the PIM-optimized mapping cares about</span>
+        <span><i style="background:var(--mech)"></i> MapID — stored in spare PTE bits, read by the memory controller</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="A single huge page's 21-bit page offset is shown twice: once sliced as row, rank, column, bank, channel for the SoC's conventional mapping, and once sliced with the PU-changing channel/bank/rank bits moved next to the column bits for the PIM-optimized mapping. A MapID box in the middle labels which boundary applies.">
+        <text x="30" y="30" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">Physical page offset (huge page, 21 bits, MSB → LSB)</text>
+        <rect x="30" y="42" width="700" height="30" rx="4" fill="#fff" stroke="var(--line-strong)" stroke-width="1.4"/>
+        <text x="380" y="62" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="var(--ink-soft)">same 21 physical bits for every access to this page</text>
+
+        <text x="30" y="108" font-family="Fraunces" font-size="14" font-weight="600" fill="#6e4a09">SoC / conventional mapping</text>
+        <g font-family="JetBrains Mono" font-size="11" fill="#6e4a09">
+          <rect x="30" y="118" width="150" height="32" fill="#FBEACB" stroke="#C27D14" stroke-width="1.3"/><text x="105" y="138" text-anchor="middle">Row (MSBs)</text>
+          <rect x="180" y="118" width="90" height="32" fill="#FBEACB" stroke="#C27D14" stroke-width="1.3"/><text x="225" y="138" text-anchor="middle">Rank</text>
+          <rect x="270" y="118" width="150" height="32" fill="#FBEACB" stroke="#C27D14" stroke-width="1.3"/><text x="345" y="138" text-anchor="middle">Column</text>
+          <rect x="420" y="118" width="90" height="32" fill="#FBEACB" stroke="#C27D14" stroke-width="1.3"/><text x="465" y="138" text-anchor="middle">Bank</text>
+          <rect x="510" y="118" width="90" height="32" fill="#FBEACB" stroke="#C27D14" stroke-width="1.3"/><text x="555" y="138" text-anchor="middle">Channel</text>
+          <rect x="600" y="118" width="130" height="32" fill="#FBEACB" stroke="#C27D14" stroke-width="1.3"/><text x="665" y="138" text-anchor="middle">Offset (LSBs)</text>
+        </g>
+
+        <text x="30" y="188" font-family="Fraunces" font-size="14" font-weight="600" fill="#1f5b51">PIM-optimized mapping (MapID = k)</text>
+        <g font-family="JetBrains Mono" font-size="11" fill="#1f5b51">
+          <rect x="30" y="198" width="150" height="32" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.3"/><text x="105" y="218" text-anchor="middle">Row (MSBs)</text>
+          <rect x="180" y="198" width="90" height="32" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.3"/><text x="225" y="212" text-anchor="middle">PU-changing</text><text x="225" y="224" text-anchor="middle" font-size="9">(Ch/Bank/Rank)</text>
+          <rect x="270" y="198" width="150" height="32" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.3"/><text x="345" y="218" text-anchor="middle">Column</text>
+          <rect x="420" y="198" width="310" height="32" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.3"/><text x="575" y="218" text-anchor="middle">Offset (chunk row + LSBs)</text>
+        </g>
+
+        <path d="M225 150 v18 M225 168 h0" stroke="var(--mech)" stroke-width="2" fill="none"/>
+        <rect x="160" y="160" width="130" height="30" rx="8" fill="var(--mech-soft)" stroke="var(--mech)" stroke-width="1.6"/>
+        <text x="225" y="180" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">MapID = k</text>
+        <text x="30" y="270" font-family="JetBrains Mono" font-size="10.5" fill="var(--ink-faint)">MapID is stored once per huge page (spare PTE bits, Fig. 11) and read by the memory controller's field selectors (Fig. 12) — it decides only where the boundary between "PU-changing bits" and "column bits" falls.</text>
+      </svg>
+      <figcaption><b>Read it as one strip of bits, sliced two ways.</b> The SoC's conventional mapping puts the interleaving (rank/bank/channel) bits low and column bits mid-range; the PIM-optimized mapping moves the "PU-changing" bits (bank+rank+channel, concatenated) to sit directly above the chunk's column bits, so a whole matrix row lands in one bank and consecutive rows land on different PUs. FACIL never rewrites the bytes at these bit positions — it only changes which DRAM field each bit position feeds, based on the page's MapID. (Simplified from Fig. 8's AiM case; conceptual redraw, not the paper's exact figure.)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">the conflict → FACIL's machinery → the memory controller → the measured payoff → what's still open</div>
+      <div class="flow-row">
+        <div class="node n-cost"><div class="nt">The conflict</div><div class="nd">Same weights: PIM wants bank-contiguous chunks, SoC/BLAS wants row-major arrays. Naive fixes cost 2× memory or ~3× TTFT.</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">Mapping selector + pimalloc</div><div class="nd">Picks a MapID from matrix dims + memory/PIM config (Fig. 9); OS allocator stamps it into the huge page's PTE.</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-mech"><div class="nt">Memory controller muxes</div><div class="nd">Frontend reads MapID + PA, routes bits to the right Channel/Bank/Rank/Row/Col selector (Fig. 12).</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-huge"><div class="nt">Win</div><div class="nd">PIM reads its bank-contiguous layout; SoC reads the same bytes as an ordinary array via an ordinary VA — no re-layout, no duplicate.</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-huge"><div class="nt">Measured payoff</div><div class="nd">2.37×/2.63× geomean TTFT (Alpaca/code-autocompletion); 1.20× TTLT; GEMM-on-PIM-layout slowdown only 0.1–2.1%.</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Left open</div><div class="nd">PIM vs. non-PIM request scheduling/contention is named explicitly as future work, not solved by FACIL.</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Five everyday pictures</div>
+      <h2>How to think about FACIL</h2>
+      <p class="sub">Each picture stands alone — read in any order. Every card ends with an honest note about where the analogy stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="46" y="18" width="48" height="60" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <path d="M20 30 h20 M20 30 v10 M20 40 h14" stroke="#C27D14" stroke-width="2" fill="none"/>
+          <text x="14" y="26" font-family="monospace" font-size="8" fill="#C27D14">SoC</text>
+          <path d="M120 66 h-20 M120 66 v-10 M120 56 h-14" stroke="#2C8C7C" stroke-width="2" fill="none"/>
+          <text x="108" y="80" font-family="monospace" font-size="8" fill="#2C8C7C">PIM</text>
+          <rect x="54" y="34" width="8" height="8" fill="#FBEACB" stroke="#C27D14"/><rect x="66" y="34" width="8" height="8" fill="#FBEACB" stroke="#C27D14"/>
+          <rect x="54" y="46" width="8" height="8" fill="var(--huge-soft)" stroke="#2C8C7C"/><rect x="66" y="46" width="8" height="8" fill="var(--huge-soft)" stroke="#2C8C7C"/>
+          <rect x="54" y="58" width="8" height="8" fill="#FBEACB" stroke="#C27D14"/><rect x="66" y="58" width="8" height="8" fill="var(--huge-soft)" stroke="#2C8C7C"/>
+        </svg></div>
+        <span class="term">The conflict · shared weights, two masters</span>
+        <h3>Two readers, one book, no photocopier</h3>
+        <p>Both readers need the exact same book. One reads it front-to-back like a novel (SoC: row-major GEMM). The other needs it re-organized by topic scattered across chapters to work efficiently (PIM: bank-contiguous chunks). Photocopying the book for each reader (duplication) doubles your shelf space; reformatting it before every reading session (re-layout) makes everyone wait.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real book's words move when reorganized; FACIL's bytes never move — only the "reading order" (address mapping) does. The analogy is about the conflict, not the fix.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="30" r="14" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="2"/>
+          <text x="70" y="35" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">PA</text>
+          <path d="M70 44 v14" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="42" y="58" width="24" height="20" rx="3" fill="#FBEACB" stroke="#C27D14" stroke-width="1.6"/>
+          <text x="54" y="71" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e4a09">US</text>
+          <rect x="74" y="58" width="24" height="20" rx="3" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.6"/>
+          <text x="86" y="71" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">EU</text>
+        </svg></div>
+        <span class="term">FACIL's machinery · MapID + the MC mux</span>
+        <h3>A universal travel adapter</h3>
+        <p>Your laptop charger's plug (the physical address) never changes. A universal adapter reassigns which pins carry live/neutral/ground depending on a small switch setting (MapID) — US socket or EU socket, same underlying prongs, different wiring at the very last step. FACIL's memory-controller multiplexers are that switch: five of them, one per DRAM field, reading the MapID to decide which physical-address bit goes where.</p>
+        <div class="breaks"><b>Where it breaks:</b> a travel adapter is fully general; FACIL's "adapter" only supports as many settings as fit in the spare PTE bits (≤14 mappings in the paper's worst case) — it's a small, fixed menu, not an arbitrary rewiring.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="20" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="1.6"/>
+          <text x="70" y="33" text-anchor="middle" font-family="monospace" font-size="8" fill="#6E6456">4KB regular page — full margin</text>
+          <rect x="20" y="52" width="60" height="20" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="1.6"/>
+          <rect x="80" y="52" width="40" height="20" rx="3" fill="var(--mech-soft)" stroke="#5A61B4" stroke-width="1.6" stroke-dasharray="3 2"/>
+          <text x="100" y="65" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">MapID</text>
+          <text x="50" y="65" text-anchor="middle" font-family="monospace" font-size="7" fill="#6E6456">2MB page</text>
+        </svg></div>
+        <span class="term">FACIL's machinery · spare PTE bits</span>
+        <h3>Writing in the form's margin</h3>
+        <p>A big form (huge-page PTE) has generous margins because it needs fewer digits to number its bigger "line items" (physical frame numbers) than a small form (4KB-page PTE) does. FACIL writes the MapID in that unused margin — 9 bits of it for 2MB huge pages on a system with 4KB regular pages — instead of stapling on an extra page.</p>
+        <div class="breaks"><b>Where it breaks:</b> a form's margin is just blank space; the PTE's spare bits are spare only because huge pages need fewer physical-frame-number bits than regular pages — it's a structural fact about paging, not blank space by convention.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="40" height="56" rx="4" fill="#FBEACB" stroke="#C27D14" stroke-width="2"/>
+          <g stroke="#C27D14" stroke-width="1"><line x1="20" y1="34" x2="60" y2="34"/><line x1="20" y1="48" x2="60" y2="48"/><line x1="20" y1="62" x2="60" y2="62"/></g>
+          <text x="80" y="36" font-family="monospace" font-size="16" fill="#9A8E7C">≈</text>
+          <rect x="94" y="20" width="26" height="56" rx="4" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="107" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51" transform="rotate(-90 107,52)">1 bank</text>
+        </svg></div>
+        <span class="term">Chunks &amp; tiles · PIM-optimized placement</span>
+        <h3>Packing one shelf per mover, not one book per shelf</h3>
+        <p>A row-major library shelves books by call number, spread wherever they land (conventional mapping). A moving crew instead wants every book of one shelf-load to ride in the same truck (bank) so no truck needs to swap boxes with another mid-route (inter-bank reduction). That's the chunk/tile rule: keep a chunk contiguous in one bank, keep a whole matrix row in one bank.</p>
+        <div class="breaks"><b>Where it breaks:</b> a moving crew re-decides truck loading once; FACIL's tiling rule (Section II-C) is fixed by the PU's register geometry (e.g. AiM's (1,1024) chunk) and by which DRAM row size and bank count the platform actually has — it isn't a free choice per shipment.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="30" width="46" height="40" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <text x="41" y="46" text-anchor="middle" font-family="monospace" font-size="7" fill="#9a3a22">copy A</text>
+          <text x="41" y="58" text-anchor="middle" font-family="monospace" font-size="7" fill="#9a3a22">copy B</text>
+          <path d="M74 50 h14" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="94" y="30" width="30" height="40" rx="4" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="2"/>
+          <text x="109" y="46" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">1</text>
+          <text x="109" y="58" text-anchor="middle" font-family="monospace" font-size="7" fill="#1f5b51">copy</text>
+        </svg></div>
+        <span class="term">The tax removed · duplication vs. re-layout vs. FACIL</span>
+        <h3>A live interpreter instead of a photocopy or a break</h3>
+        <p>Weight duplication is photocopying the whole document for the second reader — costly in paper (memory). On-demand re-layout is pausing the meeting to retype the document in the other reader's format — costly in time (TTFT). FACIL is a live interpreter standing between two readers of the <i>same</i> physical page, translating meaning (address bits) on the fly, at essentially no cost.</p>
+        <div class="breaks"><b>Where it breaks:</b> a human interpreter's cost scales with sentence length; FACIL's "interpreting" is a handful of hard-wired multiplexers evaluated once per memory access — genuinely near-zero marginal cost, which is a much stronger claim than the analogy suggests.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Section by section</div>
+      <h2>How FACIL actually works</h2>
+      <p class="sub">Allocation and access flow (pimalloc) → the mapping formula and its bit rules → the selection algorithm → the OS and memory-controller changes that make it real.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Allocation and access: pimalloc end to end</h3>
+      <p>Everything starts when the LLM runtime calls <code>pimalloc(dim, dtype)</code> for a weight matrix that will be touched by both PIM and the SoC. The mapping selector (user-level software) turns the matrix's shape and datatype, plus the fixed memory and PIM configuration, into a single <b>MapID</b>. That MapID and the matrix's size go to the OS memory allocator, which allocates huge pages and records <i>both</i> the physical addresses and the MapID in the page table, then hands back an ordinary virtual address. From then on, stores and loads look completely normal: the programmer passes only a VA (and data, for stores); the page-table entry supplies the physical address <i>and</i> MapID to the memory controller, which performs PA-to-DA translation according to that MapID before touching DRAM.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Allocate once, then access like any other memory</div>
+        <div class="viz-kicker">rebuilt from Fig. 7 — allocation path (left) and the store/load path every later access takes (right)</div>
+        <svg class="full" viewBox="0 0 760 260" role="img" aria-label="Allocation path: dimensions and dtype go to a mapping selector which outputs a MapID; MapID and matrix config go to the memory allocator which records physical address and MapID in the page table and returns a virtual address. Access path: virtual address and data go through the page table, which supplies physical address and MapID to the memory controller, which computes the DRAM address.">
+          <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">① pimalloc(dim, dtype)</text>
+          <rect x="20" y="36" width="150" height="40" rx="8" fill="var(--paper-2)" stroke="var(--line-strong)" stroke-width="1.4"/><text x="95" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="11">dim + dtype</text>
+          <path d="M170 56 h30" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#arrA)"/>
+          <rect x="200" y="36" width="150" height="40" rx="8" fill="var(--mech-soft)" stroke="var(--mech)" stroke-width="1.6"/><text x="275" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">Mapping Selector</text>
+          <path d="M350 56 h30" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#arrA)"/>
+          <text x="365" y="46" font-family="JetBrains Mono" font-size="10" fill="var(--ink-faint)">② MapID</text>
+          <rect x="380" y="36" width="150" height="40" rx="8" fill="var(--mech-soft)" stroke="var(--mech)" stroke-width="1.6"/><text x="455" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">Memory Allocator</text>
+          <path d="M530 56 h30" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#arrA)"/>
+          <text x="545" y="46" font-family="JetBrains Mono" font-size="10" fill="var(--ink-faint)">③ MapID+PA</text>
+          <rect x="560" y="36" width="90" height="40" rx="8" fill="#fff" stroke="var(--line-strong)" stroke-width="1.4"/><text x="605" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="11">Page Table</text>
+          <path d="M650 56 h30" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#arrA)"/>
+          <text x="700" y="46" font-family="JetBrains Mono" font-size="10" fill="var(--ink-faint)">④ VA</text>
+          <text x="700" y="70" font-family="JetBrains Mono" font-size="10" fill="var(--ink-faint)">to caller</text>
+
+          <line x1="20" y1="110" x2="740" y2="110" stroke="var(--line)" stroke-dasharray="4 4"/>
+          <text x="20" y="138" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Store / Load — programmer just passes a VA (and data, for stores)</text>
+          <rect x="20" y="150" width="120" height="40" rx="8" fill="var(--honey-soft)" stroke="#EFD9AC" stroke-width="1.6"/><text x="80" y="174" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">① VA (+data)</text>
+          <path d="M140 170 h30" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#arrA)"/>
+          <rect x="170" y="150" width="120" height="40" rx="8" fill="#fff" stroke="var(--line-strong)" stroke-width="1.4"/><text x="230" y="174" text-anchor="middle" font-family="JetBrains Mono" font-size="11">Page Table</text>
+          <path d="M290 170 h30" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#arrA)"/>
+          <text x="300" y="146" font-family="JetBrains Mono" font-size="9.5" fill="var(--ink-faint)">② PA+MapID(+data)</text>
+          <rect x="320" y="150" width="150" height="40" rx="8" fill="var(--mech-soft)" stroke="var(--mech)" stroke-width="1.6"/><text x="395" y="174" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">Memory Controller</text>
+          <path d="M470 170 h30" stroke="var(--ink-faint)" stroke-width="1.8" fill="none" marker-end="url(#arrA)"/>
+          <text x="480" y="146" font-family="JetBrains Mono" font-size="10" fill="var(--ink-faint)">③ DA(+data)</text>
+          <rect x="500" y="150" width="90" height="40" rx="8" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.6"/><text x="545" y="174" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">DRAM</text>
+          <path d="M590 190 q0 30 -300 30 q-190 0 -190 -30" stroke="var(--ink-faint)" stroke-width="1.6" fill="none" stroke-dasharray="3 3" marker-end="url(#arrA)"/>
+          <text x="395" y="235" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="var(--ink-faint)">④ data (load only) returns to the caller through the same path</text>
+          <defs><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--ink-faint)"/></marker></defs>
+        </svg>
+        <figcaption>The mapping selector and memory allocator only run once, at allocation time. Every subsequent access is indistinguishable, at the programmer's level, from touching ordinary memory — the page table and memory controller carry the MapID silently (Section IV-A).</figcaption>
+      </figure>
+
+      <h3>2 · The mapping formula: where the bits go</h3>
+      <p>Section IV-B derives the PA-to-DA mapping from three placement rules (Primer 3): keep a chunk's row-major layout inside one DRAM row, keep a whole matrix row inside one bank, and put chunks tiled row-wise. Concretely, assuming LPDDR5 with a 32B transfer size and a 2KB DRAM row: AiM's chunk holds 1024 elements per row at FP16, so <code>log2(1024×2/32) = log2(64) = <b>6</b></code> DRAM column bits are placed directly above the DRAM offset bits. HBM-PIM's chunk holds 128 elements per row (8 partial-sum rows × 16 elements), so <code>log2(128×2/32) = log2(8) = <b>3</b></code> column bits go there instead. Above the column bits come <code>log2(matrix_column / chunk_column)</code> row bits (so one matrix row exactly spans one bank), then the <b>PU-changing bits</b> — the concatenation of bank, rank, and channel bits — so that consecutive matrix rows land on different PUs. Any remaining row bits fill the rest of the page offset's most-significant end.</p>
+      <p>Because the position of the PU-changing bits is the only thing that changes between mappings, FACIL defines <b>MapID</b> as exactly that position: for AiM-style PIM, the number of bits between the PU-changing bits and the chunk-column bits; for HBM-PIM-style PIM, the number of bits between the chunk-row bits and the chunk-column bits. A bigger MapID means the PU-changing bits sit further from the column bits — i.e. the matrix row is wider, needing more row bits before a bank boundary is reached.</p>
+
+      <div class="callout why"><span class="ic">◆</span><div><b>The governing formula.</b> The number of distinct mappings FACIL ever needs to support is bounded: <code>max(MapID) = log2( hugepage_size / (total_bank_count × DRAM_transfer_size) )</code>. Smaller <code>total_bank_count</code> (fewer channels/ranks/banks) and smaller transfer size <i>increase</i> the bound, because there's more room in the page offset for the PU-changing bits to move around in.</div></div>
+
+      <h3>3 · The selection algorithm</h3>
+      <p>Figure 9's <code>select_mapping</code> pseudocode is what the mapping selector actually runs, given a matrix's column count and datatype plus the fixed memory/PIM configuration:</p>
+      <pre class="sketch">int select_mapping(matrix_config, memory_config, pim_config) {
+  <span class="cm">// matrix: row size in bytes, rounded up to a power of two</span>
+  matrix_col = matrix_config-&gt;dim[1]
+  row_size   = pow2ceil(matrix_col) * sizeof(matrix_config-&gt;dtype)
+
+  <span class="cm">// memory: how much of a huge page lands in each bank</span>
+  total_bank_count = memory_config-&gt;n_ch * memory_config-&gt;n_rank * memory_config-&gt;n_bank
+  memory_per_bank  = memory_config-&gt;hpage_size / total_bank_count
+
+  <span class="cm">// does one matrix row fit in one bank's slice of the huge page?</span>
+  need_partition = memory_per_bank &lt; row_size
+
+  <span class="kw">map_id</span> = need_partition ? log2(memory_per_bank) : log2(row_size)
+  <span class="kw">map_id</span> -= log2(pim_config-&gt;chunk_col)
+  return map_id
+}</pre>
+      <p>If a whole matrix row fits inside one bank's share of the huge page, MapID is derived from the row size itself. If it doesn't (<code>need_partition</code>), FACIL instead partitions the row across multiple PUs — potentially in different channels — and derives MapID from how much memory one PU actually gets per huge page. Either way, subtracting <code>log2(chunk_col)</code> expresses everything relative to the chunk's own column width. Tab 5 walks this algorithm through the paper's own worked example (Fig. 10) and reproduces its two MapID values exactly.</p>
+      <p>When a matrix row must be split across PUs in different channels (the <code>need_partition</code> branch), each channel computes a partial sum for its share of the row; the SoC processor performs the final reduction across channels after the PIM operation completes.</p>
+
+      <h3>4 · OS paging: where MapID actually lives</h3>
+      <p>FACIL extends <code>mmap()</code> with an optional MapID argument and stores it in the page table entry — using bits that are simply unused, not bits taken from anything else. A 4KB regular page's PTE needs a physical-frame-number (PFN) field wide enough to address 4KB-aligned frames (offset = 12 bits); a 2MB huge page's PTE only needs to address 2MB-aligned frames (offset = 21 bits), so its PFN field is <b>21 − 12 = 9 bits</b> narrower. Those 9 bits are simply idle in a huge-page PTE — and since the worst-case bound from Section IV-B is <b>13</b> (14 total mappings, MapID 0–13), representing any of them needs only <code>⌈log2(14)⌉ = <b>4</b></code> bits, comfortably inside that margin. Because a TLB entry already supports both page sizes, no TLB change is needed — the MapID simply rides along in bits that were always going to be idle for a huge page.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">Where MapID hides in the page table entry</div>
+        <div class="viz-kicker">rebuilt from Fig. 11 — a 2MB huge-page PTE has 9 bits a 4KB regular-page PTE doesn't need</div>
+        <svg class="full" viewBox="0 0 760 190" role="img" aria-label="A regular 4 KB page PTE has PFN and Flags fields filling all its bits. A 2 MB huge page PTE needs 9 fewer PFN bits, freeing space for a MapID field, with the remaining bits unused.">
+          <text x="20" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Regular PTE (4KB page)</text>
+          <rect x="20" y="34" width="480" height="36" fill="#FBEACB" stroke="#C27D14" stroke-width="1.4"/><text x="260" y="57" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#6e4a09">PFN (physical frame number)</text>
+          <rect x="500" y="34" width="220" height="36" fill="var(--paper-2)" stroke="var(--line-strong)" stroke-width="1.4"/><text x="610" y="57" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="var(--ink-soft)">Flags</text>
+
+          <text x="20" y="104" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">FACIL PTE (2MB huge page)</text>
+          <rect x="20" y="114" width="420" height="36" fill="#FBEACB" stroke="#C27D14" stroke-width="1.4"/><text x="230" y="137" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#6e4a09">PFN — 9 bits narrower</text>
+          <rect x="440" y="114" width="60" height="36" fill="var(--mech-soft)" stroke="var(--mech)" stroke-width="1.8"/><text x="470" y="137" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">MapID</text>
+          <rect x="500" y="114" width="30" height="36" fill="#fff" stroke="var(--line-strong)" stroke-width="1.2" stroke-dasharray="3 2"/><text x="515" y="137" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="var(--ink-faint)">unused</text>
+          <rect x="530" y="114" width="190" height="36" fill="var(--paper-2)" stroke="var(--line-strong)" stroke-width="1.4"/><text x="625" y="137" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="var(--ink-soft)">Flags</text>
+
+          <text x="20" y="176" font-family="JetBrains Mono" font-size="10.5" fill="var(--ink-faint)">9 freed bits (21 − 12) ≫ 4 bits needed for 14 mappings — the MapID fits with room to spare, and no TLB entry format changes.</text>
+        </svg>
+        <figcaption>Because MapID lives entirely inside bits a huge-page PTE was never going to use, storing it costs zero extra memory and requires no change to the TLB entry format (Section V-A).</figcaption>
+      </figure>
+
+      <h3>5 · Memory controller: five multiplexers, no new memory</h3>
+      <p>Inside a typical memory controller, only the <b>frontend</b> — the stage that translates physical addresses into DRAM addresses (channel/rank/bank/row/column) before requests enter the queues — needs to change. FACIL adds an array of <b>N-to-1 multiplexers</b> (N = number of supported mappings), one each for channel, rank, bank, row, and column: each mux takes the physical address plus the page's MapID and outputs the correct bit slice for that field, according to whichever mapping the MapID selects. Figure 12's example supports four mappings total (three PIM layouts plus the conventional one) with this scheme.</p>
+
+      <figure class="viz reveal">
+        <div class="viz-title">The memory-controller frontend, augmented</div>
+        <div class="viz-kicker">conceptual redraw of Fig. 12 — MapID selects which bit-slice feeds each DRAM field</div>
+        <svg class="full" viewBox="0 0 760 220" role="img" aria-label="Physical address and MapID feed five bit selectors — channel, rank, bank, row, column — each choosing which physical address bits to output for that DRAM field, based on the mapping the MapID names; the outputs assemble into a DRAM command sent to the request queues.">
+          <rect x="20" y="20" width="130" height="40" rx="8" fill="var(--paper-2)" stroke="var(--line-strong)" stroke-width="1.4"/><text x="85" y="44" text-anchor="middle" font-family="JetBrains Mono" font-size="11">PA + MapID</text>
+          <path d="M150 40 h20" stroke="var(--ink-faint)" stroke-width="1.6" marker-end="url(#arrB)"/>
+          <g font-family="JetBrains Mono" font-size="10" fill="#3a409a">
+            <rect x="180" y="10" width="110" height="30" rx="6" fill="var(--mech-soft)" stroke="var(--mech)" stroke-width="1.4"/><text x="235" y="29" text-anchor="middle">Channel Selector</text>
+            <rect x="180" y="46" width="110" height="30" rx="6" fill="var(--mech-soft)" stroke="var(--mech)" stroke-width="1.4"/><text x="235" y="65" text-anchor="middle">Rank Selector</text>
+            <rect x="180" y="82" width="110" height="30" rx="6" fill="var(--mech-soft)" stroke="var(--mech)" stroke-width="1.4"/><text x="235" y="101" text-anchor="middle">Bank Selector</text>
+            <rect x="180" y="118" width="110" height="30" rx="6" fill="var(--mech-soft)" stroke="var(--mech)" stroke-width="1.4"/><text x="235" y="137" text-anchor="middle">Row Selector</text>
+            <rect x="180" y="154" width="110" height="30" rx="6" fill="var(--mech-soft)" stroke="var(--mech)" stroke-width="1.4"/><text x="235" y="173" text-anchor="middle">Column Selector</text>
+          </g>
+          <g stroke="var(--ink-faint)" stroke-width="1.4" fill="none" marker-end="url(#arrB)">
+            <path d="M85 60 v65 h95"/><path d="M85 60 v37 h95"/><path d="M85 60 v0 h95 v0"/><path d="M85 60 v98 h95"/><path d="M85 60 v128 h95"/>
+          </g>
+          <path d="M290 25 h30" stroke="var(--ink-faint)" stroke-width="1.4" marker-end="url(#arrB)"/>
+          <path d="M290 61 h30" stroke="var(--ink-faint)" stroke-width="1.4" marker-end="url(#arrB)"/>
+          <path d="M290 97 h30" stroke="var(--ink-faint)" stroke-width="1.4" marker-end="url(#arrB)"/>
+          <path d="M290 133 h30" stroke="var(--ink-faint)" stroke-width="1.4" marker-end="url(#arrB)"/>
+          <path d="M290 169 h30" stroke="var(--ink-faint)" stroke-width="1.4" marker-end="url(#arrB)"/>
+          <rect x="320" y="10" width="150" height="189" rx="10" fill="#fff" stroke="var(--line-strong)" stroke-width="1.4"/>
+          <text x="395" y="105" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="var(--ink-soft)">assembled</text>
+          <text x="395" y="120" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="var(--ink-soft)">DRAM address</text>
+          <path d="M470 105 h30" stroke="var(--ink-faint)" stroke-width="1.6" marker-end="url(#arrB)"/>
+          <rect x="500" y="80" width="130" height="50" rx="8" fill="var(--honey-soft)" stroke="#EFD9AC" stroke-width="1.6"/><text x="565" y="109" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">Request Queues</text>
+          <path d="M630 105 h30" stroke="var(--ink-faint)" stroke-width="1.6" marker-end="url(#arrB)"/>
+          <rect x="660" y="80" width="80" height="50" rx="8" fill="var(--huge-soft)" stroke="#2C8C7C" stroke-width="1.6"/><text x="700" y="109" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">DRAM</text>
+          <defs><marker id="arrB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--ink-faint)"/></marker></defs>
+        </svg>
+        <figcaption>Each selector is a small N-to-1 multiplexer (N = number of supported mappings). No new memory arrays or storage are added — it's combinational logic in a frontend the memory controller already had (Section V-B). Exact bit indices in the paper's Fig. 12 are not reproduced literally here; this is a conceptual redraw of the mechanism.</figcaption>
+      </figure>
+
+      <h3>6 · Discussion: costs and what's left unsolved</h3>
+      <p>The paper separately measures the one-time cost of allocating huge pages for model weights: on a Jetson AGX Orin loading Llama3-8B (FP16, 16.2GB) from a 1TB NVMe SSD, load time increases by at most <b>1.90×</b> in the worst tested condition (high fragmentation, low free memory — Table I), a cost the paper considers negligible since it's amortized over many rounds of inference on the same loaded model.</p>
+      <div class="callout note"><span class="ic">◇</span><div><b>Explicitly named as future work, not solved here.</b> Scheduling PIM and non-PIM (ordinary SoC) memory requests to avoid interfering with normal processes is left open. The paper points to prior CPU-GPU heterogeneous memory-scheduling work, and to NeuPIMs' dual-row-buffer idea (separate row buffers for PIM vs. normal accesses, avoiding row-buffer conflicts) as a plausible direction — but FACIL itself does not implement either.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Put real numbers on it</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Every number below is recomputed from the paper's own figures and tables — the arithmetic is shown so you can redo it. The interactive widget reproduces Fig. 9's algorithm exactly against Fig. 10's own example.</p>
+    </div>
+
+    <div class="card">
+      <h3>Example 1 — the column-bit counts behind Fig. 8</h3>
+      <p>LPDDR5, 32B transfer size, 2KB DRAM row, FP16 weights.</p>
+      <ol class="seq">
+        <li><b>AiM</b> (chunk = 1024 elements/row): bytes per chunk row = 1024 × 2B = 2048B. Column bits = log2(2048 / 32) = log2(64) = <b>6</b>.</li>
+        <li><b>HBM-PIM</b> (chunk = 128 elements/row): bytes per chunk row = 128 × 2B = 256B. Column bits = log2(256 / 32) = log2(8) = <b>3</b>.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> both numbers fall straight out of "how many DRAM transfers does one chunk row span" — the column-bit count is just log2 of that. A narrower chunk (HBM-PIM's 128 vs. AiM's 1024) needs fewer column bits.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 2 — the bit budget: max(MapID) and PTE spare bits</h3>
+      <p>Worst case for maximizing MapID count: single channel, single rank, 8-bank mode, 2MB huge page, 32B DRAM transfer size.</p>
+      <ol class="seq">
+        <li>total_bank_count = 1 × 1 × 8 = <b>8</b>.</li>
+        <li>max(MapID) = log2( 2MB / (8 × 32B) ) = log2( 2,097,152 / 256 ) = log2(8192) = <b>13</b>. This matches the paper's stated worst-case max of 13 exactly.</li>
+        <li>MapID ranges 0–13, i.e. <b>14</b> distinct mappings. Bits needed: ⌈log2(14)⌉ = <b>4</b> (since 2³=8 &lt; 14 ≤ 16=2⁴).</li>
+        <li>Spare PTE bits from huge pages: 4KB page offset = 12 bits, 2MB page offset = 21 bits, so the PFN field shrinks by 21 − 12 = <b>9</b> bits — more than double the 4 bits MapID needs.</li>
+      </ol>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Takeaway:</b> the whole "no extra memory, no TLB change" claim rests on 4 ≤ 9 — a small, comfortable margin, not a tight fit.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 3 — reproducing Fig. 10's two MapIDs by hand</h3>
+      <p>DRAM spec: 2 channels, 1 rank, 16 banks, 2KB (2048B) chunk column size, 2MB huge page. Two weight matrices, both FP16 (2 bytes/element).</p>
+      <ol class="seq">
+        <li>total_bank_count = 2 × 1 × 16 = <b>32</b>. memory_per_bank = 2MB / 32 = <b>64KB</b>.</li>
+        <li><b>Spec A</b> (2K × 8K matrix): matrix_col = 8192 → row_size = 8192 × 2B = <b>16KB</b>. Since 16KB &lt; 64KB, no partition needed. MapID = log2(16KB) − log2(2KB) = 14 − 11 = <b>3</b> — matches the paper's Fig. 10 exactly.</li>
+        <li><b>Spec B</b> (2K × 64K matrix): matrix_col = 65536 → row_size = 65536 × 2B = <b>128KB</b>. Since 128KB &gt; 64KB, partitioning <i>is</i> needed — the matrix row is split across channels. MapID = log2(memory_per_bank) − log2(2KB) = log2(64KB) − log2(2KB) = 16 − 11 = <b>5</b> — also matches Fig. 10 exactly.</li>
+      </ol>
+      <p>Try the same algorithm yourself below, including the case where partitioning kicks in.</p>
+
+      <!-- INTERACTIVE: MapID selector -->
+      <figure class="viz" id="mapidFig" style="box-shadow:var(--shadow-sm);margin-top:10px">
+        <div class="viz-title">MapID selector — Fig. 9's algorithm, live</div>
+        <div class="viz-kicker">matches Fig. 10 exactly on the two presets below</div>
+        <div class="part-viz">
+          <div class="part-controls">
+            <label for="matCol">matrix columns</label>
+            <input type="number" id="matCol" min="1" max="1048576" value="8192">
+            <label for="dtypeSel">dtype</label>
+            <select id="dtypeSel">
+              <option value="2" selected>FP16 (2B)</option>
+              <option value="4">FP32 (4B)</option>
+              <option value="1">INT8 (1B)</option>
+            </select>
+          </div>
+          <div class="part-controls">
+            <label for="nCh">channels</label><input type="number" id="nCh" min="1" max="8" value="2">
+            <label for="nRank">ranks</label><input type="number" id="nRank" min="1" max="4" value="1">
+            <label for="nBank">banks</label><input type="number" id="nBank" min="1" max="32" value="16">
+            <label for="chunkBytes">chunk_col (bytes)</label><input type="number" id="chunkBytes" min="1" max="65536" value="2048">
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-preset="A">LLM Spec A (2K×8K) → MapID 3</button>
+            <button class="tbtn" data-preset="B">LLM Spec B (2K×64K) → MapID 5</button>
+            <button class="tbtn" data-preset="max">Worst-case bound → MapID 13</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">row size<b id="outRowSize">16&nbsp;KB</b></div>
+            <div class="pstat">memory / bank<b id="outMemPerBank">64&nbsp;KB</b></div>
+            <div class="pstat">need partition?<b id="outNeedPart">no</b></div>
+            <div class="pstat">MapID<b id="outMapId">3</b></div>
+          </div>
+          <div class="mapid-track"><div class="mapid-fill" id="mapidFill"></div><div class="mapid-marker" id="mapidMarker" data-label="MapID"></div></div>
+          <div class="pverdict off" id="mapidVerdict">…</div>
+        </div>
+        <figcaption>Implements Fig. 9's <code>select_mapping</code> literally: row_size = pow2ceil(matrix_col) × dtype bytes; memory_per_bank = 2MB huge page ÷ (channels × ranks × banks); if memory_per_bank &lt; row_size the matrix row must be partitioned across PUs, and MapID is derived from memory_per_bank instead of row_size. Track position shows MapID against the paper's worst-case bound of 13.</figcaption>
+      </figure>
+    </div>
+
+    <div class="card">
+      <h3>Example 4 — why speedup decays at different rates per platform (roofline ridge point)</h3>
+      <p>From Table II: ridge-point arithmetic intensity = Peak FLOPS ÷ Peak Bandwidth.</p>
+      <table class="tbl">
+        <thead><tr><th>Platform</th><th>Peak FLOPS (FP16)</th><th>Peak BW</th><th>Ridge AI = FLOPS/BW</th></tr></thead>
+        <tbody>
+          <tr><td>Jetson AGX Orin</td><td class="mono">42.5 TFLOPS</td><td class="mono">204.8 GB/s</td><td class="mono">42500/204.8 = <b>207.5</b></td></tr>
+          <tr><td>IdeaPad Slim 5</td><td class="mono">5.6 TFLOPS</td><td class="mono">59.7 GB/s</td><td class="mono">5600/59.7 = <b>93.8</b></td></tr>
+          <tr><td>iPhone 15 Pro</td><td class="mono">4.29 TFLOPS</td><td class="mono">51.2 GB/s</td><td class="mono">4290/51.2 = <b>83.8</b></td></tr>
+          <tr><td>MacBook Pro M3 Max</td><td class="mono">28.4 TFLOPS</td><td class="mono">409.6 GB/s</td><td class="mono">28400/409.6 = <b>69.3</b></td></tr>
+        </tbody>
+      </table>
+      <p>These recomputed values match the paper's stated ridge-point intensities exactly. A <b>lower</b> ridge point means GEMM's arithmetic intensity crosses into the compute-bound region sooner as prefill length grows, so its latency grows faster with prefill length, which amortizes the fixed re-layout savings faster — matching the paper's observation that MacBook (69.3) and iPhone (83.8) show their TTFT speedup diminish faster with prefill length than Jetson (207.5) and IdeaPad (93.8) do (Fig. 13).</p>
+      <div class="callout why" style="margin-top:6px"><span class="ic">◆</span><div><b>Bandwidth formula, as a bonus check:</b> Peak BW = data rate (Mbps) × bus width (bits) / 8 / 1000. E.g. Jetson: 6400 × 256 / 8 / 1000 = <b>204.8 GB/s</b>; IdeaPad: 7467 × 64 / 8 / 1000 = <b>59.7 GB/s</b> — both match Table II.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Example 5 — the implied huge-page baseline load time (Table I)</h3>
+      <p>Table I reports huge-page load times as multiples of a baseline (no huge pages). Dividing each entry by its own multiplier should recover the same baseline everywhere, since the baseline doesn't depend on fragmentation:</p>
+      <ol class="seq">
+        <li>Best case: 10.26s ÷ 1.17 = <b>8.77s</b>. Worst case: 16.72s ÷ 1.90 = <b>8.80s</b>.</li>
+        <li>Every other cell in the table lands in the same narrow 8.77–8.84s band — confirming the baseline is essentially constant (~8.8s) and the multiplier is purely tracking huge-page overhead under fragmentation.</li>
+        <li>At FMFI 0.7–0.8 (heavily fragmented) with only 1.1× free memory relative to the model, load time reaches 16.72s — the reported <b>1.90×</b> worst case — versus ≈8.8s baseline.</li>
+      </ol>
+      <div class="callout warn" style="margin-top:6px"><span class="ic">▲</span><div><b>Read it as a one-time tax, not a per-inference one.</b> 1.90× on an ~8.8s load is under 9 extra seconds, paid once at model-load time — the paper argues this is negligible once amortized over many rounds of inference, unlike the per-query re-layout cost FACIL eliminates.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Check yourself</div>
+      <h2>Practice</h2>
+      <p class="sub">Work the answer before opening it. Each answer ends with the misconception the question is designed to catch.</p>
+    </div>
+
+    <div class="prob">
+      <span class="ptag easy">Warm-up</span>
+      <div class="qtext">A near-bank PIM chunk holds 512 elements per row at INT8 precision (1 byte/element), and the DRAM transfer size is 32B. How many DRAM column bits does Section IV-B's rule place in front of the offset bits?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        Bytes per chunk row = 512 × 1B = 512B. Column bits = log2(512/32) = log2(16) = <b>4</b>.
+        <span class="mis">Catches: treating the "6 column bits" from the AiM/FP16 example as a fixed constant. It's log2(chunk row bytes / transfer size) — it moves with both the chunk geometry and the datatype.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Compute</span>
+      <div class="qtext">A platform has 4 channels, 2 ranks, and 8 banks, a 2MB huge page, and a 64B DRAM transfer size. What is max(MapID)?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        total_bank_count = 4 × 2 × 8 = 64. max(MapID) = log2( 2MB / (64 × 64B) ) = log2( 2,097,152 / 4096 ) = log2(512) = <b>9</b>.
+        <span class="mis">Catches: assuming max(MapID) is always 13. That's specifically the <i>worst case</i> (fewest banks, smallest transfer size) — a platform with more channels/ranks/banks or a larger transfer size supports <i>fewer</i> distinct mappings, not more.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Trace the algorithm</span>
+      <div class="qtext">Using the same DRAM spec as Fig. 10 (2 channels, 1 rank, 16 banks, 2KB chunk_col, 2MB huge page), what MapID does <code>select_mapping</code> return for a 2K × 32K FP16 matrix?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        matrix_col = 32768 → row_size = 32768 × 2B = 64KB. memory_per_bank = 2MB / (2×1×16) = 64KB. Since memory_per_bank (64KB) is <i>not</i> less than row_size (64KB), need_partition is false (the check is strict "&lt;"). MapID = log2(64KB) − log2(2KB) = 16 − 11 = <b>5</b> — the same MapID as Spec B, right at the partitioning boundary.
+        <span class="mis">Catches: assuming "right at the boundary" always triggers partitioning. The algorithm's `&lt;` is strict, so a row that exactly fills a bank's share still takes the no-partition branch — worth checking boundary cases explicitly rather than eyeballing "close enough."</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Design</span>
+      <div class="qtext">FACIL leaves the DRAM mapping for ordinary (non-PIM-shared) memory completely untouched, unlike IANUS, which proposes one global mapping for its NPU-PIM accelerator. Why does that difference make sense given FACIL's target platform?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        IANUS targets a server-scale, discrete NPU-PIM accelerator designed from scratch, where a single global mapping can be co-designed with everything else. FACIL targets edge SoCs that must keep using an existing memory system for <i>all</i> memory traffic, most of which has nothing to do with PIM. Changing the global mapping would risk conventional SoC memory access patterns (for every other app and OS structure) for a benefit that only matters for the specific huge pages shared between PIM and SoC GEMM. Scoping the change to only those pages — via a per-page MapID — is what makes the modification "minimal" and safe to deploy on a general-purpose device.
+        <span class="mis">Catches: assuming "more flexible/global" is strictly better than "narrowly scoped." On a resource- and compatibility-constrained edge SoC, the narrower change is the one that's actually deployable.</span>
+      </div></details>
+    </div>
+
+    <div class="prob">
+      <span class="ptag hard">Diagnose</span>
+      <div class="qtext">Across the four platforms, FACIL's real-world-dataset TTFT/TTLT speedup is smallest on the Lenovo IdeaPad, even though the mapping mechanism is identical everywhere. What in the evaluation explains this, and what would you check on a fifth platform before predicting its speedup?</div>
+      <details><summary>Show answer</summary><div class="ans">
+        The paper measured GEMV-kernel memory-bandwidth utilization per platform: Jetson 76.3%, MacBook 88.3%, iPhone 74.6%, but IdeaPad only <b>33.3%</b> — all others exceed 70%. Low bandwidth utilization means the IdeaPad's prefill/decode is <i>not</i> dominated by the memory-bound cost that re-layout would otherwise inflate, so eliminating re-layout buys proportionally less. Before predicting speedup on a new platform, you'd want to measure its GEMV kernel's achieved bandwidth utilization (not just its peak bandwidth spec) — a platform that can't reach high utilization won't benefit from FACIL as much, independent of MapID mechanics.
+        <span class="mis">Catches: assuming FACIL's benefit is a fixed property of the technique. It's gated by how memory-bound the underlying platform's GEMV execution actually is in practice — a software/hardware efficiency question separate from the mapping mechanism itself.</span>
+      </div></details>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Loose ends</div>
+      <h2>Frequently asked</h2>
+      <p class="sub">The questions that come up once the mechanism clicks.</p>
+    </div>
+    <div class="faq">
+
+      <details><summary><span class="q">Q</span>Is FACIL a new PIM chip?<span class="chev">▾</span></summary>
+        <div class="a">No. FACIL is a memory-controller and OS augmentation that works <i>with</i> existing near-bank PIM designs (the paper evaluates against AiM-style PIM, simulated). It doesn't propose new PIM compute hardware — it solves the address-mapping-sharing problem that any SoC-integrated near-bank PIM would face.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does FACIL change the DRAM mapping for memory that isn't shared between PIM and the SoC?<span class="chev">▾</span></summary>
+        <div class="a">No — this is deliberate (see Practice, Q4). Only huge pages allocated via <code>pimalloc</code> for PIM↔SoC-shared weight matrices get a non-default MapID. Everything else keeps using the SoC's conventional mapping, unmodified.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Where exactly does MapID get stored, and does it need new hardware storage?<span class="chev">▾</span></summary>
+        <div class="a">In bits of the page-table entry that huge pages already leave unused — 9 spare bits for a 2MB huge page vs. a 4KB regular page, of which at most 4 are needed (Example 2). No extra PTE space, and no TLB format change, since a TLB entry already accommodates both page sizes.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does supporting multiple mappings need new DRAM chips or memory-controller memory arrays?<span class="chev">▾</span></summary>
+        <div class="a">No. The change is confined to the memory-controller <i>frontend</i> (the PA-to-DA translation stage) and is implemented as five N-to-1 multiplexers (channel/rank/bank/row/column) — pure combinational logic, no additional storage (Section V-B).</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Why does the mechanism specifically need huge pages, rather than working at a finer or coarser granularity?<span class="chev">▾</span></summary>
+        <div class="a">For an edge-scale memory system, all the bits a custom DRAM mapping needs to rearrange (row/bank/rank/channel/column) fit inside the ~21-bit page offset of a 2MB huge page (Primer 4) — so one MapID per huge page is exactly the right granularity to describe a full custom mapping. It also matches <code>pimalloc</code>'s natural allocation unit, so no extra bookkeeping structure is needed beyond the page table that huge pages already require.</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does storing weights in the PIM-optimized layout slow down GEMM on the SoC?<span class="chev">▾</span></summary>
+        <div class="a">A little. The paper measures this directly with GPGPU-Sim (GPU platforms) and ONNXim (NPU platform) across several prefill lengths, finding a worst-case slowdown of 2.1% (Jetson), 0.1% (MacBook), 1.1% (IdeaPad), and 1.6% (iPhone) — and conservatively applies each platform's worst-case number to every FACIL performance result reported (Table III).</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>Does FACIL handle batched/multi-query serving, like NeuPIMs?<span class="chev">▾</span></summary>
+        <div class="a">No — FACIL targets single-query, single-batch on-device inference, where GEMM (prefill) and GEMV (decode) run as discrete, sequential phases. NeuPIMs instead focuses on running GEMM and GEMV in parallel to serve batched requests on server-scale hardware; that's a different problem (throughput under concurrency) from FACIL's (transparent sharing on one resource-constrained device).</div>
+      </details>
+
+      <details><summary><span class="q">Q</span>What does FACIL explicitly <i>not</i> solve?<span class="chev">▾</span></summary>
+        <div class="a">Scheduling/contention between PIM memory requests and ordinary SoC memory requests. The paper names this as remaining work, pointing to prior CPU-GPU heterogeneous memory-scheduling research and NeuPIMs' dual-row-buffer idea as possible directions, without implementing either itself (Section V-C).</div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Reference</h2>
+      <p class="sub">Glossary, a dated summary card, related work, and honest provenance notes.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>PIM / near-bank PIM</b><span>Processing-in-memory; near-bank PIM places a compute unit adjacent to each DRAM bank to exploit bank-level parallelism and internal DRAM bandwidth.</span></div>
+      <div class="term-def"><b>GEMV / GEMM</b><span>Matrix-vector (decode, memory-bound) vs. matrix-matrix (prefill, compute-bound) multiplication — the two operations that pull weight matrices toward opposite optimal layouts.</span></div>
+      <div class="term-def"><b>Chunk</b><span>The fixed-size slice of a matrix one PIM processing unit handles per step; shape = (output register size, input register size), e.g. AiM (1,1024), HBM-PIM (8,128).</span></div>
+      <div class="term-def"><b>Tile</b><span>A row-wise concatenation of chunks processed by every bank of every channel in lock-step.</span></div>
+      <div class="term-def"><b>PU</b><span>PIM processing unit — the near-bank compute element that operates on one chunk at a time.</span></div>
+      <div class="term-def"><b>PA-to-DA mapping</b><span>Physical-Address-to-DRAM-Address mapping: the function that decides which physical address bits become channel/rank/bank/row/column.</span></div>
+      <div class="term-def"><b>MapID</b><span>A small integer, stored per huge page, naming which PA-to-DA mapping the memory controller should apply — specifically, the bit-position of the "PU-changing" field.</span></div>
+      <div class="term-def"><b>pimalloc</b><span>FACIL's user-level allocation call: given a matrix's dimensions and dtype, computes a MapID and allocates huge pages stamped with it.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Mapping selector</b><span>User-level software that runs Fig. 9's algorithm to pick a MapID from matrix + memory + PIM configuration.</span></div>
+      <div class="term-def"><b>PU-changing bits</b><span>The concatenation of bank, rank, and channel bits — the fields that determine which PU a matrix row lands on.</span></div>
+      <div class="term-def"><b>TTFT / TTLT</b><span>Time-to-first-token (set by prefill only) vs. time-to-last-token (also includes all of decode); TTFT dominates perceived interactive latency.</span></div>
+      <div class="term-def"><b>Hybrid static / dynamic baseline</b><span>Static: all GEMM always on the SoC. Dynamic: FACIL's added optimization that offloads short, tall-and-skinny prefill GEMMs to PIM when that's faster.</span></div>
+      <div class="term-def"><b>Ridge point (roofline)</b><span>The arithmetic intensity (FLOP/byte) at which a processor transitions from memory-bound to compute-bound; equals Peak FLOPS ÷ Peak Bandwidth.</span></div>
+      <div class="term-def"><b>FMFI</b><span>Free Memory Fragmentation Index (0–1); higher means free memory is more fragmented, making huge-page allocation slower/harder.</span></div>
+      <div class="term-def"><b>AiM / HBM-PIM</b><span>SK Hynix's and Samsung's respective commercial/prototype near-bank PIM designs, with chunk dimensions (1,1024) and (8,128) respectively.</span></div>
+      <div class="term-def"><b>need_partition</b><span>Fig. 9's branch condition: true when one matrix row is too large to fit in a single PU's share of a huge page, forcing the row to split across PUs (possibly across channels).</span></div>
+    </div>
+
+    <div class="card" style="background:var(--mech-soft);border-color:#bcbfe8;margin-top:26px">
+      <h3 style="color:#3a409a">📌 Summary card <span style="font-family:var(--mono);font-size:.7rem;font-weight:500;color:#5A61B4">· as of 2026-08-30 · FACIL, HPCA 2025</span></h3>
+      <ul style="margin:0;padding-left:20px;color:#3a409a">
+        <li><b>What:</b> a memory-controller + OS augmentation letting SoC and near-bank PIM processors access the same weight matrix under different DRAM address mappings, chosen per huge page via a small MapID.</li>
+        <li><b>Why:</b> GEMV/PIM needs bank-contiguous, chunk-aligned placement; GEMM/SoC (via unmodified BLAS kernels) needs an ordinary contiguous virtual array. Reconciling naively costs 2× memory (duplication) or ~3× TTFT (on-demand re-layout, Fig. 6).</li>
+        <li><b>Mechanism:</b> <code>pimalloc</code>'s mapping selector picks a MapID (Fig. 9) → OS stamps it into 9 spare huge-page PTE bits (only 4 needed) → memory-controller frontend applies it via 5 N-to-1 multiplexers, with no new memory components and no TLB change.</li>
+        <li><b>Bit budget:</b> max(MapID) = log2(hugepage_size / (total_banks × transfer_size)); worst case for LPDDR5/2MB = <b>13</b> (14 mappings, 4 bits).</li>
+        <li><b>Result:</b> geomean TTFT speedup <b>2.37×</b> (Alpaca) / <b>2.63×</b> (code autocompletion) over the SoC-PIM hybrid-static baseline; TTLT speedup <b>1.20×</b> for both; GEMM-on-PIM-layout slowdown measured at only 0.1–2.1% across platforms.</li>
+        <li><b>Overhead:</b> huge-page allocation adds at most <b>1.90×</b> one-time model-load latency under heavy fragmentation (Table I) — amortized over many inference rounds.</li>
+        <li><b>Not the same as:</b> weight duplication (2× memory, Fig. 5a) or on-demand re-layout (extra per-prefill latency, Fig. 5b) — the two naive alternatives FACIL replaces.</li>
+        <li><b>Left open:</b> PIM-vs-SoC memory request scheduling/contention (Section V-C, named future work); FACIL is evaluated for single-batch, single-query inference only, not batched serving (contrast NeuPIMs).</li>
+        <li><b>Best/worst measured platform:</b> Jetson AGX Orin (2.89× single-query TTFT geomean) vs. IdeaPad Slim 5 (1.55×) — explained by IdeaPad's low 33.3% GEMV memory-bandwidth utilization vs. &gt;70% on the other three platforms.</li>
+      </ul>
+    </div>
+
+    <div class="subhead">Related work, as the paper positions itself</div>
+    <div class="read-item">
+      <h4>IANUS — NPU-PIM Unified Memory System <span class="diff med">contrast</span></h4>
+      <div class="meta">ASPLOS 2024, cited as [74]</div>
+      <p>Proposes one global DRAM address mapping for a purpose-built NPU-PIM server accelerator. FACIL differs by targeting edge SoCs and leaving the mapping for non-shared memory untouched, changing only the mapping for PIM↔SoC-shared data.</p>
+    </div>
+    <div class="read-item">
+      <h4>NeuPIMs — NPU-PIM Heterogeneous Acceleration for Batched Inference <span class="diff med">contrast</span></h4>
+      <div class="meta">ASPLOS 2024, cited as [28]</div>
+      <p>Targets parallel execution of GEMM and GEMV for batched serving, and proposes dual row buffers to avoid PIM/normal-access conflicts — the idea the FACIL authors point to as a possible fix for the scheduling problem they leave open. FACIL instead targets single-batch, discrete-phase inference.</p>
+    </div>
+    <div class="read-item">
+      <h4>DReAM — Dynamic Re-arrangement of Address Mapping <span class="diff hard">related mechanism</span></h4>
+      <div class="meta">MEMSYS 2016, cited as [20]</div>
+      <p>Uses real-time workload analysis to periodically update the memory controller's address mapping table for different access patterns — a related "make the DRAM mapping adjustable" idea, applied to general workload adaptation rather than PIM/SoC sharing specifically.</p>
+    </div>
+    <div class="read-item">
+      <h4>SDAM — Software-Defined Address Mapping <span class="diff hard">related mechanism</span></h4>
+      <div class="meta">ASPLOS 2022, cited as [86]</div>
+      <p>Lets user-level software adjust PA-to-DA mapping for 3D memory channel parallelism, offering a wider range of mapping options than FACIL — at the cost of more extensive hardware and OS modification. FACIL trades some of that flexibility for a much smaller footprint.</p>
+    </div>
+
+    <div class="subhead">Source notes — provenance &amp; honesty</div>
+    <div class="card" style="border-color:var(--line-strong)">
+      <p style="font-size:.96rem"><b>Kind:</b> paper-grounded field guide. Source: <code>facil-flexible-dram-address-mapping-for.txt</code> (full text, Seo et al., "FACIL: Flexible DRAM Address Mapping for SoC-PIM Cooperative On-device LLM Inference," HPCA 2025). All numeric claims below were recomputed independently from the paper's own stated inputs, not merely copied.</p>
+      <p style="font-size:.96rem"><b>Grounded &amp; verified by recomputation (high confidence):</b> the Fig. 2 profiling numbers (&gt;90% decode-time in linear ops; &lt;1% compute utilization; 72–81% memory utilization); the 3.32× PIM-vs-ideal-NPU speedup (Fig. 3); chunk dimensions (1,1024) and (8,128); the 6/3 column-bit derivations (Section IV-B); the max(MapID) formula and its worst-case value of 13; the 9-spare-bit / 4-bit-needed PTE math (Section V-A); Fig. 9's <code>select_mapping</code> algorithm, verified to reproduce Fig. 10's MapID = 3 and MapID = 5 exactly by hand; Table I's load-time figures and the recomputed ~8.8s implied baseline; Table II's platform specs and the ridge-point arithmetic-intensity recomputation (207.5 / 93.8 / 83.8 / 69.3); the TTFT/TTLT speedup figures (2.89×/2.19×/1.55×/2.36× single-query geomeans; 2.37×/2.63× real-dataset TTFT geomeans; 1.20× TTLT; 3.55×/3.58× vs. SoC-only); Table III's 0.1–2.1% GEMM slowdown range; the 76.3%/88.3%/74.6%/33.3% GEMV bandwidth-utilization figures.</p>
+      <p style="font-size:.96rem"><b>My framing, clearly conceptual:</b> the signature figure ("one page offset, two readings"), the analogy cards, and the concept-map diagram are original visual redraws built to explain the mechanism — not reproductions of the paper's actual Figs. 7/8/11/12. In particular, Fig. 12's exact physical-address bit indices in the source text were too garbled by OCR/text-extraction to reproduce faithfully, so the memory-controller figure here is deliberately conceptual (five field selectors fed by PA + MapID) rather than a literal redraw of the paper's bit-level diagram — flagged here as a lower-confidence simplification.</p>
+      <p style="font-size:.96rem"><b>Characteristic of the paper's own methodology (not a limitation I'm introducing):</b> the PIM-side performance numbers come from an open-source DRAMsim3-based PIM simulator (modified for LPDDR5/X, JEDEC timing parameters), and the GEMM-on-PIM-layout slowdown comes from GPGPU-Sim/ONNXim simulation, not measurement on physical PIM silicon; the paper itself is explicit and conservative about this (e.g. always applying each platform's worst-case measured slowdown). Some platform specs in Table II are stated by the paper to come from third-party sources rather than official vendor documentation. Stated as of <b>2026-08-30</b>.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> FACIL: Flexible DRAM Address Mapping for SoC-PIM Cooperative On-device LLM Inference (Seo et al., HPCA 2025)</span>
+    <span><b>Built from:</b> full paper text in paper-radar/_paper_txt/ · house style from learn/sessions/2026-08-13-thp/study-guide.html</span>
+    <span><b>Provenance:</b> figures/numbers grounded &amp; recomputed (see Source notes) · signature/analogy diagrams are original conceptual framing</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- MAPID SELECTOR EXPLORER (Fig. 9's select_mapping, live) ---- */
+  var HPAGE = 2*1024*1024; // 2MB huge page, fixed per the paper's evaluation
+  var MAX_BOUND = 13;      // paper's own worst-case max(MapID)
+
+  function pow2ceil(x){ return Math.pow(2, Math.ceil(Math.log2(Math.max(1,x)))); }
+  function fmtBytes(b){
+    if(b >= 1024*1024) return (b/(1024*1024)).toFixed(2).replace(/\.00$/,'') + '&nbsp;MB';
+    if(b >= 1024) return (b/1024).toFixed(2).replace(/\.00$/,'') + '&nbsp;KB';
+    return Math.round(b) + '&nbsp;B';
+  }
+
+  var elMatCol = document.getElementById('matCol');
+  var elDtype  = document.getElementById('dtypeSel');
+  var elCh     = document.getElementById('nCh');
+  var elRank   = document.getElementById('nRank');
+  var elBank   = document.getElementById('nBank');
+  var elChunk  = document.getElementById('chunkBytes');
+
+  function computeAndRender(){
+    if(!elMatCol) return;
+    var matrixCol   = parseFloat(elMatCol.value) || 1;
+    var dtypeBytes  = parseFloat(elDtype.value) || 2;
+    var nCh   = Math.max(1, parseInt(elCh.value,10)   || 1);
+    var nRank = Math.max(1, parseInt(elRank.value,10) || 1);
+    var nBank = Math.max(1, parseInt(elBank.value,10) || 1);
+    var chunkColBytes = Math.max(1, parseFloat(elChunk.value) || 1);
+
+    var rowSize = pow2ceil(matrixCol) * dtypeBytes;
+    var totalBanks = nCh * nRank * nBank;
+    var memPerBank = HPAGE / totalBanks;
+    var needPartition = memPerBank < rowSize;
+    var base = needPartition ? memPerBank : rowSize;
+    var mapId = Math.log2(base) - Math.log2(chunkColBytes);
+
+    document.getElementById('outRowSize').innerHTML = fmtBytes(rowSize);
+    document.getElementById('outMemPerBank').innerHTML = fmtBytes(memPerBank);
+    document.getElementById('outNeedPart').textContent = needPartition ? 'yes' : 'no';
+    var mapIdRounded = Math.round(mapId*100)/100;
+    document.getElementById('outMapId').textContent = (Math.abs(mapIdRounded - Math.round(mapIdRounded)) < 1e-6) ? Math.round(mapIdRounded) : mapIdRounded;
+
+    var pct = Math.max(0, Math.min(100, (mapId / MAX_BOUND) * 100));
+    var fill = document.getElementById('mapidFill');
+    var marker = document.getElementById('mapidMarker');
+    if(fill) fill.style.width = pct + '%';
+    if(marker){ marker.style.left = 'calc(' + pct + '% - 1px)'; marker.setAttribute('data-label','MapID='+ (Number.isFinite(mapId) ? mapIdRounded : '?')); }
+
+    var v = document.getElementById('mapidVerdict');
+    if(!v) return;
+    if(!Number.isFinite(mapId) || mapId < 0){
+      v.className = 'pverdict sub';
+      v.innerHTML = '⚠ Invalid configuration: chunk_col is larger than the base size — check your inputs (chunk_col should not exceed row_size or memory_per_bank).';
+    } else if(needPartition){
+      v.className = 'pverdict sub';
+      v.innerHTML = '✂ <b>Row split across PUs:</b> one matrix row (' + fmtBytes(rowSize) + ') is larger than one PU\'s huge-page share (' + fmtBytes(memPerBank) + '), so FACIL partitions it — possibly across channels — and the SoC reduces the partial sums afterward.';
+    } else if(mapIdRounded >= MAX_BOUND){
+      v.className = 'pverdict opt';
+      v.innerHTML = '✓ Near the platform\'s worst-case bound (max = 13) — this configuration uses almost the full spare-bit budget.';
+    } else {
+      v.className = 'pverdict opt';
+      v.innerHTML = '✓ Whole matrix row fits in one PU\'s huge-page share (' + fmtBytes(memPerBank) + ') — MapID computed directly from row size.';
+    }
+  }
+
+  [elMatCol, elDtype, elCh, elRank, elBank, elChunk].forEach(function(el){
+    if(el) el.addEventListener('input', computeAndRender);
+  });
+  document.querySelectorAll('[data-preset]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var p = b.dataset.preset;
+      if(p === 'A'){ elMatCol.value=8192; elDtype.value='2'; elCh.value=2; elRank.value=1; elBank.value=16; elChunk.value=2048; }
+      else if(p === 'B'){ elMatCol.value=65536; elDtype.value='2'; elCh.value=2; elRank.value=1; elBank.value=16; elChunk.value=2048; }
+      else if(p === 'max'){ elMatCol.value=262144; elDtype.value='2'; elCh.value=1; elRank.value=1; elBank.value=8; elChunk.value=32; }
+      computeAndRender();
+    });
+  });
+  computeAndRender();
+
+  /* ---- INIT ---- */
+  runReveals();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+<script src="../rate.js"></script>
+</body>
+</html>
