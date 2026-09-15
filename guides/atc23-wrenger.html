@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<!-- LLFree field guide — "LLFree: Scalable and Optionally-Persistent Page-Frame Allocation"
+     (Wrenger, Rommel, Halbuer, Dietrich, Lohmann — Leibniz Universität Hannover / Hamburg
+     University of Technology, USENIX ATC 2023). This is the paper behind the meeting
+     transcript's garbled "LLF"/"LLS" reference — LLFree is a real, modern, lock-free
+     replacement for the classic buddy page-frame allocator, with a working Rust
+     implementation integrated into Linux 6.0. Built in the house style (see guides/ucp.html)
+     as a companion to the AutoTiering and buddy-allocator-Knuth guides. Semantic colors:
+     teal = LLFree's own mechanisms · indigo = the bit-field/tree bookkeeping tricks that
+     make it cheap · terracotta = the Linux buddy allocator's problems being fixed. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLFree — A Field Guide to a Lock-Free Page-Frame Allocator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<meta name="theme-color" content="#FBF6EC">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;      /* teal   = LLFree's own mechanisms          */
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;    /* indigo = bit-field/tree bookkeeping tricks */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = the buddy allocator's problems */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.1rem,5.6vw,3.7rem);font-weight:600;letter-spacing:-.015em;max-width:20ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.28rem);color:var(--ink-soft);max-width:50ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.1rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+
+/* STAT GRID */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:22px 0}
+.stat-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;text-align:center;box-shadow:var(--shadow-sm)}
+.stat-card .big{font-family:var(--display);font-size:2.1rem;font-weight:700;color:var(--honey-deep);line-height:1}
+.stat-card .lab{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint);margin-top:8px}
+.stat-card .sub{font-size:.82rem;color:var(--ink-soft);margin-top:6px}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>USENIX ATC 2023 · A Field Guide</span>
+    <h1>Free a page without <span class="swash">asking anyone</span></h1>
+    <p class="lede">Linux's page-frame allocator — the thing that hands out every physical 4&nbsp;KiB page in the system — still runs on a 1960s idea: the buddy system, protected by locks, with state scattered across a 64-byte record for every single page frame. On a 26-core machine, that design can make a parallel 2&nbsp;MiB allocation <b>27 times slower</b> than it should be. This is the plain-English tour of <strong>LLFree</strong>, a lock- and log-free redesign that keeps every allocation inside a single cache line — and, as a side effect, makes crash-consistent allocation on persistent memory nearly free.</p>
+    <div class="hero-meta">
+      <span>📄 "LLFree: Scalable and Optionally-Persistent Page-Frame Allocation" · Wrenger et al. (Leibniz Universität Hannover / TUHH)</span>
+      <span>🎓 The Knuth buddy-allocator primer is useful background, not required</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🔒</div>
+      <p>Don't <span class="wo">share a lock and hope it stays fast</span> — make every allocation and every free a single atomic change to <span class="ro">one cache line, owned by one CPU</span>.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Eight ideas the paper assumes you know</h2>
+      <p class="sub">Each card clears up one concept LLFree builds on. They're collapsed — tap any to open. If you've read the Knuth buddy-allocator primer, cards 1–2 will feel familiar.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> LLFree's own mechanisms</span>
+      <span><i style="background:var(--ltram)"></i> bit-field/tree bookkeeping tricks</span>
+      <span><i style="background:var(--optane)"></i> the Linux buddy allocator's problems</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What a page-frame allocator actually does<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Every time the kernel needs physical memory — for a process's heap, a kernel buffer, a huge page — it asks the <b>page-frame allocator</b> for N contiguous, MMU-aligned frames. On AMD64 that means orders 0 through 10: 4&nbsp;KiB "base frames" (order 0) up to 4&nbsp;MiB "giant frames" (order 10), with 2&nbsp;MiB "huge frames" (order 9) the other size hardware actually cares about.</p>
+          <div class="ready"><b>Now you're ready:</b> LLFree is specifically a page-<i>frame</i> allocator, not a general-purpose malloc — it only ever hands out these fixed, hardware-aligned sizes.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>The Linux buddy allocator, in one paragraph<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Linux's allocator is the classic <b>buddy system</b> (formalized by Knuth in TAOCP Vol. 1 §2.5 — see the companion guide): free blocks are kept in per-order doubly-linked lists; an allocation splits a larger free block in two if nothing the right size is available; a free tries to recursively re-merge a block with its "buddy" before shelving it. One spinlock per memory zone serializes every split and merge.</p>
+          <div class="ready"><b>Now you're ready:</b> LLFree doesn't reject the buddy idea's aligned-power-of-two sizing — it rejects the <em>lock</em> and the <em>scattered linked-list state</em> that Linux built around it.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span><code>struct page</code>: one 64-byte record per 4&nbsp;KiB frame<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Linux tracks metadata for every physical page frame in a <code>struct page</code> — 64 bytes on AMD64, repurposed by whichever kernel subsystem currently owns that page (LRU list pointers when free, mapping info when allocated, and so on). The buddy allocator itself uses those same 64 bytes to store its free-list pointers.</p>
+          <div class="ready"><b>Now you're ready:</b> this is why a "complete scan" of Linux's allocator state means touching one cache line <em>per page frame</em> — 33.5 million cache lines on a 128&nbsp;GiB machine, versus LLFree's 67,754.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Cache lines, false sharing, and why locks don't scale<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Modern CPUs move memory between cores in fixed 64-byte <b>cache lines</b>. When two cores write to data sharing a cache line — even different bytes of it — the line ping-pongs between their private caches (<b>false sharing</b>), and a shared spinlock forces every core wanting it to wait in line, one at a time.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's Figure 1 shows exactly this cost — Linux's 4&nbsp;KiB allocation time grows tenfold from 1 to 26 parallel threads, purely from lock contention and false sharing.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Compare-and-swap (CAS): an atomic "if it's still X, make it Y"<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>CAS</b> instruction atomically checks whether a memory location still holds an expected value and, only if so, replaces it with a new one — all in one indivisible hardware step, no lock required. If another core changed the value first, CAS fails and the caller retries.</p>
+          <div class="ready"><b>Now you're ready:</b> LLFree's entire design is built so that one allocation or one free is exactly one CAS on exactly one cache line — that's what "lock-free" means here in concrete terms.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>NVRAM, crash consistency, and why logging is expensive<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Byte-addressable non-volatile RAM (NVRAM, e.g. Intel Optane) keeps its contents across a power loss — so an allocator's <em>bookkeeping state</em> also survives a crash, and had better still be internally consistent afterward. The usual fix is <b>write-ahead logging</b> (record the intent before acting), which costs extra writes on every single operation.</p>
+          <div class="ready"><b>Now you're ready:</b> LLFree's pitch is that it needs zero logging for crash consistency — the trick is explained in How It Works.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Huge-frame fragmentation<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A 2&nbsp;MiB huge frame only exists if all 512 of its constituent 4&nbsp;KiB base frames are free and contiguous. If even one of those 512 is still allocated, the whole huge frame is unavailable — and the buddy system's per-order free lists have no concept of "almost-free" huge frames, so it can't prioritize completing them.</p>
+          <div class="ready"><b>Now you're ready:</b> this is "Problem 4" in the paper's own framing, and it's what LLFree's passive defragmentation behavior (Worked Example 5) is measured against.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Per-CPU caches — Linux's existing scalability patch<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To reduce contention on the per-zone lock, Linux gives each CPU a small local cache of free order-0-through-3 (and, since 5.13, order-9) frames, refilled/drained from the shared buddy structure in batches. It helps single-frame reuse a lot, but hides frames from defragmentation and adds its own synchronization cost.</p>
+          <div class="ready"><b>Now you're ready:</b> these caches are exactly why stock Linux can occasionally beat LLFree in the narrow best case (Worked Example 4) — and exactly what LLFree's design avoids needing at all.</div>
+        </div>
+      </details>
+    </div>
+
+    <div class="subhead">Quick glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>LLFree</b><span>Log- and Lock-Free page-frame allocator — the paper's two-level, cache-line-atomic redesign.</span></div>
+      <div class="term-def"><b>Tree</b><span>A 64 MiB upper-level unit (32 children) that one CPU can "reserve" as its preferred allocation source.</span></div>
+      <div class="term-def"><b>Child entry</b><span>A 2 MiB lower-level unit: a 512-bit bit field (one bit per 4 KiB frame) plus a free-count and an "allocated huge frame" flag.</span></div>
+      <div class="term-def"><b>Reserve-on-free</b><span>LLFree's heuristic: a freed frame always returns to the tree it came from, exploiting temporal/spatial locality of frees.</span></div>
+      <div class="term-def"><b>State dispersion</b><span>The paper's metric for how many bytes (and cache lines) must be touched to fully enumerate an allocator's state.</span></div>
+      <div class="term-def"><b>eADR</b><span>Enhanced Asynchronous DRAM Refresh — a platform guarantee that CPU-cache writes reach NVRAM on power loss, letting LLFree skip explicit flush instructions.</span></div>
+      <div class="term-def"><b>Natural order</b><span>An allocation size Linux's hardware MMU actually uses: 4 KiB (order 0), 2 MiB (order 9), 1 GiB (order 18-ish/order 10 in-paper).</span></div>
+      <div class="term-def"><b>Persist granularity</b><span>The largest chunk of memory a given NVRAM platform can write to atomically — the paper assumes at least one cache line.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>LLFree in a nutshell</h2>
+      <p class="sub">The problem, the two-level mechanism that fixes it, and how it all connects.</p>
+    </div>
+    <div class="prose">
+      <p>The paper's argument is blunt: the Linux buddy allocator was "well-founded when [it was] made," but five problems have compounded since. It <b>mixes concerns</b> — using the same buddy structure for both natural hardware sizes and arbitrary kernel-object sizes. Its <b>merge cost</b> is steep: forming one 2&nbsp;MiB frame from scratch can require 511 recursive buddy-merge operations. Its <b>scalability</b> is bad — a single per-zone lock serializes every split and merge across every core. It suffers <b>huge-frame fragmentation</b> because per-CPU caches hide frames from the merge process. And its scattered, lock-protected, doubly-linked state makes it fundamentally <b>unsuitable for persistent allocations</b>, where a crash mid-operation must never leave the structure inconsistent.</p>
+      <p><b>LLFree</b> answers all five with one structural idea: split the allocator into a <b>lower level</b> that does crash-consistent de/allocation, and an <b>upper level</b>, kept only in volatile DRAM, that provides scalability. The lower level packs 512 base frames into one 64-byte-aligned bit field (one cache line) plus a small counter; a base-frame allocation is one CAS on that bit field, a huge-frame allocation is one CAS on a 16-bit counter+flag pair. The upper level groups memory into 64&nbsp;MiB "trees" that CPUs can pin as their own preferred source — so normal allocations touch no cache line any other CPU cares about.</p>
+      <p><strong>The payoff, as measured:</strong> up to <b>88%</b> faster 4&nbsp;KiB allocation and <b>98%</b> faster 2&nbsp;MiB allocation than the Linux buddy allocator at 26 cores, a state footprint of <b>4.1&nbsp;MiB</b> versus Linux's <b>516&nbsp;MiB</b> on a 128&nbsp;GiB/52-core machine, <b>64%</b> fewer page-copy operations needed for memory compaction, and full crash recovery in <b>1,000 out of 1,000</b> injected-crash trials — with no write-ahead logging at all.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Linux's buddy allocator has five compounding problems: mixed concerns, expensive merges, poor lock-bound scalability, huge-frame fragmentation, and unsuitability for persistent memory.</li>
+        <li><b>LLFree</b> splits into a crash-consistent <b>lower level</b> (bit fields + child counters, one cache-line CAS per operation) and a scalability-providing <b>upper level</b> (per-CPU-reserved 64&nbsp;MiB trees), kept only in volatile DRAM.</li>
+        <li>Reserve-on-free (frees return to their origin tree) and a free/partial/allocated tree classification keep allocations conflict-free without ever taking a lock.</li>
+        <li>Crash consistency falls out "for free": every de/allocation is already a single atomic write to a single cache line, so there's no window where a crash can leave state inconsistent — no logging needed.</li>
+        <li>Result: up to 88%/98% faster (4 KiB/2 MiB) than Linux at 26 cores, ~125× smaller state footprint, 64% less compaction cost, 1000/1000 successful crash recoveries — though not every scenario favors LLFree (Worked Example 4).</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE: two-level architecture -->
+    <figure class="viz reveal">
+      <div class="viz-title">Two levels, one cache line per operation</div>
+      <div class="viz-kicker">upper level (DRAM, scalability) → lower level (optionally NVRAM, crash consistency)</div>
+      <div class="legend">
+        <span><i style="background:var(--ltram)"></i> upper level — trees</span>
+        <span><i style="background:var(--dram)"></i> lower level — child entries + bit fields</span>
+      </div>
+      <svg class="full" viewBox="0 0 860 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="LLFree two-level architecture">
+        <defs>
+          <marker id="arrowL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#6E6456"/>
+          </marker>
+        </defs>
+        <text x="20" y="30" font-family="JetBrains Mono,monospace" font-size="11" font-weight="700" fill="#3a409a">CPU 0's preferred tree</text>
+        <rect x="20" y="40" width="220" height="70" rx="10" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="130" y="65" text-anchor="middle" font-family="Fraunces,serif" font-size="14" font-weight="600" fill="#3a409a">64 MiB tree</text>
+        <text x="130" y="85" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" fill="#3a409a">32 children · counter c_U</text>
+        <text x="20" y="145" font-family="JetBrains Mono,monospace" font-size="11" font-weight="700" fill="#3a409a">CPU 1's preferred tree</text>
+        <rect x="20" y="155" width="220" height="70" rx="10" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="130" y="180" text-anchor="middle" font-family="Fraunces,serif" font-size="14" font-weight="600" fill="#3a409a">64 MiB tree</text>
+        <text x="130" y="200" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" fill="#3a409a">32 children · counter c_U</text>
+        <line x1="240" y1="75" x2="330" y2="75" stroke="#2C8C7C" stroke-width="1.5" marker-end="url(#arrowL)"/>
+        <line x1="240" y1="190" x2="330" y2="120" stroke="#2C8C7C" stroke-width="1.5" marker-end="url(#arrowL)"/>
+        <rect x="332" y="45" width="200" height="180" rx="10" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="432" y="68" text-anchor="middle" font-family="Fraunces,serif" font-size="14" font-weight="600" fill="#1f5b51">2 MiB child</text>
+        <text x="432" y="86" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" fill="#1f5b51">counter c_L · flag a</text>
+        <rect x="352" y="100" width="160" height="18" rx="3" fill="#fff" stroke="#2C8C7C"/>
+        <rect x="352" y="122" width="160" height="18" rx="3" fill="#fff" stroke="#2C8C7C"/>
+        <rect x="352" y="144" width="160" height="18" rx="3" fill="#fff" stroke="#2C8C7C"/>
+        <text x="432" y="180" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9.5" fill="#1f5b51">512-bit field, 4 KiB frames</text>
+        <text x="432" y="196" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9.5" fill="#1f5b51">= exactly one 64 B cache line</text>
+        <line x1="532" y1="135" x2="620" y2="135" stroke="#C0563B" stroke-width="1.5" marker-end="url(#arrowL)"/>
+        <rect x="622" y="90" width="215" height="90" rx="10" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.5"/>
+        <text x="729" y="115" text-anchor="middle" font-family="Fraunces,serif" font-size="13" font-weight="600" fill="#8a3c26">one atomic CAS</text>
+        <text x="729" y="135" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" fill="#8a3c26">4 KiB: flip one bit</text>
+        <text x="729" y="152" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" fill="#8a3c26">2 MiB: c_L 512→0, a=1</text>
+        <text x="430" y="265" text-anchor="middle" font-family="Mulish,sans-serif" font-size="12" fill="#6E6456">Only the lower level (child entries + bit fields) needs to live in NVRAM for crash consistency.</text>
+        <text x="430" y="285" text-anchor="middle" font-family="Mulish,sans-serif" font-size="12" fill="#6E6456">The upper level (trees) is always volatile DRAM, rebuilt from the lower level on recovery.</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> each CPU pins a 64&nbsp;MiB tree as its preferred allocation source, avoiding cross-CPU cache-line contention. Within that tree, one 2&nbsp;MiB child's bit field — exactly one 64-byte cache line — is where the actual atomic allocation happens. (Paper, Fig. 3 &amp; 4)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">Five problems, one structural fix</div>
+      <div class="viz-kicker">mixing concerns → merge cost → scalability → fragmentation → persistence, all traced to one root cause</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Root cause</div><div class="nd">Scattered, lock-protected, doubly-linked buddy state spread across struct page</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Lower level</div><div class="nd">Bit fields + child counters — one cache-line CAS per de/allocation</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Upper level</div><div class="nd">Per-CPU-reserved 64 MiB trees — no cross-core contention on the common path</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">Scalable, tiny state, self-defragmenting, crash-consistent with zero logging</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>What LLFree feels like</h2>
+      <p class="sub">Every analogy below is useful for one part of the intuition and wrong for another — the "where it breaks" line is as important as the picture itself.</p>
+    </div>
+
+    <div class="analogy-grid">
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="15" y="20" width="45" height="56" rx="6" fill="#E6E6F6" stroke="#5A61B4"/><rect x="80" y="20" width="45" height="56" rx="6" fill="#E6E6F6" stroke="#5A61B4"/><text x="37" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#3a409a">CPU0</text><text x="102" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#3a409a">CPU1</text></svg></div>
+        <span class="term">Hotel room blocks</span>
+        <h3>Each front desk gets its own floor</h3>
+        <p>Instead of every front-desk clerk fighting over one master reservation ledger, each clerk is handed their own floor of rooms to fill first. Only when a floor fills up does a clerk need to check with another floor. That's a CPU's "preferred tree" — a 64&nbsp;MiB chunk it can allocate from without touching anyone else's bookkeeping.</p>
+        <div class="breaks">Where it breaks: floors in a hotel don't get reassigned; LLFree's reservation can migrate to a different tree if the current one fills up or gets "stolen" under memory pressure.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="20" y="16" width="100" height="20" rx="4" fill="#DCEFE9" stroke="#2C8C7C"/><text x="70" y="30" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">one card, 512 seats</text><path d="M30 50 h80 M30 60 h80 M30 70 h80" stroke="#C0563B" stroke-width="1.5"/></svg></div>
+        <span class="term">A seating chart vs. a stack of tickets</span>
+        <h3>One card instead of 512 slips of paper</h3>
+        <p>Tracking whether 512 concert seats are taken with one master seating chart (a 512-bit field, one cache line) is instantly and atomically checkable. Tracking the same 512 seats with 512 individual paper ticket stubs scattered around the building (Linux's per-frame <code>struct page</code> records) means walking the building to know anything for certain.</p>
+        <div class="breaks">Where it breaks: a real seating chart isn't updated by 26 ushers simultaneously — LLFree's version specifically has to survive that concurrent-write case atomically.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="30" y="20" width="80" height="56" rx="8" fill="#FFFDF8" stroke="#D8C8AC"/><path d="M35 48 h70" stroke="#6E6456" stroke-dasharray="3,3"/><circle cx="45" cy="48" r="5" fill="#2C8C7C"/></svg></div>
+        <span class="term">A librarian who never asks "may I?"</span>
+        <h3>Compare-and-swap as a single confident motion</h3>
+        <p>A librarian who knows exactly which shelf slot is empty reaches in, checks it's still empty, and places the book — all in one continuous motion, without needing to ask a supervisor's permission first. That's a CAS: a single atomic "if it's still empty, take it" with no lock, no waiting in line.</p>
+        <div class="breaks">Where it breaks: if two librarians reach for the exact same slot at once, one of them has to notice the slot changed and try again — a CAS can fail and retry, unlike a real uninterruptible motion.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="20" y="30" width="40" height="40" rx="6" fill="#F7E1D8" stroke="#C0563B"/><rect x="80" y="30" width="40" height="40" rx="6" fill="#DCEFE9" stroke="#2C8C7C"/><path d="M60 50 h20" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a)"/></svg></div>
+        <span class="term">Returning a rental to the branch you took it from</span>
+        <h3>Reserve-on-free exploits where things came from</h3>
+        <p>A car-rental network that always routes a returned car back toward the branch it was originally rented from (rather than wherever the drop-off happens to be) keeps each branch's inventory naturally balanced over time — no central coordinator required. LLFree frees a page back to its origin tree for the same reason.</p>
+        <div class="breaks">Where it breaks: LLFree assumes a page freed by CPU A was likely allocated by (and near other pages from) the same tree — a workload with truly random alloc/free patterns weakens this benefit.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="20" y="20" width="30" height="56" fill="#DCEFE9" stroke="#2C8C7C"/><rect x="55" y="20" width="30" height="56" fill="#FBEACB" stroke="#C27D14"/><rect x="90" y="20" width="30" height="56" fill="#F7E1D8" stroke="#C0563B"/></svg></div>
+        <span class="term">Fuel gauge, not a fuel-tank inspection</span>
+        <h3>One counter instead of scanning every frame</h3>
+        <p>Knowing how much gas is left doesn't require opening the tank and measuring — the gauge (a running free-frame counter per tree) already tells you. LLFree's trees are classified <em>free / partial / allocated</em> purely by reading this one counter, no scan required.</p>
+        <div class="breaks">Where it breaks: a gauge can't tell you <em>which</em> specific frames are free within the tank — for that, LLFree still needs the bit field one level down.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><circle cx="70" cy="48" r="30" fill="none" stroke="#D8C8AC" stroke-width="2"/><path d="M70 48 L70 24" stroke="#C0563B" stroke-width="2"/><path d="M70 48 L88 60" stroke="#2C8C7C" stroke-width="2"/></svg></div>
+        <span class="term">A power-outage-proof notebook</span>
+        <h3>No "half-written sentence" is ever left behind</h3>
+        <p>If every entry in a notebook is written in one indivisible stroke — nothing is ever half-written when the lights go out — you never need a separate "draft log" to recover from a power cut; you just read what's there. LLFree's single-cache-line CAS gives it exactly this property, which is why it needs no write-ahead log for crash consistency.</p>
+        <div class="breaks">Where it breaks: this only holds for the paper's "natural" sizes (4 KiB, 2 MiB); non-natural kernel-object sizes need multiple CAS steps and lose the single-stroke guarantee (How It Works, step 10).</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Mechanism, step by step</div>
+      <h2>From "give me a page" to a single CAS</h2>
+      <p class="sub">Eleven steps, from the two-level layout to what happens after a crash.</p>
+    </div>
+
+    <ol class="seq prose">
+      <li><b>The allocator has two levels.</b> A <b>lower level</b> performs actual de/allocation and must be crash-consistent (only it needs to live in NVRAM for a persistent-memory zone). An <b>upper level</b> provides scalability by managing which CPU allocates from where — it always lives in volatile DRAM, even on a persistent-memory zone, since it can be rebuilt after a crash.</li>
+      <li><b>Lower level: one bit field per 2 MiB child.</b> Memory is divided into "children" of 512 base frames (2 MiB) each. Each child gets a 512-bit field (one bit per 4 KiB frame: 0 = free, 1 = allocated) — exactly 64 bytes, one cache line — plus a small free-count and an "allocated as huge frame" flag packed into a 16-bit child-table entry.</li>
+      <li><b>Upper level: trees of 32 children.</b> N=32 children are grouped into a "tree" spanning 64&nbsp;MiB, chosen so the tree's own child array also fits in one cache line. Each tree root tracks a free-base-frame count and a "reserved" flag.</li>
+      <li><b>Each CPU pins a preferred tree.</b> To avoid false sharing on the child array, a CPU that needs a new tree "reserves" one (sets the reserved flag) and moves that tree's free counter into a CPU-local copy — subsequent allocations and frees from that CPU only touch its own local counter, not the shared one.</li>
+      <li><b>Allocating a 4 KiB base frame.</b> The CPU atomically decrements its local free counter (bailing out to reserve a new tree if it hits zero), then sequentially searches the corresponding bit field for a zero bit and sets it with a CAS — touching one or two cache lines total, no lock.</li>
+      <li><b>Allocating a 2 MiB huge frame.</b> This is even cheaper: a single 16-bit CAS changes the child's free-count from 512 to 0 and sets the "allocated" flag — one atomic operation, one cache line, no bit-field scan needed.</li>
+      <li><b>Choosing which tree to reserve: free / partial / allocated.</b> When a CPU needs a new tree, trees are classified by their free-count: <em>free</em> (&gt;87.5% free), <em>partial</em> (12.5–87.5%), or <em>allocated</em> (&lt;12.5% free). The search heuristic prefers <em>partial</em> trees first (they're least likely to still yield huge frames if left alone), then <em>free</em> ones, searching neighboring cache-line-adjacent trees first, then the whole array, and finally stealing a reservation from another CPU as a last resort.</li>
+      <li><b>Freeing: reserve-on-free.</b> A freed frame's bit is always cleared in the tree it originally came from — not necessarily the freeing CPU's own preferred tree — on the empirically-motivated assumption that frees exhibit locality with their original allocation. If a CPU's frees repeatedly land in some other tree (four times in a row, in the paper's tuned threshold), that tree becomes its new preferred one.</li>
+      <li><b>Crash consistency, concretely.</b> Because every de/allocation is already one atomic write to one cache line, there's no intermediate state a crash could ever observe as "half-done." Recovery just re-derives the volatile upper level from the persistent lower level: for each child, if its "allocated huge frame" flag is set, the whole child is huge-allocated; otherwise its bit field is the authoritative record, and its free-count is recomputed from a population count over the 512 bits. No write-ahead log, ever.</li>
+      <li>
+        <b>The exception: non-natural orders.</b>
+        <div class="callout warn" style="margin:10px 0 0">
+          <div class="ic">⚠</div>
+          <div>Linux's kernel-object allocations need <i>every</i> order 0–10, not just 0 and 9. LLFree handles orders 1–6 like order 0 (searching for an aligned run of zero bits), but orders 7, 8, and 10 need 2–4 chained CAS operations with rollback-on-failure — which the paper explicitly notes <b>breaks the single-cache-line persistence guarantee</b> for those specific sizes. It's an accepted, narrow trade-off, not swept under the rug.</div>
+        </div>
+      </li>
+      <li><b>The net effect on Linux.</b> Integrating LLFree meant Linux no longer needs its buddy allocator's per-zone locks, per-CPU caches, or "high-atomic" huge-page-protection heuristics for the zone LLFree manages — those mechanisms existed specifically to paper over problems LLFree's structure doesn't have in the first place.</li>
+    </ol>
+
+    <!-- SECOND DIAGRAM: tree classification thresholds -->
+    <figure class="viz reveal">
+      <div class="viz-title">Choosing a tree: three zones on one free-count gauge</div>
+      <div class="viz-kicker">out of 2048 free base frames per tree (N=32 children × 512 bits ÷ 8, scaled for display)</div>
+      <svg class="full" viewBox="0 0 860 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Tree classification thresholds">
+        <rect x="20" y="50" width="240" height="34" fill="#F7E1D8" stroke="#C0563B"/>
+        <text x="140" y="71" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" fill="#8a3c26">allocated (&lt;12.5% free)</text>
+        <rect x="260" y="50" width="340" height="34" fill="#FBEACB" stroke="#C27D14"/>
+        <text x="430" y="71" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" fill="#6e4a09">partial — searched first</text>
+        <rect x="600" y="50" width="240" height="34" fill="#DCEFE9" stroke="#2C8C7C"/>
+        <text x="720" y="71" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" fill="#1f5b51">free (&gt;87.5% free)</text>
+        <text x="20" y="40" font-family="JetBrains Mono,monospace" font-size="10" fill="#9A8E7C">0% free</text>
+        <text x="800" y="40" font-family="JetBrains Mono,monospace" font-size="10" fill="#9A8E7C">100% free</text>
+        <text x="430" y="115" text-anchor="middle" font-family="Mulish,sans-serif" font-size="12" fill="#6E6456">Search order: neighboring trees (same cache line) → whole array, first-fit on partial → free trees → drain another CPU's reservation, last resort.</text>
+      </svg>
+      <figcaption><b>Why prefer partial over free:</b> a nearly-full tree is close to yielding a completed huge frame if left alone; grabbing a fresh, fully-free tree for ordinary small allocations would spread wear across more huge-frame candidates and hurt long-term defragmentation. (Paper, §3.2.2)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Real numbers from the paper</div>
+      <h2>Seven ways to see the difference</h2>
+      <p class="sub">Every number below is from the paper's own evaluation (DELL PowerEdge R750, 2× Xeon Gold 5320, 256 GiB DRAM + 1 TiB Optane, 26 cores/socket) — including the one case where LLFree loses.</p>
+    </div>
+
+    <div class="card">
+      <h3>1 · State dispersion: 4.1 MiB vs. 516 MiB</h3>
+      <p>On a 128 GiB / 52-core machine, LLFree's entire metadata footprint is 4.14 MiB (0.0032% of DRAM): 4.0 MiB of bit fields, 128 KiB of child counters, 32 bytes of per-tree data. Enumerating it all touches 67,754 distinct 64-byte cache lines. Linux's buddy allocator, by contrast, stores most of its state inside <code>struct page</code> — 512 MiB just for the free-list pointers it repurposes there, for a total of 516 MiB (0.39% of DRAM) spread across <b>33,554,169</b> separate cache lines, since each <code>struct page</code> lives on its own line.</p>
+      <table class="tbl">
+        <thead><tr><th>Metric</th><th>LLFree</th><th>Linux buddy</th></tr></thead>
+        <tbody>
+          <tr><td>Total state</td><td class="mono">4.14 MiB</td><td class="mono">516.0 MiB</td></tr>
+          <tr><td>Cache lines to fully scan</td><td class="mono">67,754</td><td class="mono">33,554,169</td></tr>
+          <tr><td>% of 128 GiB DRAM</td><td class="mono">0.0032%</td><td class="mono">0.39%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>2 · 4 KiB allocation latency under parallel load</h3>
+      <p>With all 26 cores of one socket allocating 4 KiB frames in parallel, Linux's per-frame time grows roughly <b>tenfold</b> as core count rises (94&nbsp;ns → 984&nbsp;ns). LLFree's allocation and free reservation system keeps this almost flat, translating into up to an <b>88% reduction</b> in allocation time for concurrent 4 KiB allocations versus the Linux buddy allocator.</p>
+    </div>
+
+    <div class="card">
+      <h3>3 · 2 MiB allocation: the gap widens</h3>
+      <p>For 2 MiB huge-frame allocations, Linux's parallel slowdown is worse still — up to <b>27×</b> slower at 26 cores versus one. LLFree reduces 2 MiB allocation time by up to <b>98%</b> compared to Linux, and the paper's abstract highlights a <b>53×</b> speedup for concurrent 2 MiB DRAM allocations specifically at 26 cores.</p>
+      <div class="bars">
+        <div class="bar-row"><div class="bar-label">Linux buddy<br><small>26 cores, 2 MiB</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="100"><span>27× slower @ 26 cores</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">LLFree<br><small>26 cores, 2 MiB</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="15"><span>near-flat</span></div></div></div>
+      </div>
+    </div>
+
+    <div class="callout warn">
+      <div class="ic">⚠</div>
+      <div><b>4 · Where LLFree actually loses.</b> In the "repeat" benchmark — each core allocates and frees a <em>single</em> frame as fast as possible, the best possible case for Linux's per-CPU caches — Linux beats LLFree for the cached orders (0–3, 9). For order 0 specifically: <b>112&nbsp;ns</b> (Linux) versus <b>183&nbsp;ns</b> (LLFree). The paper is upfront that this is also the least realistic workload: real programs do lazy allocation via demand paging with bulk or random frees, not tight single-frame reuse loops.</div>
+    </div>
+
+    <div class="card">
+      <h3>5 · Passive defragmentation of huge frames</h3>
+      <p>Starting from a worst-case fragmented state (90% of a 125 GiB region randomly allocated, then half freed) and cycling 10% of memory through 100 random-reallocation iterations: Linux's buddy allocator recovers only <b>1 additional huge frame</b> over the entire run, with compaction cost dropping just 3.3%. LLFree recovers <b>46.6%</b> of the initially-fragmented huge frames passively — with no active compaction step at all — purely as a side effect of its subtree-allocation policy.</p>
+    </div>
+
+    <div class="card">
+      <h3>6 · Crash recovery: 1,000 for 1,000</h3>
+      <p>The paper injected 1,000 simulated crashes (random <code>SIGKILL</code> during concurrent alloc/free on a DAX-mapped NVRAM region) and recovered allocator state correctly in every single case — losing at most one frame per active core in about half the trials, the theoretical worst case for any lock-free design. Full recovery (rebuilding the DRAM upper level by scanning every child entry) took <b>2,460&nbsp;µs</b> on average; a routine (non-crash) restart, which can trust the upper level, took only <b>477&nbsp;µs</b>.</p>
+      <div class="stat-grid" style="margin-top:14px">
+        <div class="stat-card"><div class="big">1000/1000</div><div class="lab">crashes recovered</div></div>
+        <div class="stat-card"><div class="big">2,460 µs</div><div class="lab">full crash recovery</div></div>
+        <div class="stat-card"><div class="big">477 µs</div><div class="lab">routine reinit</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>7 · Does it actually help a real application?</h3>
+      <p>Running the <code>memtier</code> benchmark against memcached (a realistic Get/Set workload), the paper found <b>no significant throughput difference</b> between LLFree and the stock Linux buddy allocator. The honest explanation given: the page-fault handler that invokes the allocator is only 5.3% of total runtime in a flame-graph breakdown (most time goes to <code>struct mm</code> rw-locks, LRU/cgroup bookkeeping, and reverse-mapping updates) — so a faster allocator alone can't fix a bottleneck that lives elsewhere in the memory-management stack.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Check your understanding</div>
+      <h2>Five questions, misconceptions flagged</h2>
+      <p class="sub">Try answering before revealing — each answer names a specific misconception it's checking for.</p>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Medium</span>
+      <div class="qtext">Q1. Does LLFree eliminate Linux's <code>struct page</code> entirely?</div>
+      <details><summary>Show answer</summary><div class="ans">No. Other kernel subsystems still rely on <code>struct page</code> for <em>allocated</em> frames (mapping info, reference counts, etc.), and the paper explicitly leaves full elimination as future work. What LLFree removes is the need to touch <code>struct page</code> during de/allocation of <em>free</em> frames — that's where the state-dispersion win comes from.<span class="mis">Misconception checked: assuming "much smaller state footprint" means "struct page is gone."</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag medium">Medium</span>
+      <div class="qtext">Q2. Is LLFree a persistent-memory-only allocator?</div>
+      <details><summary>Show answer</summary><div class="ans">No — it's a general-purpose allocator for volatile DRAM that <em>optionally</em> provides crash consistency when deployed on an NVRAM zone. The same design runs identically either way; persistence is a property of where you put the lower-level data, not a separate code path.<span class="mis">Misconception checked: conflating "supports persistence" with "requires persistent memory to work at all."</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag hard">Hard</span>
+      <div class="qtext">Q3. Why not just give LLFree more per-CPU caches, the way Linux did to fix its own scalability?</div>
+      <details><summary>Show answer</summary><div class="ans">Per-CPU caches hide frames from defragmentation (a cached frame can't be merged into a huge frame while it's sitting in someone's cache) and would reintroduce exactly the crash-consistency problem LLFree avoids — a crash mid-cache-drain would need to reconcile a redundant, possibly-inconsistent cached copy against the authoritative structure. LLFree's per-CPU-<em>reserved trees</em> get similar contention avoidance without a separate redundant cache to keep in sync.<span class="mis">Misconception checked: assuming any two "give each CPU its own copy" schemes are interchangeable.</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag hard">Hard</span>
+      <div class="qtext">Q4. Does LLFree still do the classic buddy split/merge dance (halving and recombining blocks)?</div>
+      <details><summary>Show answer</summary><div class="ans">No. LLFree has no recursive buddy-merge chain at all — there's no scenario analogous to needing 511 buddy-merge operations to assemble one 2 MiB frame from 4 KiB pieces. A huge frame's availability is read directly off one child's free-counter; a base-frame's availability is read directly off one bit in the bit field. Nothing is split or merged as a multi-step operation.<span class="mis">Misconception checked: assuming LLFree is "the buddy system, but faster" rather than a structurally different two-level scheme.</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag easy">Easy</span>
+      <div class="qtext">Q5. Is LLFree strictly faster than the Linux buddy allocator in every measured scenario?</div>
+      <details><summary>Show answer</summary><div class="ans">No — in the <em>repeat</em> benchmark's best case for Linux's per-CPU caches (single-frame reuse, cached orders), stock Linux is faster: 112 ns versus 183 ns for order 0 at scale. LLFree wins broadly and especially under real contention or bulk/random patterns, but the paper doesn't claim a universal win.<span class="mis">Misconception checked: treating a paper's headline numbers as true in every workload, not just the ones it wins.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Common questions</div>
+      <h2>FAQ</h2>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q·</span>What does "LLFree" actually stand for?<span class="chev">▾</span></summary><div class="a">Log- and Lock-Free — the two properties the design is built around. Every operation is a single atomic hardware instruction (no locks) and crash consistency requires no write-ahead log (no logging).</div></details>
+      <details><summary><span class="q">Q·</span>How does this relate to the classic buddy allocator (Knuth, Linux)?<span class="chev">▾</span></summary><div class="a">LLFree is explicitly framed as a critique and replacement of that lineage — it keeps the idea of power-of-two-aligned, hardware-sized allocation units, but replaces the buddy system's linked free-lists, per-zone lock, and recursive split/merge with a two-level, cache-line-atomic structure. See the companion Knuth buddy-allocator primer for the classic scheme this paper is answering.</div></details>
+      <details><summary><span class="q">Q·</span>Is LLFree actually merged into mainline Linux?<span class="chev">▾</span></summary><div class="a">No — it's a research prototype: 2,199 lines of safe Rust (plus 25 unsafe lines for initialization and address translation) implementing the allocator itself, integrated into a modified Linux 6.0 kernel by replacing <code>page_alloc.c</code>'s core logic (changing 415 lines, adding a 942-line wrapper module). It is not upstream.</div></details>
+      <details><summary><span class="q">Q·</span>Why did they write it in Rust?<span class="chev">▾</span></summary><div class="a">The authors explicitly wanted to explore whether Rust's stricter memory-safety guarantees (versus C) were viable for a performance-critical kernel module, and report that Rust's safety properties simplified development without compromising the performance results.</div></details>
+      <details><summary><span class="q">Q·</span>What hardware guarantee does the "no logging needed" claim actually lean on?<span class="chev">▾</span></summary><div class="a"><b>eADR</b> (enhanced Asynchronous DRAM Refresh), available on the paper's Gen-3 Xeon Gold + Optane Gen-2 test platform. eADR guarantees that once a write is visible to other cores (memory consistency), it's also guaranteed to reach NVRAM on a power loss (persistence consistency) — letting LLFree skip explicit cache-flush instructions (like <code>clwb</code>) that older non-eADR NVRAM platforms would require.</div></details>
+      <details><summary><span class="q">Q·</span>What's the honest catch?<span class="chev">▾</span></summary><div class="a">Two, both acknowledged directly in the paper. First, non-natural allocation orders (needed for kernel objects, not just hardware page sizes) require multi-step CAS sequences that break the single-cache-line persistence guarantee for those sizes. Second, end-to-end application benchmarks (memtier/memcached) showed no significant throughput improvement, because the allocator itself is a small fraction of total memory-management overhead in a real workload.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">For the record</div>
+      <h2>Reference</h2>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-card"><div class="big">53×</div><div class="lab">2 MiB alloc</div><div class="sub">26 cores, vs. Linux</div></div>
+      <div class="stat-card"><div class="big">88% / 98%</div><div class="lab">latency cut</div><div class="sub">4 KiB / 2 MiB, 26 cores</div></div>
+      <div class="stat-card"><div class="big">4.1 MiB</div><div class="lab">state footprint</div><div class="sub">vs. 516.0 MiB (Linux)</div></div>
+      <div class="stat-card"><div class="big">46.6%</div><div class="lab">huge frames recovered</div><div class="sub">passive defragmentation</div></div>
+      <div class="stat-card"><div class="big">1000/1000</div><div class="lab">crashes recovered</div><div class="sub">no logging used</div></div>
+      <div class="stat-card"><div class="big">2,199</div><div class="lab">lines of Rust</div><div class="sub">the allocator itself</div></div>
+    </div>
+
+    <div class="subhead">Linux buddy allocator vs. LLFree</div>
+    <table class="tbl">
+      <thead><tr><th>Dimension</th><th>Linux buddy allocator</th><th>LLFree</th></tr></thead>
+      <tbody>
+        <tr><td>Concurrency control</td><td class="mono">per-zone spinlock + per-CPU caches</td><td class="mono">lock-free, per-CPU tree reservation</td></tr>
+        <tr><td>State location</td><td class="mono">scattered in struct page (516 MiB)</td><td class="mono">packed bit fields + counters (4.1 MiB)</td></tr>
+        <tr><td>Huge-frame formation</td><td class="mono">up to 511 recursive merges</td><td class="mono">read one counter, no merge chain</td></tr>
+        <tr><td>Fragmentation handling</td><td class="mono">needs active compaction pass</td><td class="mono">passive, via subtree allocation policy</td></tr>
+        <tr class="best"><td><b>Crash consistency</b></td><td class="mono">not supported (locks + scattered state)</td><td class="mono">built-in, zero logging, single-CAS ops</td></tr>
+        <tr><td>Best case for Linux</td><td class="mono">single-frame reuse, cached orders</td><td class="mono">—</td></tr>
+      </tbody>
+    </table>
+
+    <div class="subhead">Glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>Lower level</b><span>Bit fields + child counters; performs actual de/allocation; the only part that must live in NVRAM for persistence.</span></div>
+      <div class="term-def"><b>Upper level</b><span>Trees + CPU reservation logic; provides scalability; always volatile, rebuildable after a crash.</span></div>
+      <div class="term-def"><b>Tree</b><span>64 MiB unit of 32 children that a CPU can pin as its preferred allocation source.</span></div>
+      <div class="term-def"><b>Child entry</b><span>2 MiB unit: a 512-bit field (4 KiB frames) plus a free-counter and huge-allocated flag, packed to fit one cache line.</span></div>
+      <div class="term-def"><b>Reserve-on-free</b><span>Heuristic returning a freed frame to its origin tree, exploiting alloc/free locality.</span></div>
+      <div class="term-def"><b>eADR</b><span>Platform guarantee that memory-consistent writes are also persistence-consistent, letting LLFree skip explicit flushes.</span></div>
+      <div class="term-def"><b>State dispersion</b><span>The paper's metric for total bytes/cache-lines needed to fully enumerate allocator state.</span></div>
+      <div class="term-def"><b>Non-natural order</b><span>A kernel-object allocation size (orders 1–8, 10) outside hardware's natural 4 KiB/2 MiB/1 GiB sizes.</span></div>
+    </div>
+
+    <div class="subhead">Further reading</div>
+    <div class="read-item"><h4>LLFree: Scalable and Optionally-Persistent Page-Frame Allocation <span class="diff med">medium</span></h4><div class="meta">Wrenger, Rommel, Halbuer, Dietrich, Lohmann · USENIX ATC 2023</div><p>The primary source this entire guide is built from — abstract, evaluation numbers, and design details all verified against the paper's own text and figures.</p></div>
+    <div class="read-item"><h4>The buddy memory allocator — a companion field guide <span class="diff easy">easy</span></h4><div class="meta">This site's own primer on the classic scheme LLFree replaces</div><p>Useful background for How It Works, steps 1–2, especially the split/merge cost LLFree's two-level design sidesteps entirely.</p></div>
+    <div class="read-item"><h4>llfree-rs / llfree-linux / llfree-bench <span class="diff hard">hard</span></h4><div class="meta">github.com/luhsra (artifact-evaluated, USENIX badges: Available, Functional, Reproduced)</div><p>The Rust implementation, the modified Linux kernel, and the benchmark suite/raw data behind every figure in the paper.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <p style="color:var(--ink-soft);font-size:.95rem;max-width:74ch">All numbers on this page are drawn directly from the paper's text, figures, and Table 1, cross-checked against the user's own copy of the PDF. This paper is the direct answer to a "modern buddy-allocator alternative, with a real implementation" reference from an earlier research-meeting discussion — the acronym "LLFree" is easily mis-heard/mis-transcribed as "LLF" or "LLS," which is almost certainly what happened there.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Wrenger, Rommel, Halbuer, Dietrich, Lohmann, "LLFree: Scalable and Optionally-Persistent Page-Frame Allocation" (USENIX ATC 2023)</span>
+    <span><b>Open source:</b> github.com/luhsra (llfree-rs, llfree-linux, llfree-bench)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source paper</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  function maybeAnimateBars(){
+    document.querySelectorAll('.bars:not(.shown)').forEach(function(bars){
+      var fig = bars.closest('.tab-panel');
+      if(!fig || !fig.classList.contains('active')) return;
+      bars.querySelectorAll('.bar-fill').forEach(function(f,i){
+        var w = Math.min(100, parseFloat(f.dataset.w || 0));
+        setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+      });
+      bars.classList.add('shown');
+    });
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
