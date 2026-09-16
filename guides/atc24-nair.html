@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<!-- Telescope field guide — "Telescope: Telemetry for Gargantuan Memory Footprint Applications"
+     (Nair, Kumar, Prasad, Huang, Rudoff, Subramoney — Intel Labs / Intel Corporation, USENIX ATC 2024).
+     Built in the house style (see guides/ucp.html) as a companion to the AutoTiering, LLFree, and
+     buddy-allocator-Knuth guides — this paper sits one layer above all three: it's about detecting
+     WHICH pages are hot/cold at terabyte scale, a prerequisite for any tiering policy (AutoTiering)
+     or allocator (LLFree) to act on. Semantic colors: teal = Telescope's own mechanism (page-table
+     profiling, bounded/flex, MGLRU-TS) · indigo = existing page-table/hardware machinery (PGD/PUD/
+     PMD/PTE, ACCESSED bit) · terracotta = the baseline techniques that fail at scale (DAMON, PEBS,
+     linear scanning). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Telescope — A Field Guide to Terabyte-Scale Hot/Cold Telemetry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<meta name="theme-color" content="#FBF6EC">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;      /* teal   = Telescope's own mechanism         */
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;    /* indigo = page-table/hardware machinery      */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = baseline techniques that fail  */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.1rem,5.6vw,3.7rem);font-weight:600;letter-spacing:-.015em;max-width:20ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.28rem);color:var(--ink-soft);max-width:50ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.1rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:22px 0}
+.stat-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;text-align:center;box-shadow:var(--shadow-sm)}
+.stat-card .big{font-family:var(--display);font-size:2.1rem;font-weight:700;color:var(--honey-deep);line-height:1}
+.stat-card .lab{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint);margin-top:8px}
+.stat-card .sub{font-size:.82rem;color:var(--ink-soft);margin-top:6px}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>USENIX ATC 2024 · A Field Guide</span>
+    <h1>Cold at the top means <span class="swash">cold all the way down</span></h1>
+    <p class="lede">Tiered memory only pays off if the OS can tell which data is hot and which is cold — and every existing way of finding out breaks once an application's footprint reaches a terabyte. Scanning every page is too slow; sampling a few pages per region misses the hot ones; hardware counters drown in interrupts. This is the plain-English tour of <strong>Telescope</strong>, which finds hot and cold data by reading a bit the hardware was already setting — at every level of the page table, not just the bottom.</p>
+    <div class="hero-meta">
+      <span>📄 "Telescope: Telemetry for Gargantuan Memory Footprint Applications" · Nair, Kumar, Prasad, Huang, Rudoff, Subramoney (Intel Labs / Intel Corp.)</span>
+      <span>🎓 A page-table primer is included — no prior tiered-memory reading required</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🔭</div>
+      <p>Don't <span class="wo">scan every page to see if it's hot</span> — check one bit near the root of the page table, and if it's clear, <span class="ro">skip the whole subtree beneath it</span>.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Eight ideas the paper assumes you know</h2>
+      <p class="sub">Each card clears up one concept Telescope builds on. They're collapsed — tap any to open. Read in order the first time, or jump to whatever looks unfamiliar.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> Telescope's own mechanism</span>
+      <span><i style="background:var(--ltram)"></i> page-table/hardware machinery</span>
+      <span><i style="background:var(--optane)"></i> baseline techniques that fail at scale</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Tiered memory: near (fast, small) vs. far (slow, huge)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A tiered-memory system pairs a small, fast <b>near tier</b> (DRAM) with a much larger, slower <b>far tier</b> (CXL-attached memory, NVM, or — in this paper's evaluation — Intel Optane DC Persistent Memory used as plain volatile RAM). The whole point is to keep frequently-used ("hot") data in the near tier and rarely-used ("cold") data in the far tier.</p>
+          <div class="ready"><b>Now you're ready:</b> that placement decision is only as good as the information it's based on — which is exactly the paper's subject: how do you find out what's hot without it costing more than it saves?</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>The 4-level x86-64 page table<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A virtual address is translated to a physical one by walking a 4-level radix tree: <b>PGD</b> (page global directory, root) → <b>PUD</b> (page upper directory) → <b>PMD</b> (page middle directory) → <b>PTE</b> (page table entry, the leaf pointing at an actual 4 KiB data page). Each level has 512 entries; each level of the virtual address supplies 9 bits used as an index into that level.</p>
+          <div class="ready"><b>Now you're ready:</b> a PGD entry effectively "covers" 512 GB of virtual address space; a PUD entry covers 1 GB; a PMD entry covers 2 MB — this is the granularity ladder Telescope climbs up and down.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>The ACCESSED bit, at every level<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>When a TLB miss forces the hardware to walk the page table, it sets an <b>ACCESSED</b> bit not just in the final PTE, but in the PGD, PUD, and PMD entries it passed through on the way there too. This is a normal, always-on part of the hardware page walk — no special mode required.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the entire insight the paper is built on — a hot page implies hot entries at <em>every</em> level of its path, and a cold higher-level entry implies everything beneath it is cold.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Linear scanning (kstaled, idle page tracking)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The simplest telemetry approach: periodically walk the <em>entire</em> virtual address space, checking (and resetting) the ACCESSED bit at the leaf level for every single page. It's exact — no false positives or negatives — but the scan time grows directly with the number of pages, which is fatal once footprints reach terabytes.</p>
+          <div class="ready"><b>Now you're ready:</b> this is "Problem 1" in the paper's taxonomy (Table 1) — precise but doesn't scale.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Region-based sampling (DAMON)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>DAMON</b> (Data Access Monitor), already in the mainline Linux kernel, divides an application's address space into regions and randomly samples one or a few pages per region to estimate that whole region's hotness, splitting hot regions finer and merging cold ones over time.</p>
+          <div class="ready"><b>Now you're ready:</b> sampling trades precision for speed — and the paper shows that trade collapses entirely once regions are large enough that a random sample is very unlikely to land on the (relatively few) hot pages inside.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Hardware counters / PEBS<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Intel <b>PEBS</b> (Processor Event-Based Sampling) and similar PMU (performance monitoring unit) mechanisms sample hardware events — retired loads/stores, TLB misses, cache misses — and record the virtual address that caused each sampled event. Higher sampling rates catch more hot pages but generate more OS interrupts.</p>
+          <div class="ready"><b>Now you're ready:</b> Linux automatically throttles interrupt-heavy sampling, which is exactly what causes PEBS-based approaches to silently under-detect hot data at scale (Worked Example 1).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Precision and recall, as used here<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Precision</b> is the fraction of pages a technique labeled "hot" that are actually hot (no false positives). <b>Recall</b> is the fraction of actually-hot pages the technique successfully found (no false negatives). A technique can have perfect precision while missing almost all the hot data — which is exactly PMU's failure mode at scale.</p>
+          <div class="ready"><b>Now you're ready:</b> these two numbers, measured against known "ground truth" access patterns in synthetic microbenchmarks, are the paper's main way of comparing techniques (Worked Examples 1–2).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>MGLRU: Linux's newer generational reclaim<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>MGLRU</b> (Multi-Generational LRU) replaces the classic active/inactive page-reclaim split with several numbered "generations." Each scan checks the leaf-level ACCESSED bit for every page to decide whether to promote it to a newer generation — an exhaustive, linear-scanning process at heart.</p>
+          <div class="ready"><b>Now you're ready:</b> Telescope's insight applies here too — MGLRU-TS (How It Works, step 8) skips scanning entire subtrees whose higher-level ACCESSED bit is already clear.</div>
+        </div>
+      </details>
+    </div>
+
+    <div class="subhead">Quick glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>Telescope</b><span>The paper's page-table-profiling telemetry technique for identifying hot/cold data at terabyte scale.</span></div>
+      <div class="term-def"><b>PGD / PUD / PMD / PTE</b><span>The four levels of an x86-64 page table, root to leaf, each covering progressively smaller address ranges.</span></div>
+      <div class="term-def"><b>ACCESSED bit</b><span>A hardware-set flag at every page-table level touched during a page walk, indicating recent access.</span></div>
+      <div class="term-def"><b>Bounded variant</b><span>Picks the highest page-table level whose covered range fits entirely inside a region's bounds.</span></div>
+      <div class="term-def"><b>Flex variant</b><span>Allows the picked level to exceed region bounds within a tunable error threshold, for better coverage.</span></div>
+      <div class="term-def"><b>MGLRU-TS</b><span>Telescope's insight applied to Linux's Multi-Generational LRU scanner, skipping cold subtrees during a scan.</span></div>
+      <div class="term-def"><b>DAMON</b><span>Data Access Monitor — Linux's mainline region-based sampling telemetry technique, Telescope's main point of comparison.</span></div>
+      <div class="term-def"><b>PEBS</b><span>Processor Event-Based Sampling — Intel's hardware performance-monitoring mechanism, sampled at 5–10 kHz in the evaluation.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Telescope in a nutshell</h2>
+      <p class="sub">The problem, the mechanism that fixes it, and how it all connects.</p>
+    </div>
+    <div class="prose">
+      <p>The paper's framing is blunt: <b>"memory tiering is only as good as the telemetry."</b> Every existing hot/cold detection technique falls into one of three buckets, and all three degrade sharply as memory footprint scales into the terabytes. <span class="mem-chip chip-lru">Linear scanning</span> is exact but its scan time grows with the number of pages — orders of seconds at terabyte scale. <span class="mem-chip chip-lru">Region-based sampling</span> (DAMON) has a sampling probability of finding the actual hot pages that shrinks as regions get larger, and at 100 GB its precision and recall both collapse to zero. <span class="mem-chip chip-lru">Hardware counters</span> (PEBS) have no false positives but suffer high false negatives at scale, since higher sampling rates needed to catch rare hot pages generate so many interrupts that Linux automatically throttles them.</p>
+      <p><b>Telescope's</b> insight: the hardware already sets the ACCESSED bit at <em>every</em> level of the page-table tree during a page walk, not just the leaf. A hot data page therefore has hot PTE, PMD, PUD, <em>and</em> PGD entries along its path — and conversely, a cold higher-level entry means the entire multi-gigabyte (or multi-hundred-gigabyte) subtree beneath it is cold, full stop, with no need to check a single page inside it. Telescope profiles top-down: start by checking coarse, high-level entries; only descend into a subtree if its bit is set; converge naturally onto the specific hot 4 KiB pages while instantly ruling out everything else. Two variants — <b>bounded</b> (never overshoots a region's boundary) and <b>flex</b> (allows a small, tunable overshoot for better coverage) — trade convergence speed against coverage accuracy. The same insight, applied to Linux's MGLRU scanner, becomes <b>MGLRU-TS</b>: skip scanning any subtree whose higher-level bit is already clear.</p>
+      <p><strong>The payoff, as measured:</strong> <b>90%+</b> precision and recall at 5 TB, where DAMON's precision and recall are near <b>0%</b> and PEBS's recall is under <b>10%</b>; under <b>0.9%</b> single-CPU utilization for the telemetry itself; <b>5.6% to 34.4%</b> real-application throughput improvement across Memcached and Redis at 1–2 TB footprints; and, applied to MGLRU, a <b>12.38%</b> faster scan with <b>8%</b> higher Memcached throughput.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>All three existing telemetry approaches — linear scanning, region-based sampling, hardware counters — degrade sharply as footprint scales to terabytes, for three different underlying reasons (Table 1).</li>
+        <li><b>Telescope's</b> insight: the hardware-set ACCESSED bit exists at every page-table level, not just the leaf — a cold higher-level entry proves an entire subtree beneath it is cold, with zero pages checked.</li>
+        <li>Two variants trade convergence speed against region-boundary accuracy: <b>bounded</b> (exact, may need multiple lower-level entries for odd-shaped regions) and <b>flex</b> (allows a tunable overshoot for better single-entry coverage).</li>
+        <li>The same top-down-skip insight applied to Linux's MGLRU scanner (<b>MGLRU-TS</b>) speeds up reclaim scanning itself, not just tiering telemetry.</li>
+        <li>Result: 90%+ precision/recall at 5 TB (vs. ~0% for DAMON), under 0.9% CPU overhead, up to 34.4% real-app throughput gain, and 12.38% faster MGLRU scans — accuracy and efficiency together, not a trade-off between them.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">One clear bit rules out a whole subtree</div>
+      <div class="viz-kicker">a PGD entry with ACCESSED clear means nothing beneath it — up to 512 GB — needs checking</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> ACCESSED set — descend</span>
+        <span><i style="background:var(--optane)"></i> ACCESSED clear — skip entire subtree</span>
+      </div>
+      <svg class="full" viewBox="0 0 860 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Telescope page-table convergence diagram">
+        <text x="430" y="28" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="700" fill="#6E6456">PGD (root) — 512 entries, each covers 512 GB</text>
+        <rect x="330" y="38" width="200" height="34" rx="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="430" y="60" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" fill="#1f5b51">entry 211 — ACCESSED=1</text>
+        <rect x="20" y="38" width="180" height="34" rx="6" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.5"/>
+        <text x="110" y="60" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" fill="#8a3c26">entries 0–210 — clear</text>
+        <rect x="660" y="38" width="180" height="34" rx="6" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.5"/>
+        <text x="750" y="60" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" fill="#8a3c26">entries 212–511 — clear</text>
+        <text x="110" y="100" text-anchor="middle" font-family="Mulish,sans-serif" font-size="12" fill="#9A8E7C">✗ 211 × 512 GB skipped, no pages touched</text>
+        <text x="750" y="100" text-anchor="middle" font-family="Mulish,sans-serif" font-size="12" fill="#9A8E7C">✗ 300 × 512 GB skipped, no pages touched</text>
+        <line x1="430" y1="72" x2="430" y2="110" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="430" y="128" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="700" fill="#6E6456">descend to PUD — only entry 211's 512 GB subtree</text>
+        <rect x="370" y="138" width="120" height="30" rx="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="430" y="158" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10.5" fill="#1f5b51">a few set bits</text>
+        <line x1="430" y1="168" x2="430" y2="195" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="430" y="212" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="700" fill="#6E6456">descend to PMD → PTE — converge onto the actual hot 4 KiB pages</text>
+        <rect x="370" y="222" width="120" height="26" rx="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="430" y="240" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" fill="#1f5b51">hot 4 KiB pages found</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> at every level, an entry with a clear ACCESSED bit immediately eliminates its entire subtree from further consideration — most of a 5 TB address space is ruled out after checking just a few hundred bits at the root. (Paper, Fig. 3)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">From "scan everything" to "prune from the root"</div>
+      <div class="viz-kicker">three failing baselines, one shared insight, two tunable variants</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Linear scan too slow, sampling too imprecise, PMU too interrupt-heavy at TB scale</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Insight</div><div class="nd">ACCESSED bit is set at every page-table level during a hardware walk, not just PTE</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Bounded / Flex</div><div class="nd">Pick a page-table level per region; converge top-down, skip clear subtrees</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">90%+ precision/recall at 5 TB, &lt;0.9% CPU, up to 34.4% app throughput gain</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>What Telescope feels like</h2>
+      <p class="sub">Every analogy below is useful for one part of the intuition and wrong for another — the "where it breaks" line is as important as the picture itself.</p>
+    </div>
+
+    <div class="analogy-grid">
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="20" y="10" width="100" height="76" rx="6" fill="#FFFDF8" stroke="#D8C8AC"/><circle cx="35" cy="24" r="5" fill="#2C8C7C"/><circle cx="35" cy="40" r="5" fill="#F7E1D8" stroke="#C0563B"/><circle cx="35" cy="56" r="5" fill="#F7E1D8" stroke="#C0563B"/><circle cx="35" cy="72" r="5" fill="#F7E1D8" stroke="#C0563B"/></svg></div>
+        <span class="term">A building's master breaker panel</span>
+        <h3>Check the whole floor's switch first</h3>
+        <p>If a building's third-floor master breaker is off, you already know every room on that floor is dark — no need to walk the hallway checking each door. Telescope's PGD-level check works the same way: one bit rules out everything beneath it at once.</p>
+        <div class="breaks">Where it breaks: a real breaker panel has no equivalent of "flex" — it's a strict on/off per floor, with no tunable overshoot the way Telescope's flex variant allows for an oddly-shaped region.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="15" y="15" width="50" height="66" rx="4" fill="#FFFDF8" stroke="#D8C8AC"/><rect x="75" y="15" width="50" height="66" rx="4" fill="#FFFDF8" stroke="#D8C8AC"/><text x="40" y="45" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#2C8C7C">Floor 3</text><text x="100" y="45" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#C0563B">Floor 7</text></svg></div>
+        <span class="term">A library's "nothing checked out this month" sign</span>
+        <h3>Skip the whole floor, not shelf by shelf</h3>
+        <p>A library that tracks "was anything on this floor checked out this month?" as one aggregate fact can skip inspecting every individual shelf on a quiet floor. Region-based sampling, by contrast, is like spot-checking three random books per floor and guessing from there — much easier to miss the one popular book.</p>
+        <div class="breaks">Where it breaks: a library's floor-level fact doesn't nest recursively the way page-table levels do (floor → shelf → book → page) — Telescope's real advantage is that the same trick applies at every level down.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><circle cx="45" cy="48" r="30" fill="none" stroke="#5A61B4" stroke-width="2"/><circle cx="45" cy="48" r="14" fill="none" stroke="#2C8C7C" stroke-width="2"/><circle cx="45" cy="48" r="4" fill="#C0563B"/></svg></div>
+        <span class="term">Zooming a map app before zooming in</span>
+        <h3>Country, then state, then street</h3>
+        <p>You don't scan every street in a country to find one address — you zoom from country to state to city to street, only descending where the thing you're looking for actually is. Telescope's PGD→PUD→PMD→PTE descent is exactly this kind of progressive zoom.</p>
+        <div class="breaks">Where it breaks: a map app's zoom levels are fixed visual convenience; Telescope's levels are dictated by real hardware structure (the page table itself), and skipping a level isn't optional the way jumping straight to street view can be.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="20" y="20" width="100" height="16" rx="3" fill="#F7E1D8" stroke="#C0563B"/><rect x="20" y="42" width="100" height="16" rx="3" fill="#F7E1D8" stroke="#C0563B"/><rect x="20" y="64" width="60" height="16" rx="3" fill="#DCEFE9" stroke="#2C8C7C"/></svg></div>
+        <span class="term">A property line vs. a lenient easement</span>
+        <h3>Bounded stays strictly inside the fence</h3>
+        <p>A "bounded" survey never claims land beyond your actual lot line, even if that means describing your lot with several small parcels instead of one clean rectangle. A "flex" survey allows a little rounding beyond the fence if it makes the paperwork simpler — at the cost of a small, bounded inaccuracy.</p>
+        <div class="breaks">Where it breaks: a real easement is a one-time legal allowance; Telescope's flex threshold (15% at PUD, 25% at PMD) is re-applied fresh every profiling window, not a permanent grant.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="20" y="30" width="100" height="40" rx="6" fill="#FFFDF8" stroke="#D8C8AC"/><circle cx="40" cy="50" r="6" fill="#2C8C7C"/><circle cx="70" cy="50" r="6" fill="#F7E1D8" stroke="#C0563B"/><circle cx="100" cy="50" r="6" fill="#F7E1D8" stroke="#C0563B"/></svg></div>
+        <span class="term">A warehouse motion-sensor audit</span>
+        <h3>Skip the whole aisle if its sensor never fired</h3>
+        <p>An inventory audit that checks one motion sensor per aisle can skip walking an entire quiet aisle end-to-end. MGLRU-TS does exactly this for reclaim scanning — a clear PGD-level bit for a subtree means skipping potentially hundreds of thousands of leaf-level checks underneath it.</p>
+        <div class="breaks">Where it breaks: a warehouse aisle is a flat list; the page table is a nested tree, so MGLRU-TS's savings compound at every level it can skip, not just once.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="20" y="20" width="100" height="16" rx="3" fill="#DCEFE9" stroke="#2C8C7C"/><rect x="20" y="42" width="100" height="16" rx="3" fill="#F7E1D8" stroke="#C0563B"/><rect x="20" y="64" width="100" height="16" rx="3" fill="#F7E1D8" stroke="#C0563B"/></svg></div>
+        <span class="term">A metal detector at the gate, not a full pat-down</span>
+        <h3>Cheap enough to run on everyone, all the time</h3>
+        <p>PMU-based sampling is like pulling aside 1-in-1000 people for a thorough (accurate) search — precise about who it catches, but bound to miss most people carrying something. Reading an always-updated hardware bit is like a metal detector every single person walks through — cheap enough to apply universally, so nothing structurally gets missed.</p>
+        <div class="breaks">Where it breaks: the ACCESSED bit still only tells you "was this touched," not how many times or how recently within the window — Telescope's region hotness score (How It Works, step 3) needs repeated profiling windows to build that up.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Mechanism, step by step</div>
+      <h2>From a region to a converged hot page</h2>
+      <p class="sub">Ten steps, from the underlying hardware fact to the two tunable profiling variants and the MGLRU extension.</p>
+    </div>
+
+    <ol class="seq prose">
+      <li><b>The hardware fact this all rests on.</b> During a TLB-miss page walk on x86-64, the hardware sets the ACCESSED bit not only in the final PTE but in every PGD, PUD, and PMD entry it traverses to get there. This happens on every ordinary memory access — no special profiling mode needed.</li>
+      <li><b>What that implies, formally.</b> If a data page was accessed, its entire path of table entries (PTE, PMD, PUD, PGD) has ACCESSED set. Conversely, if a PGD entry's ACCESSED bit is clear, <em>none</em> of the up-to-512 GB of address space beneath it has been accessed since the bit was last reset — the entire subtree is provably cold.</li>
+      <li><b>Region management, borrowed from DAMON.</b> Telescope divides the application's virtual address space into regions, each assigned a hotness score from an access count measured over a profiling window. Hot regions are split into smaller sub-regions for finer tracking; cold regions with similar scores are merged to reduce bookkeeping.</li>
+      <li><b>Region profiling: pick one page-table level.</b> For each region, in each profiling window, Telescope identifies a single page-table entry level (somewhere between PTE and PGD) to track. It resets that entry's ACCESSED bit at the window's start and checks it at the end — if set, one or more data pages under that entry were touched during the window.</li>
+      <li><b>The bounded variant.</b> Bounded picks the <em>highest</em> page-table level whose covered address range fits entirely within the region's own bounds — never spanning outside it. This maximizes convergence speed (a single bit can stand in for a huge range) but can force a fallback to several entries at a lower level when a region's size doesn't cleanly align with any single higher-level entry's range.</li>
+      <li><b>The flex variant.</b> Flex allows the picked entry to extend slightly beyond the region's bounds, within a per-level error threshold — 15% at PUD, 25% at PMD in the paper's tuning. This improves single-entry coverage for oddly-sized regions at a small, bounded accuracy cost; when even the threshold can't be satisfied, flex falls back to the same multi-entry approach bounded uses.</li>
+      <li><b>Convergence in practice.</b> Profiling proceeds top-down: check the identified PGD-level entries first; for any with ACCESSED set, profile that subtree's PUD entries next window; continue down through PMD to PTE. Every level with a clear bit ends that branch of the search immediately — cold regions are identified and left alone without ever touching a leaf-level bit.</li>
+      <li>
+        <b>The same trick applied to scanning: MGLRU-TS.</b>
+        <div class="callout why" style="margin:10px 0 0">
+          <div class="ic">💡</div>
+          <div>Stock MGLRU scans the leaf (PTE) level exhaustively to decide which pages to promote to a newer LRU generation. <b>MGLRU-TS</b> first checks the PGD-level ACCESSED bit for each subtree; if clear, it skips the entire subtree — potentially avoiding checking up to <b>262,144</b> PTE-level bits the paper's own worked example uses to illustrate the savings from skipping just one PUD-level subtree.</div>
+        </div>
+      </li>
+      <li><b>Migration policy on top (not the paper's main contribution, but how it's used).</b> Regions with an access count above a threshold (5, in a 120-second window) in the evaluation are considered hot; very large hot regions (≥4 GB) are left for later splitting into finer sub-regions rather than migrated whole; migration proceeds in descending hotness order until a per-step DRAM budget (10 GB in the paper) is reached.</li>
+      <li><b>Portability.</b> The mechanism only assumes a radix-tree page table with per-level access bits set during a hardware walk — true of x86-64, ARM, RISC-V, and POWER architectures alike, so nothing about the core idea is Intel- or x86-specific, even though the implementation and evaluation are done in Linux on x86-64.</li>
+    </ol>
+
+    <!-- SECOND DIAGRAM: bounded vs flex -->
+    <figure class="viz reveal">
+      <div class="viz-title">Bounded vs. flex, on the same 450 GB region</div>
+      <div class="viz-kicker">a region that doesn't cleanly align with a single higher-level entry</div>
+      <svg class="full" viewBox="0 0 860 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Bounded versus flex variant comparison">
+        <text x="215" y="24" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="700" fill="#6E6456">Bounded — falls back to finer entries</text>
+        <rect x="30" y="36" width="370" height="30" rx="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="215" y="56" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10.5" fill="#1f5b51">region: 450 GB (region bounds respected exactly)</text>
+        <rect x="30" y="76" width="60" height="22" rx="4" fill="#fff" stroke="#5A61B4"/><rect x="95" y="76" width="60" height="22" rx="4" fill="#fff" stroke="#5A61B4"/><rect x="160" y="76" width="60" height="22" rx="4" fill="#fff" stroke="#5A61B4"/><rect x="225" y="76" width="60" height="22" rx="4" fill="#fff" stroke="#5A61B4"/><rect x="290" y="76" width="60" height="22" rx="4" fill="#fff" stroke="#5A61B4"/><rect x="355" y="76" width="45" height="22" rx="4" fill="#fff" stroke="#5A61B4"/>
+        <text x="215" y="106" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9.5" fill="#3a409a">multiple PUD entries needed to cover it exactly</text>
+        <text x="645" y="24" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="700" fill="#6E6456">Flex — one PGD entry, slight overshoot</text>
+        <rect x="460" y="36" width="370" height="30" rx="6" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.5"/>
+        <text x="645" y="56" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10.5" fill="#8a3c26">region: 450 GB — PGD entry covers 512 GB (72 GB over, within 15% threshold)</text>
+        <rect x="460" y="76" width="370" height="22" rx="4" fill="#fff" stroke="#5A61B4"/>
+        <text x="645" y="92" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9.5" fill="#3a409a">a single PGD entry — one bit covers the whole region</text>
+        <text x="430" y="140" text-anchor="middle" font-family="Mulish,sans-serif" font-size="12" fill="#6E6456">Bounded never over-covers, at the cost of needing more entries for odd-sized regions.</text>
+        <text x="430" y="160" text-anchor="middle" font-family="Mulish,sans-serif" font-size="12" fill="#6E6456">Flex trades a small, thresholded overshoot for one-entry convergence speed.</text>
+      </svg>
+      <figcaption><b>Why this matters:</b> region sizes rarely align neatly with page-table boundaries in practice — the choice between bounded and flex is a real accuracy/speed trade-off the paper tunes per level, not a purely theoretical one. (Paper, Fig. 4 &amp; 5)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Real numbers from the paper</div>
+      <h2>Seven ways to see the difference</h2>
+      <p class="sub">Every number below is from the paper's own evaluation (4-socket Intel Xeon Gold 6238M, 176 cores, 768 GB DRAM near tier + 6 TB Optane DC PMM far tier, Fedora 30 / Linux 5.18.19).</p>
+    </div>
+
+    <div class="card">
+      <h3>1 · Precision and recall at 5 TB (multi-phase microbenchmark)</h3>
+      <p>Across all three phases of a 5 TB synthetic workload (MASIM) that relocates its hot region twice mid-run, DAMON's precision and recall are <b>mostly 0</b> — at terabyte scale, the probability a random sample lands on the actual hot data is simply too low. PMU's precision stays near <b>1.0</b> (few false positives) but its recall is <b>under 0.1</b> — it structurally can't generate enough samples to cover a large hot region. Both variants of Telescope stay <b>above 0.9</b> precision and recall through every phase, including the moments right after the hot region relocates.</p>
+    </div>
+
+    <div class="card">
+      <h3>2 · Where DAMON and PMU actually start failing</h3>
+      <p>At a 1 GB footprint with a 10% hot region, DAMON and PMU both achieve 90%+ precision and recall. At <b>10 GB</b>, DAMON's recall already drops sharply. At <b>100 GB</b>, DAMON's precision and recall both fall to <b>zero</b> — the whole region gets marked cold because sampling never lands on the hot pages. PMU's precision stays high, but its hot-data coverage keeps shrinking as the total number of hot pages grows. Both Telescope variants keep high precision and recall across all three sizes.</p>
+      <div class="bars">
+        <div class="bar-row"><div class="bar-label">DAMON<br><small>100 GB, recall</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="2"><span>~0%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Telescope<br><small>100 GB, recall</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="95"><span>90%+</span></div></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>3 · CPU overhead: cycles and utilization</h3>
+      <p>For the SubTB-10GB microbenchmark, DAMON-AGG (aggressive sampling) consumes <b>68.22 billion</b> CPU cycles and <b>14.7%</b> of a single core, while Telescope-BND uses only <b>3.20 billion</b> cycles at <b>0.8%</b> utilization — roughly a 20× reduction in cycles for a technique that's simultaneously far more accurate. Across every microbenchmark configuration, both Telescope variants stay under 0.9% single-core utilization; PMU is excluded from this comparison since its sampling is handled by hardware rather than a separate kernel thread.</p>
+    </div>
+
+    <div class="card">
+      <h3>4 · Real-application throughput: up to 34.4%</h3>
+      <p>Running Memcached and Redis with YCSB and memtier load generators at 1–2 TB memory footprints on the full tiered system: Telescope-driven migration improved throughput by <b>5.6% to 34.4%</b> over an untiered baseline. DAMON-driven migration <b>could not identify a single hot data page</b> at this scale, so its throughput improvement was essentially nil. PMU-driven migration found only "a few gigabytes" of the actual hot data set, producing marginal gains in some cases and none in others.</p>
+    </div>
+
+    <div class="callout why">
+      <div class="ic">💡</div>
+      <div><b>5 · Not just throughput — tail latency too.</b> For Memcached with YCSB, 95th-percentile latency was <b>867 ms</b> (Telescope-BND) and <b>824 ms</b> (Telescope-FLX) versus <b>881 ms</b> (DAMON-MOD) and <b>976 ms</b> (PMU-AGG). Telescope wins on both throughput and tail latency simultaneously — better telemetry means fewer far-memory accesses on the critical path, not a trade-off between speed and accuracy.</div>
+    </div>
+
+    <div class="card">
+      <h3>6 · MGLRU-TS: faster scans, real throughput gain</h3>
+      <p>Applying Telescope's insight to Linux's MGLRU scanner on a 2-socket, 72-core, 1 TB DRAM system running Memcached with memtier (≈976 GB populated): a single scan took <b>12.77 s</b> for MGLRU-TS versus <b>14.57 s</b> for stock MGLRU — a <b>12.38%</b> improvement — while consuming <b>15.5%</b> fewer CPU cycles (46.85B vs. 53.15B over 100 iterations) and improving Memcached throughput by <b>8%</b>.</p>
+      <div class="stat-grid" style="margin-top:14px">
+        <div class="stat-card"><div class="big">12.38%</div><div class="lab">faster scan</div></div>
+        <div class="stat-card"><div class="big">15.5%</div><div class="lab">fewer CPU cycles</div></div>
+        <div class="stat-card"><div class="big">+8%</div><div class="lab">memcached throughput</div></div>
+      </div>
+    </div>
+
+    <div class="callout warn">
+      <div class="ic">⚠</div>
+      <div><b>7 · The honest limitation.</b> For the real-world application benchmarks, there's no independently-known "ground truth" for which pages are actually hot — unlike the synthetic microbenchmarks, precision and recall can't be directly computed. The paper's own workaround is to visualize telemetry output as heatmaps and rely on measured throughput/latency as an indirect proxy for correctness, which is a real limit on how rigorously the real-app results can be verified.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Check your understanding</div>
+      <h2>Five questions, misconceptions flagged</h2>
+      <p class="sub">Try answering before revealing — each answer names a specific misconception it's checking for.</p>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Medium</span>
+      <div class="qtext">Q1. Does Telescope eliminate the need to ever check the leaf-level (PTE) ACCESSED bit?</div>
+      <details><summary>Show answer</summary><div class="ans">No. It still checks PTE-level bits to find the actual hot 4 KiB pages — it just avoids doing so across the <em>entire</em> address space by ruling out cold subtrees at higher levels first. The savings come from skipping, not from never looking at all.<span class="mis">Misconception checked: assuming "page-table profiling" means never touching the leaf level.</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag medium">Medium</span>
+      <div class="qtext">Q2. Is Telescope itself a page-migration policy?</div>
+      <details><summary>Show answer</summary><div class="ans">No — Telescope is a telemetry technique: it identifies which regions are hot or cold. The migration policy built on top (hotness threshold, skipping very large regions, a per-step DRAM budget) is a separate, comparatively simple layer, largely reusing ideas from prior tiered-memory work rather than being the paper's contribution.<span class="mis">Misconception checked: conflating "detects hot data" with "decides what to do about it."</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag hard">Hard</span>
+      <div class="qtext">Q3. Does the bounded variant always cover a region with exactly one page-table entry?</div>
+      <details><summary>Show answer</summary><div class="ans">No — if a region's size and alignment don't match any single page-table level's coverage exactly, bounded falls back to using multiple entries at a finer level to stay strictly within the region's bounds. That's precisely the scenario the flex variant is designed to handle more efficiently, at the cost of a small, thresholded overshoot.<span class="mis">Misconception checked: assuming "bounded" implies "always one entry, always fast."</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag hard">Hard</span>
+      <div class="qtext">Q4. Is Telescope's advantage purely about lower CPU overhead, with DAMON/PMU still being "correct, just slower"?</div>
+      <details><summary>Show answer</summary><div class="ans">No — the paper shows DAMON and PMU aren't just slower, they're actually <em>wrong</em> at terabyte scale: DAMON's precision and recall collapse to near 0% at 100 GB, and PMU's recall drops under 10% at 5 TB. Telescope is simultaneously cheaper (under 0.9% CPU) <em>and</em> more accurate (90%+ precision/recall) — not a speed/accuracy trade-off.<span class="mis">Misconception checked: treating all telemetry techniques as differing only in overhead, not correctness.</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag easy">Easy</span>
+      <div class="qtext">Q5. Does MGLRU-TS still eventually check every PTE-level bit for a hot subtree?</div>
+      <details><summary>Show answer</summary><div class="ans">Yes, for subtrees that are actually hot — the savings come entirely from skipping <em>cold</em> subtrees. The paper's own example: checking one PGD-level bit and finding it clear substitutes for what would otherwise be up to 262,144 individual PTE-level ACCESSED-bit checks underneath that one entry.<span class="mis">Misconception checked: assuming the speedup means hot data is scanned less thoroughly too.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Common questions</div>
+      <h2>FAQ</h2>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q·</span>Where does the name "Telescope" come from?<span class="chev">▾</span></summary><div class="a">The paper doesn't spell out the etymology explicitly, but it fits the mechanism well: profiling starts with a wide, coarse field of view (whole page-table subtrees covering hundreds of gigabytes) and progressively narrows — converges — down to individual hot 4 KiB pages, much like zooming a telescope from a wide sky view to one star.</div></details>
+      <details><summary><span class="q">Q·</span>Is this specific to Intel hardware or Optane?<span class="chev">▾</span></summary><div class="a">No — the evaluation happens to use Intel Optane DC Persistent Memory as the far-memory tier and an Intel Xeon platform, but the mechanism only assumes a radix-tree page table with per-level access bits set during a hardware walk. The paper explicitly notes this holds for x86-64, ARM, RISC-V, and POWER architectures.</div></details>
+      <details><summary><span class="q">Q·</span>How is this different from DAMON, which is already in mainline Linux?<span class="chev">▾</span></summary><div class="a">DAMON checks the ACCESSED bit only at the leaf (PTE) level and estimates a region's hotness by randomly sampling a few pages inside it. Telescope checks the ACCESSED bit at every page-table level and uses it to deterministically rule out entire cold subtrees, rather than statistically guessing from a small sample.</div></details>
+      <details><summary><span class="q">Q·</span>Does Telescope need new hardware support?<span class="chev">▾</span></summary><div class="a">No — it relies entirely on the ACCESSED bit that radix-page-table architectures already set during an ordinary hardware page walk. No new PMU events, no new instructions, no firmware changes.</div></details>
+      <details><summary><span class="q">Q·</span>What's the honest catch?<span class="chev">▾</span></summary><div class="a">Two things the paper is upfront about. First, the bounded/flex error thresholds (15% at PUD, 25% at PMD) were tuned for the paper's own evaluation workloads — a workload with a pathological address-space layout could still force many small-level fallback entries. Second, like DAMON, real-world application benchmarks have no independently-known "ground truth," so precision/recall can't be directly measured there — the paper relies on heatmaps and throughput/latency as an indirect proxy instead (Worked Example 7).</div></details>
+      <details><summary><span class="q">Q·</span>Does this replace DAMON in mainline Linux?<span class="chev">▾</span></summary><div class="a">Not as shipped. Telescope is implemented in Linux and evaluated head-to-head against DAMON and PEBS-based approaches, but it's a research prototype from the paper, not a merged replacement for DAMON in the mainline kernel.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">For the record</div>
+      <h2>Reference</h2>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-card"><div class="big">90%+</div><div class="lab">precision/recall</div><div class="sub">at 5 TB, both variants</div></div>
+      <div class="stat-card"><div class="big">~0%</div><div class="lab">DAMON precision/recall</div><div class="sub">at 100 GB footprint</div></div>
+      <div class="stat-card"><div class="big">&lt;0.9%</div><div class="lab">CPU utilization</div><div class="sub">telemetry overhead alone</div></div>
+      <div class="stat-card"><div class="big">34.4%</div><div class="lab">real-app throughput gain</div><div class="sub">peak, Memcached/Redis</div></div>
+      <div class="stat-card"><div class="big">12.38%</div><div class="lab">faster MGLRU scan</div><div class="sub">MGLRU-TS vs. stock MGLRU</div></div>
+      <div class="stat-card"><div class="big">176</div><div class="lab">cores in eval system</div><div class="sub">4-socket Xeon Gold 6238M</div></div>
+    </div>
+
+    <div class="subhead">Telemetry technique comparison (paper's Table 1)</div>
+    <table class="tbl">
+      <thead><tr><th>Category</th><th>Pros</th><th>Cons</th><th>Examples</th></tr></thead>
+      <tbody>
+        <tr><td>Linear scanning</td><td class="mono">no false positives/negatives</td><td class="mono">scan time scales with page count</td><td class="mono">kstaled, idle page tracking, MGLRU, TPP</td></tr>
+        <tr><td>Region-based sampling</td><td class="mono">low profiling overhead</td><td class="mono">fails to converge at TB scale</td><td class="mono">DAMON, Thermostat, MTM</td></tr>
+        <tr><td>Hardware counters</td><td class="mono">no false positives</td><td class="mono">high false negatives at scale</td><td class="mono">PEBS, HeMem, TPP-Chameleon, MEMTIS</td></tr>
+        <tr class="best"><td><b>Page table profiling</b></td><td class="mono">seamlessly scales to gargantuan footprints</td><td class="mono">—</td><td class="mono"><b>Telescope</b></td></tr>
+      </tbody>
+    </table>
+
+    <div class="subhead">Glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>PGD / PUD / PMD / PTE</b><span>The four x86-64 page-table levels, covering 512 GB, 1 GB, 2 MB, and 4 KiB of address space respectively.</span></div>
+      <div class="term-def"><b>ACCESSED bit</b><span>Hardware-set flag at every page-table level touched during a page walk; the entire mechanism's foundation.</span></div>
+      <div class="term-def"><b>Bounded variant</b><span>Picks the highest page-table level whose range fits entirely within a region's bounds.</span></div>
+      <div class="term-def"><b>Flex variant</b><span>Allows a tunable overshoot beyond region bounds for better single-entry coverage.</span></div>
+      <div class="term-def"><b>MGLRU-TS</b><span>Telescope's insight applied to Linux's Multi-Generational LRU reclaim scanner.</span></div>
+      <div class="term-def"><b>Precision / recall</b><span>Fraction of labeled-hot pages that are truly hot / fraction of truly-hot pages successfully found.</span></div>
+      <div class="term-def"><b>DAMON</b><span>Data Access Monitor — mainline Linux's region-based sampling telemetry technique.</span></div>
+      <div class="term-def"><b>PEBS</b><span>Processor Event-Based Sampling — Intel's hardware performance-monitoring mechanism.</span></div>
+    </div>
+
+    <div class="subhead">Further reading</div>
+    <div class="read-item"><h4>Telescope: Telemetry for Gargantuan Memory Footprint Applications <span class="diff med">medium</span></h4><div class="meta">Nair, Kumar, Prasad, Huang, Rudoff, Subramoney · USENIX ATC 2024</div><p>The primary source this entire guide is built from — abstract, evaluation numbers, and design details verified directly against the paper's own text and figures.</p></div>
+    <div class="read-item"><h4>AutoTiering — a companion field guide <span class="diff easy">easy</span></h4><div class="meta">This site's own explainer for the page-<em>placement</em> policy layer that sits above telemetry</div><p>Useful context: Telescope answers "what's hot," AutoTiering-style policies answer "what to do about it once you know."</p></div>
+    <div class="read-item"><h4>DAMON — kernel documentation <span class="diff hard">hard</span></h4><div class="meta">Linux kernel docs, Documentation/admin-guide/mm/damon</div><p>The mainline region-based sampling technique Telescope is measured against throughout the paper's evaluation.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <p style="color:var(--ink-soft);font-size:.95rem;max-width:74ch">All numbers on this page are drawn directly from the paper's text, figures, and Tables 1–5, read from the user's own uploaded copy of the PDF.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Nair, Kumar, Prasad, Huang, Rudoff, Subramoney, "Telescope: Telemetry for Gargantuan Memory Footprint Applications" (USENIX ATC 2024)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source paper</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  function maybeAnimateBars(){
+    document.querySelectorAll('.bars:not(.shown)').forEach(function(bars){
+      var fig = bars.closest('.tab-panel');
+      if(!fig || !fig.classList.contains('active')) return;
+      bars.querySelectorAll('.bar-fill').forEach(function(f,i){
+        var w = Math.min(100, parseFloat(f.dataset.w || 0));
+        setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+      });
+      bars.classList.add('shown');
+    });
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
