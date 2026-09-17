@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<!-- Start-Gap field guide — "Enhancing Lifetime and Security of PCM-Based Main Memory with
+     Start-Gap Wear Leveling" (Qureshi, Karidis, Franceschini, Srinivasan, Lastras, Abali —
+     IBM Research, T. J. Watson Research Center, MICRO 2009).
+     Built in the house style (see guides/ucp.html) as a companion to the other memory-systems
+     guides on this site. Semantic colors: teal = the paper's own mechanism (Start-Gap, Gap
+     Movement/Rotation, Randomized Start-Gap, Region-Based Start-Gap) · indigo = neutral
+     underlying machinery/math (registers, the address-mapping formula, PCM physics) ·
+     terracotta = the failing baseline / the problem (non-uniform writes, Table-Based Wear
+     Leveling, the adversarial attack). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Start-Gap — A Field Guide to Tableless PCM Wear Leveling</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<meta name="theme-color" content="#FBF6EC">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;      /* teal   = Start-Gap's own mechanism          */
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;    /* indigo = neutral machinery/math              */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = the failing baseline / problem  */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.1rem,5.6vw,3.7rem);font-weight:600;letter-spacing:-.015em;max-width:20ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.28rem);color:var(--ink-soft);max-width:50ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.1rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:22px 0}
+.stat-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;text-align:center;box-shadow:var(--shadow-sm)}
+.stat-card .big{font-family:var(--display);font-size:2.1rem;font-weight:700;color:var(--honey-deep);line-height:1}
+.stat-card .lab{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint);margin-top:8px}
+.stat-card .sub{font-size:.82rem;color:var(--ink-soft);margin-top:6px}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>MICRO 2009 · A Field Guide</span>
+    <h1>Don't track the hot lines — <span class="swash">just keep all of them moving</span></h1>
+    <p class="lede">Phase Change Memory packs more bits per chip than DRAM, but every cell can only be rewritten a few tens of millions of times before it wears out — and real programs hammer a handful of lines far harder than the rest. This is the plain-English tour of <strong>Start-Gap</strong>, a wear-leveling scheme that needs no write-count table and no indirection lookup — just two small registers and a spare line that never stops sliding.</p>
+    <div class="hero-meta">
+      <span>📄 "Enhancing Lifetime and Security of PCM-Based Main Memory with Start-Gap Wear Leveling" · Qureshi, Karidis, Franceschini, Srinivasan, Lastras, Abali (IBM Research)</span>
+      <span>🎓 A PCM primer is included — no prior memory-systems reading required</span>
+      <span>⏱ ~28 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🔁</div>
+      <p>Don't <span class="wo">spend megabytes tracking which lines are hot</span> — just shift every line past a single moving gap, so <span class="ro">no line can sit still long enough to wear out</span>.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Eight ideas the paper assumes you know</h2>
+      <p class="sub">Each card clears up one concept Start-Gap builds on. They're collapsed — tap any to open. Read in order the first time, or jump to whatever looks unfamiliar.</p>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> Start-Gap's own mechanism</span>
+      <span><i style="background:var(--ltram)"></i> neutral machinery/math</span>
+      <span><i style="background:var(--optane)"></i> the failing baseline / the problem</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Phase Change Memory (PCM), in one paragraph<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>PCM stores a bit by heating a chalcogenide material into either a crystalline (low resistance) or amorphous (high resistance) state. It's roughly 2–4x slower than DRAM for reads, but up to 4x denser, which makes it an attractive way to grow main-memory capacity beyond what DRAM's power and cost budget allows.</p>
+          <div class="ready"><b>Now you're ready:</b> density is the appeal, but PCM comes with a catch DRAM doesn't have — see the next card.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Write endurance: PCM cells wear out<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Each PCM cell can endure only about 10<sup>7</sup>–10<sup>8</sup> writes before it can no longer reliably switch states. That's far more than Flash can survive per cell (10<sup>4</sup>–10<sup>5</sup>), but still low enough that, at realistic write traffic, a PCM-based main memory could wear out within a few years even under ideal conditions.</p>
+          <div class="ready"><b>Now you're ready:</b> "ideal conditions" here means writes spread perfectly evenly across every cell — which real programs don't do, as the next card shows.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Non-uniform write traffic<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Real workloads write to a small number of memory lines far more often than the rest. In the paper's own measurement of the commercial <em>db2</em> workload, one line was written 9,175 times while the average line was written only 64 times — a huge skew, all concentrated on a handful of physical cells.</p>
+          <div class="ready"><b>Now you're ready:</b> those few heavily-written lines fail first, long before the memory's "expected" lifetime — cutting real achievable lifetime to a fraction of the theoretical maximum.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Wear leveling: the general idea<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Wear leveling</b> is any mechanism that redistributes writes so that all cells wear out at roughly the same rate, instead of a few hot cells failing while the rest are barely used. Flash storage has used wear leveling for years; the question this paper asks is how to do it cheaply enough for main memory, where every access is latency-critical.</p>
+          <div class="ready"><b>Now you're ready:</b> the "cheaply enough" part is the whole design problem — see the next card for why the obvious approach doesn't qualify.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Table-Based Wear Leveling (TBWL) — the existing approach<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The standard technique (borrowed from Flash) tracks a write count per block and periodically remaps heavily-written blocks to less-worn ones via a separate indirection table. At PCM's fine 256-byte line granularity, this table has to cover tens of millions of lines — many megabytes of storage — and must be consulted on every single memory access, adding real latency.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the baseline Start-Gap is designed to beat — same goal, without the table.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Algebraic address mapping (no table needed)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Instead of looking up a physical location in a table, an <b>algebraic mapping</b> computes it directly from the logical address using a small, fixed arithmetic formula and a couple of registers. No storage scales with memory size, and no table lookup sits on the access-latency critical path.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the key insight the whole paper is built on — replace the table with a formula.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Address-space randomization (block ciphers, Feistel networks)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>Feistel network</b> is a simple, well-studied way of building a reversible (one-to-one) scrambling function — it's the structure behind DES and other block ciphers. Applied to an address instead of a plaintext message, it can shuffle nearby addresses far apart from each other while still allowing the original address to be recovered exactly.</p>
+          <div class="ready"><b>Now you're ready:</b> Start-Gap borrows this idea not for secrecy, but to break up spatial clusters of heavily-written lines before wear leveling ever sees them.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Denial-of-service via memory wear-out<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Because a PCM cell has a hard write limit, a program that deliberately writes to the same address over and over can push that cell past its endurance limit and disable it permanently — a more severe outcome than an ordinary denial-of-service attack, since the resource doesn't come back once it's dead.</p>
+          <div class="ready"><b>Now you're ready:</b> this is "Problem 2" the paper tackles — a security question that only exists because memory now has a lifespan.</div>
+        </div>
+      </details>
+    </div>
+
+    <div class="subhead">Quick glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>Start-Gap</b><span>The paper's tableless wear-leveling algorithm, using two registers to rotate line placement in memory.</span></div>
+      <div class="term-def"><b>Start / Gap registers</b><span>Two small counters that together determine the current logical-to-physical address mapping.</span></div>
+      <div class="term-def"><b>GapLine</b><span>One spare memory line used as a temporary holding slot during each Gap Movement.</span></div>
+      <div class="term-def"><b>Normalized Endurance (NE)</b><span>The paper's figure of merit: actual lifetime achieved as a percentage of the theoretical maximum.</span></div>
+      <div class="term-def"><b>RIB matrix</b><span>Random Invertible Binary matrix — one of two proposed address-randomization schemes.</span></div>
+      <div class="term-def"><b>Feistel Network</b><span>A three-stage cryptographic-style scrambling function used as the other randomization scheme.</span></div>
+      <div class="term-def"><b>RBSG</b><span>Region-Based Start-Gap — partitions memory into independently-managed regions for security.</span></div>
+      <div class="term-def"><b>DWF</b><span>Delay Write Factor — how much the Delayed Write Policy slows down an attacker's writes.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Start-Gap in a nutshell</h2>
+      <p class="sub">The problem, the mechanism that fixes it, and how it all connects.</p>
+    </div>
+    <div class="prose">
+      <p>PCM's write endurance is high enough that a system with <em>perfectly uniform</em> writes would last 4–20 years. But real workloads aren't uniform — the paper measures a baseline 16GB PCM system achieving only <b>5%</b> of its theoretical maximum lifetime, because a small number of heavily-written lines fail decades before the rest of memory is anywhere near worn out. <span class="mem-chip chip-lru">Table-Based Wear Leveling</span>, the standard fix borrowed from Flash, works — but it needs a write-count table and an indirection table for every line, scaling to hundreds of megabytes at PCM's fine 256-byte granularity, plus a table lookup added to every memory access's critical path.</p>
+      <p><b>Start-Gap's</b> insight: replace the table with algebra. Add one spare line (<b>GapLine</b>) to memory, forming a circular buffer, and track just two small registers — <b>Start</b> and <b>Gap</b>. Every <em>ψ</em> writes to memory (ψ=100 in the paper), Start-Gap performs a <b>Gap Movement</b>: it copies one line's contents into GapLine and decrements Gap, nudging that line into a new physical slot. Once Gap has swept through every line in memory — a <b>Gap Rotation</b> — every single line has shifted by exactly one physical position, and Start increments to record it. The physical address for any logical address is now just <code>((LA + Start) mod N)</code>, adjusted by one if it's past Gap — a handful of logic gates, no storage that scales with memory size, and no lookup table on the critical path.</p>
+      <p>Because Gap only ever swaps a line with its immediate physical neighbor, Start-Gap alone reaches only <b>53%</b> normalized endurance — heavily-written lines that happen to sit near each other in the address space (which real workloads' hot lines usually do) keep swapping with each other rather than with cold lines. The fix is <b>address-space randomization</b>: run every logical address through a fixed, invertible scrambling function (a <b>RIB matrix</b> or a three-stage <b>Feistel network</b>) before Start-Gap ever sees it, breaking up spatial clusters of hot lines. <b>Randomized Start-Gap</b> reaches <b>97%</b> normalized endurance with under 100 bytes of total storage. A separate concern — a targeted write attack can kill a single line in under a minute, and randomization alone doesn't stop that — is addressed by <b>Region-Based Start-Gap (RBSG)</b>, which partitions memory into many small, independently-rotating regions so an attack can't outpace the region's own Gap Movement.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Non-uniform write traffic cuts a PCM system's real achievable lifetime to just <b>5%</b> of the theoretical maximum — a 20x reduction from what uniform writes would achieve.</li>
+        <li><b>Start-Gap's</b> insight: replace the write-count table and indirection table of existing wear-leveling with an <b>algebraic mapping</b> — two small registers (Start, Gap) and one spare line, no storage that scales with memory size.</li>
+        <li>Plain Start-Gap only reaches <b>53%</b> endurance because it only ever swaps a line with its immediate physical neighbor — <b>address-space randomization</b> (RIB matrix or Feistel network) breaks up spatial clustering and pushes that to <b>97%</b>, for under 100 bytes total.</li>
+        <li>Write-limited memory creates a new security threat: a targeted write loop can kill one line in under a minute. <b>Region-Based Start-Gap</b> extends that time-to-failure to months or years by partitioning memory into small, independent regions.</li>
+        <li>Result: 10x better lifetime than the baseline with &lt;8 bytes of storage (Start-Gap alone), and 97% of ideal lifetime with &lt;13 bytes (Randomized Start-Gap) — accuracy and near-zero overhead together, not a trade-off.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">One spare line, and every line eventually moves</div>
+      <div class="viz-kicker">a Gap Movement nudges one line into the spare slot; a full sweep is a Gap Rotation</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> Gap — the moving spare slot</span>
+        <span><i style="background:var(--ltram)"></i> lines already shifted this rotation</span>
+        <span><i style="background:var(--optane)"></i> lines not yet shifted this rotation</span>
+      </div>
+      <svg class="full" viewBox="0 0 860 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Start-Gap circular buffer diagram">
+        <text x="430" y="24" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="700" fill="#6E6456">N lines + 1 spare (GapLine), visualized as a circular buffer</text>
+        <circle cx="430" cy="120" r="86" fill="none" stroke="#D8C8AC" stroke-width="1.5" stroke-dasharray="3 4"/>
+        <circle cx="430" cy="34" r="15" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="430" y="38" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="9.5" fill="#1f5b51">GAP</text>
+        <circle cx="497" cy="53" r="13" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.3"/>
+        <circle cx="516" cy="120" r="13" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.3"/>
+        <circle cx="497" cy="187" r="13" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.3"/>
+        <circle cx="430" cy="206" r="13" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.3"/>
+        <circle cx="363" cy="187" r="13" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.3"/>
+        <circle cx="344" cy="120" r="13" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.3"/>
+        <circle cx="363" cy="53" r="13" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.3"/>
+        <path d="M 430 49 A 86 86 0 0 1 484 66" fill="none" stroke="#2C8C7C" stroke-width="2" marker-end="url(#arrowStartGap)"/>
+        <defs><marker id="arrowStartGap" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2C8C7C"/></marker></defs>
+        <text x="430" y="118" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" fill="#9A8E7C">START = 0</text>
+        <text x="150" y="70" text-anchor="middle" font-family="Mulish,sans-serif" font-size="11.5" fill="#8a3c26">not yet shifted</text>
+        <text x="720" y="70" text-anchor="middle" font-family="Mulish,sans-serif" font-size="11.5" fill="#3a409a">already shifted</text>
+      </svg>
+      <figcaption><b>Read it as a clock face:</b> every ψ writes, Gap moves one position counter-clockwise, pulling one line into the spare slot. Once Gap has gone all the way around, every line has moved by one position and Start advances. (Paper, Fig. 5 &amp; 6)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">From "track every line" to "just keep rotating"</div>
+      <div class="viz-kicker">one failing baseline, one shared insight, two extensions</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Non-uniform writes cut real lifetime to 5% of ideal; table-based fixes cost megabytes and add latency</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Insight</div><div class="nd">Compute physical address algebraically from two small registers — no table, no lookup</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">+ Randomization</div><div class="nd">Scramble addresses first so Start-Gap's neighbor-only moves actually separate hot lines</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">97% of ideal lifetime, &lt;13 bytes overhead, months-to-years survival under attack (RBSG)</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>What Start-Gap feels like</h2>
+      <p class="sub">Every analogy below is useful for one part of the intuition and wrong for another — the "where it breaks" line is as important as the picture itself.</p>
+    </div>
+
+    <div class="analogy-grid">
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="15" y="15" width="30" height="30" rx="4" fill="#DCEFE9" stroke="#2C8C7C"/><rect x="50" y="15" width="30" height="30" rx="4" fill="#FFFDF8" stroke="#D8C8AC"/><rect x="85" y="15" width="30" height="30" rx="4" fill="#FFFDF8" stroke="#D8C8AC"/><rect x="15" y="50" width="30" height="30" rx="4" fill="#FFFDF8" stroke="#D8C8AC"/><rect x="50" y="50" width="30" height="30" rx="4" fill="none" stroke="#C0563B" stroke-dasharray="3 3"/><rect x="85" y="50" width="30" height="30" rx="4" fill="#FFFDF8" stroke="#D8C8AC"/></svg></div>
+        <span class="term">A sliding tile (15) puzzle</span>
+        <h3>One empty slot lets everything shuffle</h3>
+        <p>A 15-puzzle has one empty space; sliding tiles into it, over and over, eventually moves every tile through many positions — with no separate map tracking "where each numbered tile currently is." Start-Gap's GapLine is that empty slot, and Gap Movement is the repeated slide.</p>
+        <div class="breaks">Where it breaks: a real 15-puzzle lets you slide any adjacent tile in any direction; Start-Gap always shifts in the same fixed direction along a circular buffer — simpler, but far more mechanical than an actual puzzle.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="20" y="15" width="100" height="66" rx="4" fill="#F7E1D8" stroke="#C0563B"/><line x1="35" y1="30" x2="105" y2="30" stroke="#9a3a22" stroke-width="2"/><line x1="35" y1="45" x2="105" y2="45" stroke="#9a3a22" stroke-width="2"/><line x1="35" y1="60" x2="105" y2="60" stroke="#9a3a22" stroke-width="2"/></svg></div>
+        <span class="term">A library card catalog vs. just reshuffling shelves</span>
+        <h3>No index means no lookup — and no upkeep</h3>
+        <p>A card-catalog system (Table-Based Wear Leveling) needs a physical card for every book, filed and re-filed as books move — real storage overhead, and every search means consulting the catalog first. Start-Gap is like a library that simply rotates every book on the shelf by one position on a schedule — no catalog exists, so there's nothing to look up.</p>
+        <div class="breaks">Where it breaks: a real library needs to find a <em>specific</em> book by title; Start-Gap only needs to compute <em>where</em> a given logical slot currently lives, which is a much narrower problem than general lookup.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><circle cx="45" cy="30" r="12" fill="#F7E1D8" stroke="#C0563B"/><circle cx="80" cy="30" r="12" fill="#F7E1D8" stroke="#C0563B"/><path d="M 57 30 L 68 30" stroke="#9a3a22" stroke-width="2" marker-end="url(#arrowMusChairs)"/><defs><marker id="arrowMusChairs" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0L6,3L0,6z" fill="#9a3a22"/></marker></defs></svg></div>
+        <span class="term">Musical chairs where the same two keep swapping</span>
+        <h3>Neighbor-only swaps don't separate neighbors</h3>
+        <p>If the two most restless kids in musical chairs happen to start out sitting next to each other, and the game only ever swaps neighboring chairs, those two just keep trading places with each other — never actually spreading out. That's plain Start-Gap's shortcoming: it swaps a line only with its immediate physical neighbor.</p>
+        <div class="breaks">Where it breaks: real musical chairs has randomness built into who sits where each round; Start-Gap's neighbor swap is completely deterministic, which is exactly why it needs a separate randomization step rather than "just playing more rounds."</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="15" y="20" width="20" height="28" rx="3" fill="#E6E6F6" stroke="#5A61B4"/><rect x="40" y="20" width="20" height="28" rx="3" fill="#E6E6F6" stroke="#5A61B4"/><rect x="65" y="20" width="20" height="28" rx="3" fill="#E6E6F6" stroke="#5A61B4"/><rect x="90" y="20" width="20" height="28" rx="3" fill="#E6E6F6" stroke="#5A61B4"/><path d="M 30 60 L 95 60 M 55 60 L 20 60 M 80 60 L 105 60" stroke="#5A61B4" stroke-width="1.5" stroke-dasharray="2 2"/></svg></div>
+        <span class="term">Shuffling a deck before dealing</span>
+        <h3>Scatter what was close together</h3>
+        <p>Cards that start out next to each other in a fresh deck end up scattered after a good shuffle. Address-space randomization (a RIB matrix or Feistel network) does the same thing to memory addresses before Start-Gap ever sees them — so lines that were physically close (and likely to be hot together) no longer are.</p>
+        <div class="breaks">Where it breaks: a card shuffle is different every hand; Start-Gap's randomizer is <em>static</em> — fixed once at boot or design time and never reshuffled again, since re-randomizing would itself require moving every line.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="15" y="15" width="35" height="30" rx="3" fill="#DCEFE9" stroke="#2C8C7C"/><rect x="55" y="15" width="35" height="30" rx="3" fill="#DCEFE9" stroke="#2C8C7C"/><rect x="95" y="15" width="30" height="30" rx="3" fill="#DCEFE9" stroke="#2C8C7C"/><rect x="15" y="50" width="110" height="6" fill="none" stroke="#9A8E7C" stroke-dasharray="2 2"/></svg></div>
+        <span class="term">A ship's watertight compartments</span>
+        <h3>One breach shouldn't sink the whole vessel</h3>
+        <p>A ship divided into separate watertight sections can take on water in one compartment without sinking — the flooding is contained. Region-Based Start-Gap divides memory into independently-managed regions, each with its own Start and Gap, so an attacker hammering one region can't prevent the rest of memory from rotating normally.</p>
+        <div class="breaks">Where it breaks: a ship's compartments are static and equal-sized by design; RBSG's region size is a tuned parameter (2<sup>18</sup> lines in the paper) chosen specifically so a targeted attack can't outrun that region's own Gap Movement — smaller isn't automatically safer against every kind of failure.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96"><rect x="55" y="10" width="30" height="76" rx="6" fill="#FFFDF8" stroke="#D8C8AC"/><rect x="60" y="20" width="20" height="8" fill="#F7E1D8" stroke="#C0563B"/><path d="M 70 40 L 70 76" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrowTurnstile)"/><defs><marker id="arrowTurnstile" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0L6,3L0,6z" fill="#9A8E7C"/></marker></defs></svg></div>
+        <span class="term">A subway turnstile that only lets people through in batches</span>
+        <h3>Slow the attacker down, don't just relocate them</h3>
+        <p>A turnstile that only releases people once a small crowd has gathered behind it slows everyone's throughput a little, but slows a single person trying to rush through repeatedly a lot. The Delayed Write Policy holds writes until the PCM write queue reaches some occupancy, which barely affects normal traffic but forces an attacker's repeated writes to queue up behind others.</p>
+        <div class="breaks">Where it breaks: a turnstile delays a specific person; the Delayed Write Policy delays by queue occupancy, not by identifying who's writing — it works precisely because it can't (and doesn't need to) tell attacker traffic from ordinary traffic.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Mechanism, step by step</div>
+      <h2>From a Gap Movement to a security guarantee</h2>
+      <p class="sub">Ten steps, from the endurance problem to the two production extensions (randomization and Region-Based Start-Gap).</p>
+    </div>
+
+    <ol class="seq prose">
+      <li><b>The endurance problem in one line.</b> A PCM cell endures roughly 10<sup>7</sup>–10<sup>8</sup> writes. If writes were spread perfectly evenly, a 16GB system would last 4–20 years depending on write traffic — but real programs concentrate writes on a handful of lines, so those lines fail decades early and drag the whole system's usable lifetime down to just 5% of that theoretical maximum.</li>
+      <li><b>Why table-based wear leveling doesn't fit main memory.</b> The standard fix tracks a write count per line and remaps hot lines via a separate indirection table — at PCM's 256-byte line granularity, that table needs tens of megabytes to hundreds of megabytes of storage, plus it must be consulted on every single memory access, adding real latency to the critical path.</li>
+      <li><b>The key insight: replace the table with algebra.</b> If the physical location of a line is a fixed, directly-computable function of its logical address plus a couple of small registers, no storage that scales with memory size is needed, and there's nothing to look up.</li>
+      <li><b>The mechanism: two registers and a spare line.</b> Start-Gap adds one extra memory line (<b>GapLine</b>) to the N lines already in memory, forming a circular buffer of N+1 slots. Two registers, <b>Start</b> and <b>Gap</b>, together encode the entire current mapping from logical to physical addresses.</li>
+      <li><b>Gap Movement.</b> Once every <em>ψ</em> writes to memory (the paper uses ψ=100, via one global 7-bit counter incremented on every write), Start-Gap performs a Gap Movement: it copies the contents of the line just before Gap into GapLine, then decrements Gap by one — nudging one line's data into a neighboring physical slot.</li>
+      <li><b>Gap Rotation.</b> Once Gap has swept all the way around the circular buffer — one full lap — every line in memory has shifted by exactly one physical position. At that point Start increments by one (modulo N) to record that a complete rotation has happened; for N lines, a Gap Rotation occurs once every (N+1) Gap Movements.</li>
+      <li><b>Turning that into a formula.</b> The physical address for logical address LA is computed as <code>PA = (LA + Start) mod N</code>, then incremented by one more if that value is at or past Gap. This is implementable with a handful of logic gates and adds only a few cycles of latency — nothing close to a full table lookup.</li>
+      <li>
+        <b>The shortcoming: neighbor-only swaps.</b>
+        <div class="callout why" style="margin:10px 0 0">
+          <div class="ic">💡</div>
+          <div>Because Gap only ever swaps a line with its immediate physical neighbor, a heavily-written line is likely to get swapped with another heavily-written line if hot lines already sit spatially close together — which the paper shows is typical (heavily-written regions cluster, e.g. regions 400–460 for the <em>db1</em> workload). This caps plain Start-Gap at <b>53%</b> normalized endurance, still 2x below ideal.</div>
+        </div>
+      </li>
+      <li><b>Fixing it with address-space randomization.</b> Running every logical address through a fixed, invertible scrambling function — a <b>Random Invertible Binary (RIB) matrix</b> or a three-stage <b>Feistel network</b> — before Start-Gap manages it breaks up spatial clustering, so physically-close addresses in program order are no longer close together in the space Start-Gap actually rotates. This alone lifts normalized endurance to <b>97%</b>, for well under 100 bytes of extra storage.</li>
+      <li><b>Fixing the security hole: Region-Based Start-Gap (RBSG).</b> A full Gap Rotation across all of memory takes N·ψ writes — for the paper's parameters, far more writes than a single cell can survive, meaning an attacker hammering one address can kill it before Start-Gap ever moves it. RBSG partitions memory into many small, independent regions (each with its own Start and Gap) small enough that a region's own Gap Movement reliably outruns a targeted attack, combined with a <b>Delayed Write Policy</b> that throttles the PCM write queue to slow the attacker further.</li>
+    </ol>
+
+    <!-- SECOND DIAGRAM: address mapping formula + RBSG partition -->
+    <figure class="viz reveal">
+      <div class="viz-title">The mapping formula, and why partitioning helps</div>
+      <div class="viz-kicker">left: how any logical address becomes a physical one · right: RBSG's independent regions</div>
+      <svg class="full" viewBox="0 0 860 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Start-Gap address mapping and RBSG partitioning">
+        <text x="215" y="24" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="700" fill="#6E6456">Logical → physical, no table</text>
+        <rect x="45" y="38" width="340" height="30" rx="6" fill="#E6E6F6" stroke="#5A61B4" stroke-width="1.5"/>
+        <text x="215" y="58" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" fill="#3a409a">PA = (LA + Start) mod N</text>
+        <path d="M215,68 L215,88" stroke="#5A61B4" stroke-width="1.5" marker-end="url(#arrowMap1)"/>
+        <defs><marker id="arrowMap1" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5A61B4"/></marker></defs>
+        <rect x="45" y="90" width="340" height="30" rx="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="215" y="110" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10.5" fill="#1f5b51">if PA &gt;= Gap: PA = PA + 1</text>
+        <path d="M215,120 L215,140" stroke="#2C8C7C" stroke-width="1.5" marker-end="url(#arrowMap2)"/>
+        <defs><marker id="arrowMap2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2C8C7C"/></marker></defs>
+        <rect x="115" y="142" width="200" height="28" rx="6" fill="#FBEACB" stroke="#E8A33D" stroke-width="1.5"/>
+        <text x="215" y="161" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10.5" fill="#6e4a09">return PA — a few gates, few cycles</text>
+        <line x1="450" y1="10" x2="450" y2="200" stroke="#D8C8AC" stroke-width="1" stroke-dasharray="3 4"/>
+        <text x="645" y="24" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="11" font-weight="700" fill="#6E6456">RBSG — independent regions</text>
+        <rect x="480" y="38" width="90" height="60" rx="6" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.5"/>
+        <text x="525" y="72" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" fill="#9a3a22">region under attack</text>
+        <rect x="580" y="38" width="90" height="60" rx="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="625" y="72" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" fill="#1f5b51">own Start/Gap</text>
+        <rect x="680" y="38" width="90" height="60" rx="6" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="1.5"/>
+        <text x="725" y="72" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="10" fill="#1f5b51">unaffected</text>
+        <text x="645" y="130" text-anchor="middle" font-family="Mulish,sans-serif" font-size="12" fill="#6E6456">Each region rotates on its own schedule — an attack on one</text>
+        <text x="645" y="150" text-anchor="middle" font-family="Mulish,sans-serif" font-size="12" fill="#6E6456">region can't stop the others from wear-leveling normally.</text>
+      </svg>
+      <figcaption><b>Why this matters:</b> the mapping formula is what makes Start-Gap tableless; the region partition is what makes it attack-resistant — they're independent ideas that stack together. (Paper, Fig. 7 &amp; Section 6.2)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Real numbers from the paper</div>
+      <h2>Seven ways to see the difference</h2>
+      <p class="sub">Every number below is from the paper's own evaluation (8-core in-order CMP, 16GB PCM main memory, six workloads: oltp, db1, db2, fft, stride, stress — 4 billion memory writes simulated per workload).</p>
+    </div>
+
+    <div class="card">
+      <h3>1 · Non-uniformity alone costs 20x</h3>
+      <p>For the <em>db2</em> workload, the maximum write count on any single line was <b>9,175</b> versus an average of just <b>64</b> writes per line. Across all six workloads, the baseline system (with a strong 64K-spare-line cushion) achieves an average normalized endurance of only <b>5%</b> — a <b>20x</b> reduction from the lifetime achievable if writes were spread uniformly.</p>
+    </div>
+
+    <div class="card">
+      <h3>2 · Start-Gap alone: 10x better, still short of ideal</h3>
+      <p>With ψ=100, Start-Gap lifts average normalized endurance from the baseline's 5% to <b>53%</b> — a <b>10x</b> improvement — using less than <b>8 bytes</b> of total storage overhead and limiting its own extra writes to under 1% of total traffic.</p>
+      <div class="bars">
+        <div class="bar-row"><div class="bar-label">Baseline<br><small>avg. normalized endurance</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="5"><span>5%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Start-Gap<br><small>avg. normalized endurance</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="53"><span>53%</span></div></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>3 · Why 53% isn't 97%: spatial clustering</h3>
+      <p>Dividing the baseline system's memory into 512 regions of 128K lines each and plotting write traffic per region shows that, for the <em>db1</em> workload, heavily-written regions cluster spatially between regions 400–460. Because plain Start-Gap only swaps a line with its immediate neighbor, it can't spread out writes that are already clustered this closely — capping its endurance well below what full uniformity would achieve.</p>
+    </div>
+
+    <div class="card">
+      <h3>4 · Randomized Start-Gap: 97%, for under 100 bytes</h3>
+      <p>Adding either a <b>RIB matrix</b> (85 bytes) or a <b>Feistel network</b> (5 bytes) as an address randomizer in front of Start-Gap lifts average normalized endurance to <b>97%</b> with either scheme — total overhead of 93 bytes (RIB) or 13 bytes (Feistel). For comparison, achieving similar line-granularity accuracy with Table-Based Wear Leveling would require up to <b>640MB</b> of storage.</p>
+      <div class="stat-grid" style="margin-top:14px">
+        <div class="stat-card"><div class="big">13B</div><div class="lab">Randomized Start-Gap</div><div class="sub">Feistel network, total overhead</div></div>
+        <div class="stat-card"><div class="big">640MB</div><div class="lab">Table-Based Wear Leveling</div><div class="sub">line-granularity, comparable accuracy</div></div>
+      </div>
+    </div>
+
+    <div class="callout why">
+      <div class="ic">💡</div>
+      <div><b>5 · Spare lines alone are a weak substitute.</b> Without any spare lines, the baseline achieves under <b>2%</b> normalized endurance; even after provisioning 6.4 million spare lines (1.6GB of overhead), baseline endurance only reaches <b>25%</b>. Randomized Start-Gap, by contrast, holds steady around <b>97%</b> regardless of spare-line count — because it makes all lines wear out at a similar rate instead of relying on replacement capacity.</div>
+    </div>
+
+    <div class="callout warn">
+      <div class="ic">⚠</div>
+      <div><b>6 · The attack, quantified: 32 seconds to kill one line.</b> A malicious loop that writes repeatedly to one PCM line can exhaust its 2<sup>25</sup>-write endurance in about <b>32 seconds</b> (2<sup>25</sup> writes × 2<sup>12</sup> cycles/write ÷ 2<sup>32</sup> cycles/second), assuming no spare lines. This works against the baseline <em>and</em> against plain or randomized Start-Gap alike — randomization only changes <em>which</em> line dies, since a full Gap Rotation across all of memory takes far more writes than any one cell can survive.</div>
+    </div>
+
+    <div class="card">
+      <h3>7 · RBSG's defense: minutes to months</h3>
+      <p>Partitioning memory into RBSG regions of 2<sup>18</sup> lines each (chosen so K &lt; W<sub>max</sub>/ψ) extends the time an attacker needs to cause a failure from under a minute to <b>4 months</b> at a Delay Write Factor of 1, and up to <b>64 months (≈1,150 days)</b> at a Delay Write Factor of 16 — while keeping normal-workload normalized endurance at essentially the same <b>~97%</b> as (non-partitioned) Randomized Start-Gap.</p>
+      <div class="stat-grid" style="margin-top:14px">
+        <div class="stat-card"><div class="big">&lt;1 min</div><div class="lab">baseline / plain Start-Gap</div><div class="sub">time to kill one line under attack</div></div>
+        <div class="stat-card"><div class="big">1,150 days</div><div class="lab">RBSG + DWF=16</div><div class="sub">time to failure under sustained attack</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Check your understanding</div>
+      <h2>Five questions, misconceptions flagged</h2>
+      <p class="sub">Try answering before revealing — each answer names a specific misconception it's checking for.</p>
+    </div>
+
+    <div class="prob">
+      <span class="ptag medium">Medium</span>
+      <div class="qtext">Q1. Does randomizing the address space (RIB matrix or Feistel network) stop the targeted write attack described in Section 6?</div>
+      <details><summary>Show answer</summary><div class="ans">No. Randomization only changes <em>which</em> physical line ends up being hammered — the attacker's writes land on a different line (line B instead of line A), but that line can still be driven to failure in about the same amount of time, since a full Gap Rotation across all of memory still takes far more writes than a single cell can survive.<span class="mis">Misconception checked: assuming randomization is a security fix rather than just a wear-leveling improvement.</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag medium">Medium</span>
+      <div class="qtext">Q2. Does Start-Gap need to know which lines are being written heavily in order to work?</div>
+      <details><summary>Show answer</summary><div class="ans">No — that's the whole point. Start-Gap moves every line on a fixed schedule (every ψ writes) regardless of that line's actual write traffic, so no per-line write-count tracking is needed at all, unlike Table-Based Wear Leveling.<span class="mis">Misconception checked: assuming any wear-leveling scheme must track which lines are "hot."</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag hard">Hard</span>
+      <div class="qtext">Q3. Why doesn't Start-Gap alone reach the same ~97% endurance as Randomized Start-Gap?</div>
+      <details><summary>Show answer</summary><div class="ans">Because Gap Movement always swaps a line with its immediate physical neighbor. If heavily-written lines already sit spatially close together — which the paper's own region-traffic measurements (Figure 9) show is typical — Start-Gap tends to swap one hot line for another nearby hot line rather than for a cold one. Randomization has to scramble the address space first, before Start-Gap's neighbor-only moves can actually help.<span class="mis">Misconception checked: assuming Start-Gap's shortfall is a bug rather than a direct, explained consequence of only moving lines to neighboring slots.</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag hard">Hard</span>
+      <div class="qtext">Q4. Does Region-Based Start-Gap (RBSG) push normal-workload endurance higher than plain Randomized Start-Gap?</div>
+      <details><summary>Show answer</summary><div class="ans">Not really — RBSG's purpose is bounding the time-to-failure under a targeted attack (from under a minute to months or years), not improving normal-workload endurance. For ordinary (non-adversarial) workloads, RBSG's normalized endurance is about the same ~97% as non-partitioned Randomized Start-Gap.<span class="mis">Misconception checked: conflating a security extension with a further performance improvement.</span></div></details>
+    </div>
+    <div class="prob">
+      <span class="ptag easy">Easy</span>
+      <div class="qtext">Q5. Do the extra writes caused by Gap Movement itself meaningfully add to PCM wear-out?</div>
+      <details><summary>Show answer</summary><div class="ans">No — with ψ=100, Gap Movement's own writes add at most 1/(ψ+1), or under 1%, to total write traffic. The paper deliberately chose ψ large enough that wear leveling's own overhead stays a small fraction of the wear it's trying to prevent.<span class="mis">Misconception checked: assuming a scheme that moves data around must itself add significant extra wear.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Common questions</div>
+      <h2>FAQ</h2>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q·</span>Where does the name "Start-Gap" come from?<span class="chev">▾</span></summary><div class="a">It names the algorithm's entire state: the two hardware registers it needs. <b>Start</b> counts how many full rotations all of memory has undergone; <b>Gap</b> tracks the current position of the spare line as it sweeps through memory between rotations.</div></details>
+      <details><summary><span class="q">Q·</span>Is Start-Gap specific to PCM?<span class="chev">▾</span></summary><div class="a">No — the paper evaluates it on PCM specifically, but notes the technique applies to any lifetime-limited memory technology, including Flash. The only requirement is a hard per-cell write-endurance limit that wear leveling is worth addressing for.</div></details>
+      <details><summary><span class="q">Q·</span>How does this compare to OS-level wear leveling?<span class="chev">▾</span></summary><div class="a">OS-level approaches still require per-page write-tracking counters and incur a performance slowdown whenever a page is remapped. Start-Gap avoids the per-page storage entirely and performs its remapping in hardware, with only a few cycles of added latency instead of OS-driven page remapping.</div></details>
+      <details><summary><span class="q">Q·</span>Does Start-Gap change the virtual-to-physical mapping the OS sees?<span class="chev">▾</span></summary><div class="a">No — it's a hardware-only technique operating entirely within the PCM device's own address space, below what the operating system's page table produces. The randomizer and the Start-Gap mapping are both transparent to software.</div></details>
+      <details><summary><span class="q">Q·</span>What's the honest catch?<span class="chev">▾</span></summary><div class="a">Two things worth flagging. First, the paper's analytical lifetime model relies on an approximation — that a line's new logical address after a rotation is effectively independent of its previous ones — which the authors themselves note isn't rigorously true, though it holds well when Start moves far less often than N. Second, Region-Based Start-Gap doesn't eliminate the security vulnerability, it only buys months-to-years of resistance; a sufficiently patient, sustained attacker (which the paper argues is an unlikely threat model) is still a theoretical concern.</div></details>
+      <details><summary><span class="q">Q·</span>Why three stages specifically for the Feistel network?<span class="chev">▾</span></summary><div class="a">Prior theoretical work (Luby and Rackoff) showed that three rounds are sufficient to make a Feistel-network cipher behave as a pseudo-random permutation. The paper's own experiments confirmed three stages were sufficient for their address-randomization purposes as well.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">For the record</div>
+      <h2>Reference</h2>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-card"><div class="big">5%</div><div class="lab">baseline endurance</div><div class="sub">avg., no wear leveling</div></div>
+      <div class="stat-card"><div class="big">53%</div><div class="lab">Start-Gap endurance</div><div class="sub">avg., &lt;8 bytes overhead</div></div>
+      <div class="stat-card"><div class="big">97%</div><div class="lab">Randomized Start-Gap</div><div class="sub">avg., &lt;13 bytes overhead</div></div>
+      <div class="stat-card"><div class="big">32 sec</div><div class="lab">time to kill one line</div><div class="sub">targeted attack, no defense</div></div>
+      <div class="stat-card"><div class="big">1,150 days</div><div class="lab">RBSG + DWF=16</div><div class="sub">time to failure under attack</div></div>
+      <div class="stat-card"><div class="big">640MB</div><div class="lab">Table-Based Wear Leveling</div><div class="sub">comparable line-granularity accuracy</div></div>
+    </div>
+
+    <div class="subhead">Wear-leveling scheme comparison</div>
+    <table class="tbl">
+      <thead><tr><th>Scheme</th><th>Storage overhead</th><th>Needs a table lookup?</th><th>Avg. normalized endurance</th></tr></thead>
+      <tbody>
+        <tr><td>No wear leveling (baseline)</td><td class="mono">—</td><td class="mono">no</td><td class="mono">5%</td></tr>
+        <tr><td>Table-Based Wear Leveling (line granularity)</td><td class="mono">up to 640MB</td><td class="mono">yes, every access</td><td class="mono">~97%</td></tr>
+        <tr><td>Start-Gap (plain)</td><td class="mono">&lt;8 bytes</td><td class="mono">no</td><td class="mono">53%</td></tr>
+        <tr class="best"><td><b>Randomized Start-Gap</b></td><td class="mono">&lt;13 bytes (Feistel)</td><td class="mono">no</td><td class="mono"><b>97%</b></td></tr>
+      </tbody>
+    </table>
+
+    <div class="subhead">Glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>Start / Gap registers</b><span>Two small counters together encoding the current logical-to-physical address mapping.</span></div>
+      <div class="term-def"><b>GapLine</b><span>One spare memory line used as the moving slot during each Gap Movement.</span></div>
+      <div class="term-def"><b>Gap Movement / Gap Rotation</b><span>One line shifting by one slot, versus every line in memory having shifted once.</span></div>
+      <div class="term-def"><b>Normalized Endurance (NE)</b><span>Actual achieved lifetime as a percentage of the theoretical maximum with perfectly uniform writes.</span></div>
+      <div class="term-def"><b>RIB matrix</b><span>Random Invertible Binary matrix — a linear address-randomization scheme, 85 bytes for B=26.</span></div>
+      <div class="term-def"><b>Feistel Network</b><span>A three-stage cryptographic-style address scrambler, 5 bytes for B=26.</span></div>
+      <div class="term-def"><b>RBSG</b><span>Region-Based Start-Gap — independent Start/Gap pairs per memory region, for attack resistance.</span></div>
+      <div class="term-def"><b>DWF</b><span>Delay Write Factor — how much the Delayed Write Policy slows an attacker's repeated writes.</span></div>
+    </div>
+
+    <div class="subhead">Further reading</div>
+    <div class="read-item"><h4>Enhancing Lifetime and Security of PCM-Based Main Memory with Start-Gap Wear Leveling <span class="diff med">medium</span></h4><div class="meta">Qureshi, Karidis, Franceschini, Srinivasan, Lastras, Abali · IBM Research, MICRO 2009</div><p>The primary source this entire guide is built from — abstract, figures, and evaluation numbers verified directly against the paper's own text.</p></div>
+    <div class="read-item"><h4>Scalable High Performance Main Memory System Using Phase-Change Memory Technology <span class="diff hard">hard</span></h4><div class="meta">Qureshi, Srinivasan, Rivers · ISCA 2009</div><p>Earlier work by an overlapping author team proposing Fine-Grain Wear Leveling (FGWL) and the DRAM-buffered PCM architecture this paper's baseline system is built on.</p></div>
+    <div class="read-item"><h4>A Durable and Energy Efficient Main Memory Using Phase Change Memory Technology <span class="diff hard">hard</span></h4><div class="meta">Zhou, Zhao, Yang, Zhang · ISCA 2009</div><p>A contemporaneous alternative approach using bit-shifting, line-shifting, and segment swapping — compared directly against Start-Gap in the paper's related work (Figure 17).</p></div>
+
+    <div class="subhead">Source notes</div>
+    <p style="color:var(--ink-soft);font-size:.95rem;max-width:74ch">All numbers on this page are drawn directly from the paper's text, figures, and Tables 1–5, read from the user's own uploaded copy of the PDF.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Qureshi, Karidis, Franceschini, Srinivasan, Lastras, Abali, "Enhancing Lifetime and Security of PCM-Based Main Memory with Start-Gap Wear Leveling" (MICRO 2009)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source paper</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  function maybeAnimateBars(){
+    document.querySelectorAll('.bars:not(.shown)').forEach(function(bars){
+      var fig = bars.closest('.tab-panel');
+      if(!fig || !fig.classList.contains('active')) return;
+      bars.querySelectorAll('.bar-fill').forEach(function(f,i){
+        var w = Math.min(100, parseFloat(f.dataset.w || 0));
+        setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+      });
+      bars.classList.add('shown');
+    });
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
