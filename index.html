@@ -108,6 +108,31 @@ a.cardlink{display:block}
 .gitem .gtag{flex:0 0 auto}
 @media(max-width:640px){.gitem .gi-desc{display:none}}
 
+.rstoggle{display:flex;gap:6px;margin:18px 0 0}
+.rst-btn{font-family:var(--body);font-weight:700;font-size:.88rem;color:var(--ink-soft);background:var(--card);border:1.5px solid var(--line);
+  border-radius:999px;padding:8px 15px;cursor:pointer;transition:.16s}
+.rst-btn:hover{border-color:var(--line-strong);color:var(--ink)}
+.rst-btn.on{background:var(--dram);border-color:var(--dram);color:#fff}
+.rst-btn .ct{font-family:var(--mono);font-size:11px;opacity:.75;margin-left:4px}
+
+.gitem-row{display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--line)}
+.gitem-row:last-child{border-bottom:none}
+.gitem-row .rowchk{flex:0 0 auto;width:17px;height:17px;accent-color:var(--dram);cursor:pointer}
+.gitem-row .cardlink{flex:1;min-width:0}
+.gitem-row .gitem{border-bottom:none;padding:14px 6px 14px 0}
+.list{border-top:1px solid var(--line)}
+
+.readbadge{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10.5px;color:#1f5b51;background:var(--dram-soft);
+  border-radius:999px;padding:3px 9px;margin-left:2px;white-space:nowrap}
+.readbadge .undo{cursor:pointer;color:#9a3a22;text-decoration:underline}
+
+.bulkbar{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:9998;display:flex;align-items:center;gap:14px;
+  background:var(--ink);color:#fff;border-radius:999px;padding:11px 10px 11px 20px;box-shadow:var(--shadow-lg,0 10px 30px rgba(0,0,0,.25));font-family:var(--body)}
+.bulkbar span{font-weight:700;font-size:.9rem}
+.bulkbar button{font-family:var(--body);font-weight:700;font-size:.86rem;border-radius:999px;padding:8px 15px;cursor:pointer;border:0}
+.bulkbar .bmark{background:var(--dram);color:#fff}
+.bulkbar .bclear{background:transparent;color:#fff;opacity:.75;text-decoration:underline}
+
 .foot{margin:54px 0 40px;padding-top:20px;border-top:1px solid var(--line);font-size:.85rem;color:var(--ink-faint);font-family:var(--mono);line-height:1.7}
 .foot b{color:var(--ink-soft)}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -204,6 +229,10 @@ a.cardlink{display:block}
   </header>
 
   <nav class="folders" id="folders"></nav>
+  <div class="rstoggle" id="readToggle">
+    <button class="rst-btn on" data-mode="toread">📖 To Read</button>
+    <button class="rst-btn" data-mode="done">✅ Done</button>
+  </div>
   <div class="searchwrap" id="searchWrap">
     <span class="sic">🔎</span>
     <input type="search" id="searchBox" placeholder="Search by paper title, author, or topic…" autocomplete="off">
@@ -226,6 +255,12 @@ a.cardlink{display:block}
     <div class="list" id="browseGrid"></div>
     <div class="empty" id="emptyMsg" style="display:none">No guides match these filters.</div>
   </section>
+
+  <div class="bulkbar" id="bulkBar" style="display:none">
+    <span id="bulkCount"></span>
+    <button class="bmark" id="bulkMark">✓ Mark as read</button>
+    <button class="bclear" id="bulkClear">Clear</button>
+  </div>
 
   <footer class="foot">
     <b>Study Library</b> · self-contained HTML, no tracking. Paper reviews auto-tagged by venue, year &amp; topic.
@@ -2148,7 +2183,25 @@ a.cardlink{display:block}
   var PAPERS = JSON.parse(document.getElementById('papers-data').textContent);
   var CATS = [{k:'all',ic:'📂',label:'All'},{k:'os',ic:'🐧',label:'Operating Systems'},{k:'paper',ic:'📄',label:'Paper Reviews'},{k:'other',ic:'✦',label:'Others'}];
   var tagClass = {os:'t-os',paper:'t-paper',other:'t-other'};
-  var state = {cat:'all', chips:new Set(), q:''};
+  var state = {cat:'all', chips:new Set(), q:'', mode:'toread', selected:new Set()};
+
+  /* Read-tracking (shared with guides/readlog.js via the same localStorage key, same origin).
+     A paper counts as "Done" once it has at least one logged read; marking it moves it out of
+     the To-Read queue (Recent/Suggested/All) into the Done view, where the full read history
+     (every timestamp, not just the latest) is visible per row. */
+  var READLOG_KEY = 'paperReadLog';
+  function getReadLog(){ try { return JSON.parse(localStorage.getItem(READLOG_KEY) || '{}'); } catch(e){ return {}; } }
+  function saveReadLog(log){ try { localStorage.setItem(READLOG_KEY, JSON.stringify(log)); } catch(e){} }
+  function readEntries(slug){ return getReadLog()[slug] || []; }
+  function isDone(slug){ return readEntries(slug).length > 0; }
+  function markRead(slug){ var log=getReadLog(); log[slug]=(log[slug]||[]).concat([new Date().toISOString()]); saveReadLog(log); }
+  function moveBackToReading(slug){ var log=getReadLog(); delete log[slug]; saveReadLog(log); }
+  function fmtDate(iso){ try { return new Date(iso).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); } catch(e){ return iso; } }
+  function relDate(iso){
+    var days = Math.floor((Date.now()-new Date(iso).getTime())/86400000);
+    if(days<=0) return 'today'; if(days===1) return 'yesterday'; if(days<30) return days+'d ago';
+    return fmtDate(iso);
+  }
 
   /* Relevance to David's LtRAM research (hardware/software co-designed memory-tier system
      exposing asymmetric NVM device properties — NOR flash, PCM, RRAM, FeFET — to the OS).
@@ -2186,17 +2239,29 @@ a.cardlink{display:block}
     var venueTag = (p.cat==='paper' && p.venue) ? '<span class="gtag '+(tagClass[p.cat]||'t-topic')+'">'+p.venue+(p.year?' '+p.year:'')+'</span>' : '<span class="gtag '+(tagClass[p.cat]||'t-topic')+'">'+(p.venue||'Guide')+'</span>';
     var cite = p.paper ? '<div class="cite">📄 '+p.paper+'</div>' : '';
     var rankTag = rank ? '<span class="rank">'+rank+'</span>' : '';
-    return '<a class="cardlink" href="'+p.file+'"><article class="gitem">'
+    var entries = readEntries(p.slug);
+    var badge = entries.length
+      ? '<span class="readbadge" title="'+entries.map(fmtDate).join(' · ')+'">✓ '+entries.length+'× · '+relDate(entries[entries.length-1])+' <span class="undo" data-undo-slug="'+p.slug+'">move back</span></span>'
+      : '';
+    var checked = state.selected.has(p.slug) ? ' checked' : '';
+    return '<div class="gitem-row" data-slug="'+p.slug+'">'
+      + '<input type="checkbox" class="rowchk" data-slug="'+p.slug+'"'+checked+'>'
+      + '<a class="cardlink" href="'+p.file+'"><article class="gitem">'
       + rankTag
-      + '<div class="gi-main"><div class="gi-top">'+venueTag+'<h2>'+p.title+'</h2></div>'+cite+'<p class="gi-desc">'+(p.desc||'')+'</p></div>'
-      + '<span class="go">→</span></article></a>';
+      + '<div class="gi-main"><div class="gi-top">'+venueTag+badge+'<h2>'+p.title+'</h2></div>'+cite+'<p class="gi-desc">'+(p.desc||'')+'</p></div>'
+      + '<span class="go">→</span></article></a>'
+      + '</div>';
   }
 
-  var SUGGESTED = PAPERS.map(function(p){ return {p:p, score:relevance(p)}; })
-    .filter(function(x){ return x.score >= 5; })
-    .sort(function(a,b){ return b.score - a.score; })
-    .slice(0, 40)
-    .map(function(x){ return x.p; });
+  var RELEVANCE_CACHE = null;
+  function computeSuggested(){
+    if(!RELEVANCE_CACHE) RELEVANCE_CACHE = PAPERS.map(function(p){ return {p:p, score:relevance(p)}; });
+    return RELEVANCE_CACHE
+      .filter(function(x){ return x.score >= 5 && !isDone(x.p.slug); })
+      .sort(function(a,b){ return b.score - a.score; })
+      .slice(0, 40)
+      .map(function(x){ return x.p; });
+  }
 
   function tokens(p){ // everything a paper can be filtered by
     var t=[]; if(p.venue) t.push(p.venue); if(p.year) t.push(String(p.year)); (p.topics||[]).forEach(function(x){t.push(x);}); return t;
@@ -2207,6 +2272,8 @@ a.cardlink{display:block}
   function visible(){
     var q = state.q.trim().toLowerCase();
     return PAPERS.filter(function(p){
+      if(state.mode==='done' && !isDone(p.slug)) return false;
+      if(state.mode==='toread' && isDone(p.slug)) return false;
       if(state.cat!=='all' && p.cat!==state.cat) return false;
       var tk=tokens(p); var ok=true;
       state.chips.forEach(function(c){ if(tk.indexOf(c)<0) ok=false; });
@@ -2239,26 +2306,41 @@ a.cardlink{display:block}
     document.getElementById('facets').innerHTML = html;
   }
 
-  var suggestedRendered = false;
+  function updateBulkBar(){
+    var bar = document.getElementById('bulkBar');
+    var n = state.selected.size;
+    if(n===0){ bar.style.display='none'; return; }
+    bar.style.display='flex';
+    document.getElementById('bulkCount').textContent = n+' selected';
+    var btn = document.getElementById('bulkMark');
+    btn.textContent = state.mode==='done' ? '↩ Move back to reading' : '✓ Mark as read';
+  }
+
   function render(){
     renderFacets();
-    var recents = PAPERS.slice().sort(function(a,b){ return (b.added||'').localeCompare(a.added||''); }).slice(0,3);
     var filtering = state.cat!=='all' || state.chips.size>0 || state.q.trim()!=='';
-    document.getElementById('recentSec').style.display = filtering ? 'none' : '';
-    document.getElementById('recentGrid').innerHTML = recents.map(function(p){ return listItem(p); }).join('');
+    var onToRead = state.mode==='toread' && !filtering;
+    document.getElementById('recentSec').style.display = onToRead ? '' : 'none';
+    if(onToRead){
+      var recents = PAPERS.filter(function(p){ return !isDone(p.slug); })
+        .slice().sort(function(a,b){ return (b.added||'').localeCompare(a.added||''); }).slice(0,3);
+      document.getElementById('recentGrid').innerHTML = recents.map(function(p){ return listItem(p); }).join('');
+    }
     var sugSec = document.getElementById('suggestedSec');
     if(sugSec){
-      sugSec.style.display = filtering ? 'none' : '';
-      if(!suggestedRendered && !filtering){
-        document.getElementById('suggestedGrid').innerHTML = SUGGESTED.map(function(p,i){ return listItem(p, i+1); }).join('');
-        suggestedRendered = true;
+      sugSec.style.display = onToRead ? '' : 'none';
+      if(onToRead){
+        document.getElementById('suggestedGrid').innerHTML = computeSuggested().map(function(p,i){ return listItem(p, i+1); }).join('');
       }
     }
     var vis = visible();
-    document.getElementById('browseTitle').textContent = catLabel(state.cat) + (filtering? ' · '+vis.length+' match'+(vis.length===1?'':'es') : '');
+    var modeLabel = state.mode==='done' ? '✅ Done' : catLabel(state.cat);
+    document.getElementById('browseTitle').textContent = modeLabel + ((filtering||state.mode==='done') ? ' · '+vis.length+' '+(vis.length===1?'guide':'guides') : '');
     document.getElementById('browseGrid').innerHTML = vis.map(function(p){ return listItem(p); }).join('');
+    document.getElementById('emptyMsg').textContent = state.mode==='done' ? 'Nothing marked as read yet.' : 'No guides match these filters.';
     document.getElementById('emptyMsg').style.display = vis.length? 'none':'block';
     var sw = document.getElementById('searchWrap'); if(sw) sw.classList.toggle('has-q', state.q.trim()!=='');
+    updateBulkBar();
   }
 
   fol.addEventListener('click', function(e){ var b=e.target.closest('.fbtn'); if(!b) return;
@@ -2280,6 +2362,44 @@ a.cardlink{display:block}
     var v=c.dataset.chip; if(state.chips.has(v)) state.chips.delete(v); else state.chips.add(v);
     render();
   });
+
+  // To Read / Done toggle
+  document.getElementById('readToggle').addEventListener('click', function(e){
+    var b = e.target.closest('.rst-btn'); if(!b) return;
+    state.mode = b.dataset.mode; state.selected.clear();
+    document.querySelectorAll('#readToggle .rst-btn').forEach(function(x){ x.classList.toggle('on', x.dataset.mode===state.mode); });
+    render();
+  });
+
+  // Per-row checkbox selection + per-row "move back" undo (event delegation, since rows re-render)
+  document.addEventListener('change', function(e){
+    if(!e.target.classList || !e.target.classList.contains('rowchk')) return;
+    var slug = e.target.dataset.slug;
+    if(e.target.checked) state.selected.add(slug); else state.selected.delete(slug);
+    updateBulkBar();
+  });
+  document.addEventListener('click', function(e){
+    var undo = e.target.closest('[data-undo-slug]');
+    if(undo){ e.preventDefault(); moveBackToReading(undo.getAttribute('data-undo-slug')); render(); }
+  });
+
+  // Bulk action bar
+  document.getElementById('bulkMark').addEventListener('click', function(){
+    state.selected.forEach(function(slug){
+      if(state.mode==='done') moveBackToReading(slug); else markRead(slug);
+    });
+    state.selected.clear();
+    render();
+  });
+  document.getElementById('bulkClear').addEventListener('click', function(){
+    state.selected.clear();
+    document.querySelectorAll('.rowchk').forEach(function(c){ c.checked=false; });
+    updateBulkBar();
+  });
+
+  // Pick up read-log changes logged from a guide page (readlog.js) in another tab/window
+  window.addEventListener('storage', function(e){ if(e.key===READLOG_KEY) render(); });
+
   render();
 })();
 </script>
