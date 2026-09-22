@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<!-- Dune field guide — Safe User-level Access to Privileged CPU Features (Belay et al., USENIX ATC'12).
+     Semantic colors: teal = Dune's direct/process-level access · honey = VM/machine-abstraction baseline · indigo = Dune's own machinery (module/libDune) · terracotta = legacy Linux mechanisms (fork/ptrace/SIGSEGV). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Borrowing the Kernel's Toolbox — Dune, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98E3D; --honey-deep:#B36B12; --honey-soft:#F9E4C4;
+  --dram:#217C6E; --dram-soft:#D7ECE5;
+  --ltram:#565DAA; --ltram-soft:#E3E4F2;
+  --optane:#B14F36; --optane-soft:#F4DCD2;
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(33,124,110,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(86,93,170,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,142,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(86,93,170,.05) 31px,rgba(86,93,170,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,142,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#565DAA)}
+.bf-hi{background:linear-gradient(90deg,#2e9482,#217C6E)}
+.bf-lru{background:linear-gradient(90deg,#c76a4d,#B14F36)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#D98E3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(33,124,110,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(86,93,170,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,142,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>USENIX ATC 2012 · A Field Guide</span>
+    <h1>Giving a process the keys to the kernel's <span class="swash">toolbox</span> — without becoming a <span class="swash" style="color:var(--optane)">whole machine</span></h1>
+    <p class="lede">Two ways to let software touch page tables and privilege rings: hand it a virtual machine, or hand it a <em>badge</em>. Dune bets on the badge — using VT-x to keep a process a process while it borrows the CPU's most privileged features.</p>
+    <div class="hero-meta">
+      <span>📄 "Dune: Safe User-level Access to Privileged CPU Features" · Belay et al.</span>
+      <span>🎓 Some VT-x/OS basics assumed — the primers cover them</span>
+      <span>⏱ ~28 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🛡️</div>
+      <p>Expose privileged hardware <span class="ro">DIRECTLY to the process</span>, not through a <span class="wo">whole emulated machine</span> — keep the process a process.<br><em style="font-size:.9rem">Same Linux process interface, same file descriptors, just a bigger toolbox.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="insights"><span class="n">08</span>Insights</button>
+    <button class="tab-btn" data-tab="classprep"><span class="n">09</span>Class Prep</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">10</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>What the paper assumes you already know</h2>
+      <p class="sub">Collapsed by default — open whatever's unfamiliar. Read in order the first time.</p>
+    </div>
+
+    <div class="card" style="background:var(--ltram-soft);border-color:#bcbfe8">
+      <h3 style="color:#3a409a">⚡ TL;DR</h3>
+      <ul style="margin:0;padding-left:20px;color:#3a409a">
+        <li>Dune uses Intel VT-x virtualization hardware to give a <b>normal Linux process</b> (not a VM) direct, hardware-enforced access to page tables, privilege rings, and exceptions — a <b>process abstraction</b>, not a machine abstraction.</li>
+        <li>Headline numbers: page faults deliver <b>~4.8×</b> faster than SIGSEGV, syscall interposition is <b>25×</b> cheaper than ptrace, user-level VM primitives are <b>~7×</b> faster — all from a <b>2,509-line</b> kernel module that needs zero kernel source changes.</li>
+        <li>It matters because it's a template for handing userspace cheap, fine-grained control over paging/dirty-bits/TLB — exactly the primitives OS-managed memory-tiering systems (hotness tracking, page placement) are still fighting the kernel for today.</li>
+      </ul>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> Dune's direct/process-level access</span>
+      <span><i style="background:var(--honey-deep)"></i> VM / machine-abstraction baseline</span>
+      <span><i style="background:var(--ltram)"></i> Dune's own machinery (module + libDune)</span>
+      <span><i style="background:var(--optane)"></i> legacy Linux mechanisms (fork/ptrace/SIGSEGV)</span>
+    </div>
+
+    <div class="subhead" style="margin-top:34px">Quick glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>VT-x</b><span>Intel's hardware virtualization extension; gives the CPU a lower-overhead way to trap into and out of privileged code than software emulation.</span></div>
+      <div class="term-def"><b>VMX root / non-root mode</b><span>The two CPU modes VT-x adds — root runs the hypervisor-like code, non-root runs the guest with its own private rings 0–3.</span></div>
+      <div class="term-def"><b>VMCS</b><span>VM Control Structure — an in-memory record of a virtualized context's state and which events should trigger a trap back to root mode.</span></div>
+      <div class="term-def"><b>VM exit / entry</b><span>The hardware-managed transition into (entry) and out of (exit) non-root mode — the VT-x analogue of a syscall trap.</span></div>
+      <div class="term-def"><b>EPT (Extended Page Table)</b><span>A second, hypervisor-controlled layer of address translation sitting underneath a guest's own page table, so the guest can't escape its sandbox even with raw page-table access.</span></div>
+      <div class="term-def"><b>Hypercall / VMCALL</b><span>An instruction a guest uses to deliberately request a VM exit — Dune repurposes it to mean "make a normal Linux system call."</span></div>
+      <div class="term-def"><b>PCID</b><span>A hardware TLB tag Dune exposes to user programs so they can switch among multiple page tables without a full TLB flush.</span></div>
+      <div class="term-def"><b>VPID</b><span>A separate hardware TLB tag Dune uses internally to tag TLB entries for Dune processes, hypercalls, and context switches — keeping VM entries/exits from forcing a flush.</span></div>
+      <div class="term-def"><b>Dirty / accessed bits</b><span>Per-page-table-entry flags set by hardware on write/read — the raw signal garbage collectors and memory-tiering systems both want cheap access to.</span></div>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Rings, privilege modes, and why user code can't touch page tables<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>x86 has protection rings (0 = kernel, 3 = user). Only ring 0 can load page tables, handle raw interrupts, or write control registers — that's the whole basis of process isolation. Normally, touching that hardware means asking the kernel via a syscall.</p>
+          <div class="ready"><b>Now you're ready:</b> Dune's whole premise is letting ordinary ring-3-bound code get ring-0-like power over specific hardware, safely.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>What a hardware virtual machine monitor (VMM) does<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A VMM (hypervisor) runs one or more guest OSes, each believing it owns a whole machine. VT-x lets most guest instructions run directly on real hardware, with the VMM only stepping in (via a VM exit) for genuinely privileged operations.</p>
+          <div class="ready"><b>Now you're ready:</b> Dune reuses this exact hardware mechanism, but for a process instead of an OS — no guest kernel, no emulated devices.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Two-level address translation (EPT/NPT)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A VM's guest page table maps guest-virtual → guest-physical. The VMM can't trust that mapping to point at real memory, so a second table, the EPT, maps guest-physical → host-physical, invisibly to the guest. Every memory access now walks two page tables instead of one.</p>
+          <div class="ready"><b>Now you're ready:</b> this doubled walk is Dune's main source of overhead — and it reappears anywhere software adds an extra translation layer for isolation.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>ptrace and signal-based introspection<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Linux lets one process observe or intercept another's syscalls (ptrace) or be notified of hardware faults (signals like SIGSEGV). Both route through the kernel's generic trap-and-signal machinery, which is general-purpose but not cheap.</p>
+          <div class="ready"><b>Now you're ready:</b> Dune's ring-based interception and hardware exception delivery are faster replacements for exactly these two mechanisms.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Why kernel modifications are risky<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Patching a production kernel like Linux to expose a new hardware feature to userspace is intrusive: it can destabilize the whole system, and if two applications need conflicting kernel changes, they may not compose.</p>
+          <div class="ready"><b>Now you're ready:</b> Dune's constraint — an unmodified kernel plus a loadable module — is a direct response to this risk.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Garbage collection via memory protection<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Some garbage collectors use page-protection faults as "write barriers" — trap the first write to a page, record it, then unprotect. Knowing which pages were touched (dirty bits) since the last collection can replace this trap-heavy approach entirely.</p>
+          <div class="ready"><b>Now you're ready:</b> this is exactly the machinery Dune speeds up for the Boehm GC case study.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Dune in a nutshell</h2>
+      <p class="sub">The problem, the trick that fixes it, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>Lots of applications — sandboxes, privilege-separation systems, garbage collectors — would benefit hugely from touching "kernel-only" hardware: page tables, privilege rings, exception vectors. The traditional options are both bad: patch the kernel (risky, doesn't compose across apps), or run inside a full virtual machine (breaks process integration — no shared file descriptors, no easy IPC, a whole second kernel to maintain).</p>
+      <p><strong>Dune's move:</strong> use VT-x, the same hardware VMMs use, but expose a <span class="mem-chip chip-hi">process abstraction</span> instead of a <span class="mem-chip chip-sat">machine abstraction</span>. A small kernel module (<b>2,509 LOC</b>) puts the kernel in VMX root mode and lets any process opt into "Dune mode" via an ioctl — an irreversible switch into VMX non-root mode, where it gets its own private ring 0–3, direct page-table access, and hardware-delivered exceptions. It's still recognizably the same Linux process at the interface level — same file descriptors, same process abstraction — but underneath it now owns a user-controlled guest-virtual page table sitting atop an EPT, a compressed guest-physical layout, and some new constraints on syscall arguments, signal handling, and pthread/libDune interoperation; system calls themselves go via <code>VMCALL</code> instead of <code>SYSCALL</code>.</p>
+      <p>A userspace library, <span class="mem-chip chip-ucp">libDune</span> (5,898 LOC), helps manage this environment: page-table manager, ELF loader, exception/signal shims. Because only one page table needs to change (not a whole guest OS's worth of virtualized devices), the EPT can be kept close to the real address space, and most instructions never trap at all.</p>
+      <p><strong>The payoff:</strong> page faults deliver <b>~4.8×</b> faster than SIGSEGV, user-level virtual-memory primitives run <b>~7×</b> faster, syscall interposition is <b>25×</b> cheaper than ptrace, a sandbox runs SPEC2000 at <b>2.9%</b> average overhead, and a modified Boehm GC gets up to <b>40.7%</b> faster — all while requiring zero changes to the Linux kernel itself.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Dune = VT-x used to virtualize a <b>process</b>, not a machine — no guest OS, no emulated devices.</li>
+        <li>A Dune process keeps the same Linux process interface: shared fds, IPC — only syscalls change (<code>VMCALL</code>), though its address-space plumbing (guest page table + EPT) is new underneath.</li>
+        <li>EPT overhead (double page walks) is the main cost; large pages mostly erase it.</li>
+        <li>Three case studies — sandbox, Wedge privilege separation, Boehm GC — each get simpler <i>and</i> faster.</li>
+        <li>Everything ships as a loadable kernel module; the host kernel is never patched.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">A process abstraction, not a machine abstraction</div>
+      <div class="viz-kicker">same VT-x hardware, radically different footprint</div>
+      <svg class="full" viewBox="0 0 760 320" role="img" aria-label="Dune process abstraction versus a full virtual machine abstraction">
+        <rect x="30" y="30" width="330" height="260" rx="14" fill="#D7ECE5" stroke="#217C6E" stroke-width="2"/>
+        <text x="195" y="58" text-anchor="middle" font-family="Fraunces" font-size="16" font-weight="600" fill="#16463e">Dune process</text>
+        <rect x="55" y="80" width="280" height="42" rx="8" fill="#fff" stroke="#217C6E" stroke-width="1.4"/>
+        <text x="195" y="106" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">shared fds · address space · IPC</text>
+        <rect x="55" y="132" width="280" height="42" rx="8" fill="#fff" stroke="#217C6E" stroke-width="1.4"/>
+        <text x="195" y="158" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">own page table + rings 0–3</text>
+        <rect x="55" y="184" width="280" height="42" rx="8" fill="#fff" stroke="#217C6E" stroke-width="1.4"/>
+        <text x="195" y="210" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">syscalls → VMCALL → real kernel</text>
+        <rect x="55" y="236" width="280" height="42" rx="8" fill="#fff" stroke="#217C6E" stroke-width="1.4"/>
+        <text x="195" y="262" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">2,509-line module, 0 kernel patches</text>
+        <rect x="400" y="30" width="330" height="260" rx="14" fill="#F9E4C4" stroke="#B36B12" stroke-width="2"/>
+        <text x="565" y="58" text-anchor="middle" font-family="Fraunces" font-size="16" font-weight="600" fill="#6e4a09">Full virtual machine</text>
+        <rect x="425" y="80" width="280" height="42" rx="8" fill="#fff" stroke="#B36B12" stroke-width="1.4"/>
+        <text x="565" y="106" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">own fds, own network stack</text>
+        <rect x="425" y="132" width="280" height="42" rx="8" fill="#fff" stroke="#B36B12" stroke-width="1.4"/>
+        <text x="565" y="158" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">full guest OS + emulated devices</text>
+        <rect x="425" y="184" width="280" height="42" rx="8" fill="#fff" stroke="#B36B12" stroke-width="1.4"/>
+        <text x="565" y="210" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">requests traverse 2 network stacks</text>
+        <rect x="425" y="236" width="280" height="42" rx="8" fill="#fff" stroke="#B36B12" stroke-width="1.4"/>
+        <text x="565" y="262" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">poor host integration</text>
+      </svg>
+      <figcaption><b>Same underlying VT-x instructions, opposite design goals.</b> Dune spends the hardware on isolation for one process, not emulation for a whole machine — which is why lighttpd loses &lt;2% in a Dune sandbox but 67–77% in VMware Player. (Paper §1, §6.3.1)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → mechanism → enforcement → payoff</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Kernel patches don't compose; full VMs break process integration</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Mechanism</div><div class="nd">VT-x's VMX non-root mode gives a process its own rings + page table</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Isolation</div><div class="nd">EPT still bounds every guest-physical access to the real process address space</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Preserve OS interface</div><div class="nd">Syscalls become VMCALL hypercalls into the same syscall table</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Applications</div><div class="nd">Sandbox, Wedge privilege separation, Boehm GC</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Payoff</div><div class="nd">4.8×–25× on the primitives that matter, near-zero on the rest</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about Dune</h2>
+      <p class="sub">Each stands alone. Every card admits where it stops being accurate.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="30" height="46" rx="4" fill="#D7ECE5" stroke="#217C6E" stroke-width="2.5"/>
+          <circle cx="45" cy="24" r="10" fill="#D7ECE5" stroke="#217C6E" stroke-width="2.5"/>
+          <rect x="80" y="20" width="46" height="56" rx="6" fill="#F9E4C4" stroke="#B36B12" stroke-width="2.5"/>
+          <rect x="88" y="30" width="30" height="12" rx="2" fill="#fff" stroke="#B36B12" stroke-width="1.5"/>
+        </svg></div>
+        <span class="term">The core idea · Process vs machine</span>
+        <h3>A backstage pass vs a second theater</h3>
+        <p>A backstage pass lets one performer through doors ordinary ticket-holders can't use — the theater, audience, and box office stay exactly as they were. Building a second theater gives the same access, but now you're running lighting, ushers, and ticketing twice. Dune is the pass: one process gets privileged doors opened, everything else about the "theater" (fds, IPC, the file system) is untouched.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real backstage pass doesn't need hardware to enforce its boundary — Dune's "pass" is enforced by the EPT, which does real translation work on every access.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="45" height="46" rx="4" fill="#E3E4F2" stroke="#565DAA" stroke-width="2.5"/>
+          <rect x="75" y="30" width="45" height="46" rx="4" fill="#F4DCD2" stroke="#B14F36" stroke-width="2.5"/>
+          <path d="M42 30 v-14 M97 30 v-14" stroke="#332C24" stroke-width="2"/>
+          <circle cx="42" cy="12" r="3" fill="#565DAA"/><circle cx="97" cy="12" r="3" fill="#B14F36"/>
+        </svg></div>
+        <span class="term">EPT · Two-level translation</span>
+        <h3>A hotel key card, not a master key</h3>
+        <p>A guest with a raw master key could open any room. A key card instead gets re-checked at every door against a central table it can't edit. That's the EPT: Dune lets a process write its own page table freely, but every resulting address still passes through the EPT's independent check before it touches real memory — the process can misconfigure its own map, never the hotel's.</p>
+        <div class="breaks"><b>Where it breaks:</b> a key-card check is instant; the EPT check is a second full page-table walk, roughly doubling the cost of a TLB miss (35.8 → 86.4 cycles in the paper's benchmark).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="34" fill="#D7ECE5" stroke="#217C6E" stroke-width="2.5"/>
+          <path d="M70 30 v18 l14 8" stroke="#217C6E" stroke-width="3" fill="none" stroke-linecap="round"/>
+          <circle cx="70" cy="48" r="3" fill="#16463e"/>
+        </svg></div>
+        <span class="term">Dirty bits · Passive signal vs active check</span>
+        <h3>A doorbell, not a guard walking every hallway</h3>
+        <p>To know if anyone entered a room, you can install a doorbell (a bit that flips on entry) or pay a guard to walk every hallway every few minutes. Linux offers no doorbell for user programs — the Boehm GC either patrols with <code>mprotect</code>+signal traps, or on some OSes gets a coarse whole-address-space sweep. Dune exposes the actual hardware dirty bit, so the GC reads a doorbell instead of dispatching a patrol.</p>
+        <div class="breaks"><b>Where it breaks:</b> hardware dirty bits are binary and per-page, not per-object — they tell you a page was touched, not what inside it changed, so some GC logic still needs the coarser <code>mprotect</code> trap as backup.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="24" width="100" height="16" rx="3" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <text x="70" y="36" text-anchor="middle" font-family="monospace" font-size="9" fill="#332C24">border checkpoint</text>
+          <path d="M40 40 v14 M100 40 v14" stroke="#B14F36" stroke-width="2" stroke-dasharray="3 3"/>
+          <circle cx="40" cy="60" r="6" fill="#F4DCD2" stroke="#B14F36" stroke-width="2"/>
+          <circle cx="100" cy="60" r="6" fill="#D7ECE5" stroke="#217C6E" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Interception · ptrace vs ring trap</span>
+        <h3>A border checkpoint vs an escort shadowing every step</h3>
+        <p>ptrace is an escort: the kernel stops the tracee, wakes the tracer, round-trips a message, and resumes — for every syscall. Dune's ring-based interception is a border checkpoint the untrusted code walks straight into: the syscall instruction itself traps to the sandbox runtime <em>in the same process</em>, no kernel round-trip needed unless the call is actually allowed through.</p>
+        <div class="breaks"><b>Where it breaks:</b> a checkpoint you build yourself must also defend itself — the sandbox runtime has to validate every argument by hand, exactly the trust boundary a kernel-mediated ptrace gets "for free."</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="26" y="30" width="22" height="34" rx="3" fill="#D7ECE5" stroke="#217C6E" stroke-width="2"/>
+          <rect x="59" y="30" width="22" height="34" rx="3" fill="#F9E4C4" stroke="#B36B12" stroke-width="2"/>
+          <rect x="92" y="30" width="22" height="34" rx="3" fill="#F4DCD2" stroke="#B14F36" stroke-width="2"/>
+          <text x="37" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">A</text>
+          <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">B</text>
+          <text x="103" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">C</text>
+        </svg></div>
+        <span class="term">PCID/VPID · Tagged TLB</span>
+        <h3>Labeled lockers instead of clearing the room</h3>
+        <p>Without tags, switching between page tables means dumping everyone's belongings (flushing the whole TLB) because you can't tell whose entry is whose. Intel's PCID labels TLB entries by page-table owner, so Dune exposes it to let a user program switch among several of its own page tables without a flush. VPID is a separate tag Dune uses internally, to keep its own hypercalls and context switches between Dune processes from forcing a flush.</p>
+        <div class="breaks"><b>Where it breaks:</b> labels are a finite resource (a limited number of PCID/VPID tags), so at high enough switching fan-out you eventually run out of lockers and fall back to flushing anyway.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M30 70 q40 -50 80 0" fill="none" stroke="#565DAA" stroke-width="2.5"/>
+          <circle cx="30" cy="70" r="5" fill="#565DAA"/><circle cx="110" cy="70" r="5" fill="#565DAA"/>
+          <path d="M30 70 h80" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="3 3"/>
+        </svg></div>
+        <span class="term">Threat model · Same door, shorter hallway</span>
+        <h3>A shortcut, not a new door</h3>
+        <p>Dune's threat model rests on a simple claim: anything a Dune process can do, an ordinary process could already do through the same sequence of system calls — Dune just removes the hallway (kernel round-trips) in between. It's a faster path to a door that was already unlocked, not a new door.</p>
+        <div class="breaks"><b>Where it breaks:</b> exposing hardware privilege <i>rings</i> does add something genuinely new — a process can now build its own internal privilege boundary (ring 0 vs ring 3) that didn't exist in the plain-process model at all.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key diagrams rebuilt as visuals.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Entering Dune mode</h3>
+      <p>A process opts in via an <code>ioctl</code> on <code>/dev/dune</code>, supplying a page-table root. The transition is <b>irreversible</b>: once in Dune mode, the process stays there (a fork's child starts back outside Dune and can re-enter if needed). From then on, the process runs in VMX non-root mode with its own private ring 0–3 and a VMCS the module maintains per-thread.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Three translations, one address space</div>
+      <div class="viz-kicker">guest-virtual → guest-physical (user page table) → host-physical (EPT)</div>
+      <svg class="full" viewBox="0 0 700 220" role="img" aria-label="Dune's three-stage address translation">
+        <rect x="20" y="80" width="150" height="60" rx="10" fill="#D7ECE5" stroke="#217C6E" stroke-width="2"/>
+        <text x="95" y="105" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#16463e">Guest-virtual</text>
+        <text x="95" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">app pointers</text>
+        <text x="200" y="105" font-family="JetBrains Mono" font-size="10" fill="#6E6456">user page</text>
+        <text x="200" y="118" font-family="JetBrains Mono" font-size="10" fill="#6E6456">table (Dune-writable)</text>
+        <path d="M170 110 h100" stroke="#565DAA" stroke-width="2.5" marker-end="url(#ar1)"/>
+        <rect x="280" y="80" width="150" height="60" rx="10" fill="#E3E4F2" stroke="#565DAA" stroke-width="2"/>
+        <text x="355" y="105" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#3a409a">Guest-physical</text>
+        <text x="355" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">compressed, ≤12GB</text>
+        <text x="460" y="105" font-family="JetBrains Mono" font-size="10" fill="#6E6456">EPT</text>
+        <text x="460" y="118" font-family="JetBrains Mono" font-size="10" fill="#6E6456">(kernel-controlled)</text>
+        <path d="M430 110 h100" stroke="#B14F36" stroke-width="2.5" marker-end="url(#ar2)"/>
+        <rect x="540" y="80" width="150" height="60" rx="10" fill="#F4DCD2" stroke="#B14F36" stroke-width="2"/>
+        <text x="615" y="105" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#9a3a22">Host-physical</text>
+        <text x="615" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">real RAM</text>
+        <defs><marker id="ar1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#565DAA"/></marker>
+        <marker id="ar2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#B14F36"/></marker></defs>
+        <text x="350" y="180" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">two page walks per TLB miss: 35.8 → 86.4 cycles</text>
+      </svg>
+      <figcaption>The EPT can't just alias the kernel's own page table: it uses a different binary format, and guest-physical addresses are capped at the machine's physical width (e.g. 36 bits) while host-virtual addresses run to 48 bits. Dune's fix: compress heap/mmap/stack into the first 12GB of guest-physical space and rebuild EPT entries on demand from EPT-fault VM exits. (Paper §3.4, Fig. 2)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · What gets exposed</h3>
+      <table class="tbl">
+        <thead><tr><th>Feature</th><th>Privileged instructions</th><th>Benefit</th></tr></thead>
+        <tbody>
+          <tr class="best"><td><b>Exceptions</b></td><td class="mono">LIDT, LTR, IRET, STI, CLI</td><td>Hardware-delivered page faults, ~4.8× faster than SIGSEGV</td></tr>
+          <tr><td><b>Virtual memory</b></td><td class="mono">MOV CRn, INVLPG, INVPCID</td><td>Direct page-table writes; batched TLB invalidation; PCID tagging</td></tr>
+          <tr><td><b>Privilege modes</b></td><td class="mono">SYSRET, SYSEXIT, IRET</td><td>Real ring 0/ring 3 boundary inside one process</td></tr>
+          <tr><td><b>Segmentation</b></td><td class="mono">LGDT, LLDT</td><td>Legacy; exposed but not emphasized</td></tr>
+        </tbody>
+      </table>
+      <div class="callout note"><span class="ic">🌱</span><div>Only exceptions and privilege-mode transitions are already <b>implicitly</b> available in VMX non-root mode — Dune doesn't need per-instruction traps for them. Virtual memory is different: the module must explicitly grant <code>%CR3</code> access via the VMCS before a Dune process can touch it. Segmentation is exposed but the paper doesn't discuss it further.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Preserving OS interfaces</h3>
+      <p>Normal syscall instructions trap only within the process (no VM exit) — so Dune redirects them: user code must issue <code>VMCALL</code>, which the module vectors through the kernel's ordinary syscall table, occasionally doing cleanup first (e.g. on <code>exit</code>). Signals are reworked too: hardware faults replace many of them outright (SIGSEGV → page fault), while others (SIGINT) are injected as fake hardware interrupts — which composes correctly with privilege modes, since hardware automatically promotes ring 3 back to ring 0 to service them safely.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Enforcement in the three case studies</h3>
+      <pre class="sketch"><span class="cm"># Sandbox: trusted runtime in ring 0, untrusted binary in ring 3</span>
+<span class="kw">on</span> syscall_attempt(by untrusted):
+    trap to ring-0 runtime          <span class="cm"># no kernel round-trip needed</span>
+    validate args against policy
+    <span class="kw">if</span> safe: VMCALL to real kernel
+    <span class="kw">else</span>: deny
+
+<span class="cm"># Wedge: sthread = pre-checkpointed, policy-scoped lightweight process</span>
+create_sthread() = restore_from_checkpoint()   <span class="cm"># not fork()</span>
+switch_sthread()  = swap page tables, tagged TLB avoids a flush  <span class="cm"># no full flush</span></pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why sthreads beat fork:</b> fork's cost is mostly page-table setup + TLB invalidation for a fresh process; recycling an already-checkpointed sthread skips the setup work entirely, which is why creation is ~40× faster. Context switches get a separate ~3× win from Dune's tagged-TLB support avoiding a full flush (Table 5).</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · EPT overhead and the large-page fix</h3>
+      <p>Dune's sandbox showed a 2.9% average SPEC2000 slowdown, but outliers like <code>mcf</code> (20.9%) and <code>ammp</code> (10.1%) came from high TLB-miss rates hitting the doubled EPT walk. Backing large allocations with 2MB pages (in both the EPT and the user page table) brought Dune within 0.1% of Linux running the same large-page configuration — the EPT cost didn't disappear, it just got amortized over far fewer, bigger translations.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces carried through with the paper's own cycle counts.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The syscall interposition speedup (ptrace vs ring trap)</h3>
+      <ol class="seq">
+        <li><b>Linux ptrace, forwarding a syscall (getpid) to the kernel:</b> 27,317 cycles (Table 3).</li>
+        <li><b>Dune, intercepting and forwarding the same syscall via VMCALL:</b> 1,091 cycles.</li>
+        <li><b>Speedup:</b> 27,317 ÷ 1,091 ≈ <b>25×</b> — the paper's headline claim. Both sides still forward the syscall to the kernel, so this isolates the cost of the tracer/tracee ptrace round-trip versus Dune's in-process ring trap + VMCALL.</li>
+        <li><b>A separate, larger win for "just check, don't forward":</b> when the syscall is only inspected and allowed/denied without being forwarded, PTRACE_SYSEMU costs 13,592 cycles versus Dune's ~180 cycles — about <b>75×</b>, a different comparison from the 25× headline number.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the 25× gain removes the ptrace tracer/tracee round-trip, not the kernel round-trip — Dune still forwards the syscall to the kernel via VMCALL. The kernel round-trip disappears entirely only in the "just check" case, where Dune beats PTRACE_SYSEMU by ~75×.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Page fault delivery (Dune's ">4×" claim)</h3>
+      <ol class="seq">
+        <li><b>Linux SIGSEGV delivery latency:</b> 2,821 cycles (Table 3, "trap").</li>
+        <li><b>Dune hardware page-fault trap:</b> 587 cycles.</li>
+        <li><b>Ratio:</b> 2,821 ÷ 587 ≈ <b>4.8×</b> — consistent with the abstract's "more than 4×."</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This single number is why GC write-barriers and sandboxes both get faster under Dune: both lean on fault delivery as their core signal.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Appel & Li user-level VM benchmarks (the "7×" claim)</h3>
+      <ol class="seq">
+        <li><b>appel1</b> (TRAP/PROT1/UNPROT): Linux 701,413 cycles → Dune 94,496 cycles ⇒ 701,413 ÷ 94,496 ≈ <b>7.4×</b>.</li>
+        <li><b>appel2</b> (PROTN/TRAP/UNPROT): Linux 684,909 → Dune 94,854 ⇒ 684,909 ÷ 94,854 ≈ <b>7.2×</b>.</li>
+        <li><b>Average ≈ 7×</b>, exactly the paper's summary figure, combining faster faults with direct page-table writes (no <code>mprotect</code> syscall detour).</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this benchmark stacks two wins — faster exceptions (§2) <i>and</i> direct page-table access (no syscall to change protection) — which compound to more than either alone.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Boehm GC: where the 40.7% figure comes from</h3>
+      <ol class="seq">
+        <li><b>HashMap benchmark, baseline execution time:</b> 14,160 ms (Table 6).</li>
+        <li><b>Dune "dirty bit" version</b> (reads hardware dirty bits directly, skips <code>mprotect</code>/signal traps entirely): 8,391 ms.</li>
+        <li><b>Improvement:</b> (14,160 − 8,391) ÷ 14,160 ≈ <b>40.7%</b> faster — the paper's best-case GC number.</li>
+        <li><b>Contrast with XML parser:</b> allocation (1,753 MB) ≈ heap size (1,737 MB) in that workload — little memory is actually recycled, so there's little garbage-collection work for the dirty-bit trick to speed up, and EPT overhead alone causes a 0.2–19% <i>slowdown</i> instead.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The lesson generalizes: Dune's wins scale with how much a workload leans on the exact primitive it accelerates (faults, dirty bits, TLB control) — not a fixed tax or bonus.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A colleague says "Dune basically replaces the Linux kernel with something faster." What's wrong with that claim?</div>
+      <details><summary>Show answer</summary><div class="ans">Dune deliberately preserves OS interfaces — syscalls still go to the same Linux syscall table, just via VMCALL instead of SYSCALL. It accelerates specific hardware-adjacent operations (faults, page tables, privilege transitions); everything else — file systems, networking, scheduling — is still ordinary Linux.<span class="mis">Misconception: that "faster kernel access" means "different kernel." Dune's whole design goal is an <i>unmodified</i> kernel.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">If a Dune process never touches privileged instructions at all, should it still pay any overhead versus a normal process?</div>
+      <details><summary>Show answer</summary><div class="ans">Yes, on memory: every TLB miss now requires the hardware page walker to traverse both the user page table and the EPT (35.8 → 86.4 cycles per walk), because the EPT sits underneath <i>all</i> guest-physical accesses, not just privileged ones. Compute-only, cache-resident code is unaffected; large working sets or poor locality feel it.<span class="mis">Misconception: that EPT overhead is opt-in. It's a property of being in VMX non-root mode at all, independent of which privileged features you actually use.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why can't the EPT just be pointed at the same page root as the kernel's normal page table, avoiding the whole compression scheme?</div>
+      <details><summary>Show answer</summary><div class="ans">Two hardware limits: the EPT uses a different binary entry format from the standard x86 page table, and Intel caps guest-physical address width at the machine's physical RAM width (e.g. 36 bits) — narrower than the 48-bit host-virtual space Dune wants to expose. So Dune builds the EPT lazily from EPT-fault VM exits and compresses heap/mmap/stack into the first ~12GB of guest-physical space.<span class="mis">Misconception: that EPT and page tables are "the same kind of table twice." They're different formats with different addressable ranges.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Wedge's sthread creation is 40× faster than fork. Is that speedup coming mainly from avoiding TLB flushes, or something else?</div>
+      <details><summary>Show answer</summary><div class="ans">Mainly something else: sthread creation reuses a pre-checkpointed, already-initialized sthread instead of building a fresh process from scratch, reducing creation to "restore some dirty memory." The tagged TLB is what makes <i>context switching</i> between sthreads 3× faster — a separate, smaller win. Conflating the two overstates what the tagged TLB alone buys.<span class="mis">Misconception: that one hardware feature (tagged TLB) explains the whole 40× number. Creation and context-switch speedups come from two different mechanisms.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">A forked child of a Dune process does not start in Dune mode. Why might that be the safer default rather than an oversight?</div>
+      <details><summary>Show answer</summary><div class="ans">Dune mode is irreversible and changes fundamental process behavior (syscalls become hypercalls, privilege rings become meaningful). Silently propagating that to every forked child — including children never designed to manage privileged hardware — could break assumptions in ordinary code paths. Requiring an explicit re-entry keeps the powerful, irreversible transition opt-in at every generation.<span class="mis">Misconception: that inheritance would be "more convenient" with no downside. It would silently spread an irreversible, behavior-changing mode.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is Dune a hypervisor?<span class="chev">▾</span></summary><div class="a">Loosely — the paper calls it a type-2 hypervisor since it runs atop an existing kernel. But it's not virtualizing an OS; it's virtualizing one process's privilege boundary. No guest kernel, no emulated devices.</div></details>
+      <details><summary><span class="q">Q2</span>Does Dune require kernel source changes?<span class="chev">▾</span></summary><div class="a">No — it's a loadable kernel module (2,509 LOC) working with an unmodified Linux kernel (tested on 3.2). That's a deliberate design constraint to make adoption easy.</div></details>
+      <details><summary><span class="q">Q3</span>Can a Dune process attack the rest of the system?<span class="chev">▾</span></summary><div class="a">The paper's threat model claims no: anything achievable in Dune mode was already achievable via ordinary syscalls — Dune just shortens the path. The EPT still bounds all guest-physical memory to that process's normal address space.</div></details>
+      <details><summary><span class="q">Q4</span>Why is EPT overhead sometimes large and sometimes negligible?<span class="chev">▾</span></summary><div class="a">It scales with TLB miss rate. Compute-bound, cache-friendly code (most of SPEC2000) barely notices; workloads with large working sets or poor locality (mcf, ammp) pay real cost from the doubled page walk. Large pages shrink this by reducing the number of walks needed.</div></details>
+      <details><summary><span class="q">Q5</span>How does Dune compare to Native Client for sandboxing?<span class="chev">▾</span></summary><div class="a">Native Client reports 5% average SPEC2000 overhead (12% worst case) via binary verification, and needs no virtualization hardware. Dune's sandbox averages 2.9% (worst case 20.9% without large pages, ~1.4% with), but requires VT-x and a kernel module — a different tradeoff between portability and overhead.</div></details>
+      <details><summary><span class="q">Q6</span>What does "hypercall" mean in Dune specifically?<span class="chev">▾</span></summary><div class="a">In most VMMs a hypercall is a paravirtualized, VMM-specific API. In Dune it means exactly one thing: "make this normal Linux system call," vectored through the kernel's regular syscall table via VMCALL.</div></details>
+      <details><summary><span class="q">Q7</span>Why does the GC case study need three different Dune versions?<span class="chev">▾</span></summary><div class="a">Each unlocks a different feature: a direct port just gets faster faults; a TLB-optimized version adds single-page INVLPG flushes instead of full flushes; a dirty-bit version skips memory protection traps entirely by reading hardware dirty bits. They're cumulative demonstrations, not competing designs.</div></details>
+      <details><summary><span class="q">Q8</span>What hardware features did Dune leave unexposed?<span class="chev">▾</span></summary><div class="a">Cache control, debug registers, and direct DMA-capable device access (via IOMMU/SR-IOV) — flagged as future work, useful mainly in special situations like preventing cache-based information leakage or reducing IO latency.</div></details>
+      <details><summary><span class="q">Q9</span>Does Dune work on ARM or AMD?<span class="chev">▾</span></summary><div class="a">The implementation targets 64-bit x86/Intel VT-x only. AMD's SVM offers an analogous NPT mechanism and is discussed as a plausible port target; ARM's Virtualization Extensions differ more (a separate deeper "Hyp" mode, no automatic state save/restore), making an ARM port a bigger redesign.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: INSIGHTS -->
+<section class="tab-panel" id="tab-insights">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Beyond this paper</div>
+      <h2>Connecting Dune to memory-systems design</h2>
+      <p class="sub">Short, deliberately narrow connections — not a survey.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>🔁 EPT's doubled page walk previews CXL's translation tax</h3>
+      <p>Dune's 35.8 → 86.4 cycle page-walk cost from adding one extra translation layer is a small-scale preview of what CXL.mem and disaggregated-memory tiering pay for indirection: every extra hop between a CPU's page table and a tiering layer's own address mapping adds walk latency that page-placement heuristics (TPP, HeMem) have to amortize by promoting hot pages to cheaper paths.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>🩹 Direct dirty-bit access is exactly what tiering systems still lack</h3>
+      <p>Dune shows real value in letting userspace read hardware dirty/accessed bits directly instead of going through kernel-mediated, coarse interfaces (or none at all, as with Linux at the time). Modern hotness-tracking tiering systems still largely rely on kernel-side PTE scanning or PEBS sampling — a Dune-style direct, cheap, per-page access bit would remove a real source of tracking overhead.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>🧩 "Preserve OS interfaces" is the same constraint CXL-tiering software faces</h3>
+      <p>Dune's insistence on staying a normal process (shared fds, IPC, no second network stack) mirrors why memory-tiering research avoids library-OS or unikernel-style redesigns for CXL memory: breaking POSIX process semantics to gain a performance primitive is rarely worth it if it isolates the system from the rest of the software stack.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>🔓 Safe privileged access without kernel patches parallels eBPF's philosophy</h3>
+      <p>Both Dune and eBPF solve the same meta-problem — give userspace/extensions safe access to kernel-adjacent power without patching or destabilizing the kernel — via different mechanisms: hardware-enforced ring/EPT boundaries versus a verified bytecode sandbox. Extensible-kernel tiering policies (deciding promotion/demotion in-kernel via eBPF) inherit the same tradeoff Dune names explicitly: composability across multiple applications wanting the same hook.</p>
+    </div>
+
+    <div class="callout takeaway"><span class="ic">🍯</span><div>Dune's real lesson for tiering research: the primitives that matter (fast faults, direct dirty bits, tagged TLBs) are worth exposing to userspace <i>without</i> redesigning the process model — the same principle that should guide how CXL-tiering hotness signals get surfaced.</div></div>
+  </div>
+</section>
+
+<!-- TAB 9: CLASS PREP -->
+<section class="tab-panel" id="tab-classprep">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Seminar-ready</div>
+      <h2>Sharp questions to raise in class</h2>
+      <p class="sub">Each ties to a specific number or design decision — not a generic reaction.</p>
+    </div>
+    <ol class="seq">
+      <li><b>Given the EPT forces a 12GB compressed guest-physical layout because of the 36-bit-physical-vs-48-bit-virtual mismatch, how much of Dune's implementation complexity is really an artifact of 2012-era address widths?</b> <span style="color:var(--ink-faint)">(worth asking whether wider physical address spaces on modern server CPUs make this whole workaround unnecessary today)</span></li>
+      <li><b>The XML benchmark slows down under all three Dune GC variants (19.0%, 12.2%, 0.2%) specifically because allocation (1,753MB) is nearly equal to heap size (1,737MB), meaning little memory gets recycled — does this suggest Dune's dirty-bit trick only helps allocation-heavy, low-turnover workloads are the wrong target?</b> <span style="color:var(--ink-faint)">(push on whether the paper's own explanation fully accounts for the regression, or if EPT cost alone should dominate)</span></li>
+      <li><b>Wedge's sthread creation is 40× faster than fork mainly via checkpoint-and-recycle, not the tagged TLB — does the paper's evaluation adequately separate these two contributions, or does bundling them into one number overstate what VT-x specifically buys?</b> <span style="color:var(--ink-faint)">(the paper's Table 5 lists only aggregate numbers, not an ablation)</span></li>
+      <li><b>Dune's sandbox averages 2.9% SPEC2000 overhead but mcf and ammp hit 20.9% and 10.1% from EPT/TLB pressure — given modern CPUs added nested-paging caches specifically to fix this, would Dune's headline numbers even reproduce on today's hardware?</b> <span style="color:var(--ink-faint)">(good chance to connect to later 2-dimensional page-walk caching work cited in §7)</span></li>
+      <li><b>The paper explicitly parks direct IOMMU/SR-IOV device access as future work — what would a Dune-style userspace path to CXL.mem or an NVMe queue (io_uring-style) need beyond what EPT already provides?</b> <span style="color:var(--ink-faint)">(a natural bridge from Dune's 2012 scope to today's kernel-bypass I/O designs)</span></li>
+    </ol>
+  </div>
+</section>
+
+<!-- TAB 10: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Dune</b><span>The system: a kernel module + libDune that use VT-x to give a process direct, safe access to privileged CPU features.</span></div>
+      <div class="term-def"><b>Process abstraction (vs machine abstraction)</b><span>Dune's design choice — virtualize one process's privilege boundary, not a whole emulated machine with its own OS and devices.</span></div>
+      <div class="term-def"><b>VT-x / VMX root/non-root</b><span>Intel's virtualization ISA extension; root mode runs host code, non-root mode runs the (here, process-level) guest.</span></div>
+      <div class="term-def"><b>VMCS</b><span>Per-context control structure holding saved state and exit-triggering configuration; Dune keeps one per thread.</span></div>
+      <div class="term-def"><b>EPT / NPT</b><span>Intel's / AMD's hardware second-level address translation that bounds a guest's page table to real, permitted memory.</span></div>
+      <div class="term-def"><b>libDune</b><span>The 5,898-line userspace library: page-table manager, ELF loader, exception/syscall shims.</span></div>
+      <div class="term-def"><b>Hypercall (VMCALL)</b><span>The instruction a Dune process uses to make what is, underneath, an ordinary Linux system call.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Sandbox (Dune use case)</b><span>Untrusted binary in ring 3, trusted runtime in ring 0, both in one address space, syscalls filtered by the runtime.</span></div>
+      <div class="term-def"><b>Wedge / sthread</b><span>A privilege-separation system built on Dune; sthreads are lightweight, checkpoint-recyclable isolated execution contexts.</span></div>
+      <div class="term-def"><b>PCID</b><span>Hardware TLB tag Dune exposes so a user program can switch among multiple page tables without a full TLB flush.</span></div>
+      <div class="term-def"><b>VPID</b><span>Separate hardware TLB tag Dune uses internally to tag entries for Dune processes, hypercalls, and context switches.</span></div>
+      <div class="term-def"><b>Dirty / accessed bits</b><span>Hardware flags on page-table entries recording writes/reads — read directly by Dune's GC integration.</span></div>
+      <div class="term-def"><b>Boehm GC</b><span>A widely used conservative mark-sweep collector; the paper's GC case study modifies it to use Dune's fault and dirty-bit access.</span></div>
+      <div class="term-def"><b>ptrace / SIGSEGV</b><span>Standard Linux syscall-interposition and fault-signaling mechanisms Dune's mechanisms outperform.</span></div>
+      <div class="term-def"><b>KVM</b><span>Linux's in-tree VMM; Dune's module reuses its low-level VT-x management code but not its high-level guest-machine logic.</span></div>
+      <div class="term-def"><b>Type-2 hypervisor</b><span>A hypervisor that runs atop a host OS rather than directly on hardware — the loose category Dune's module falls into.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What Dune buys (selected primitives)</div>
+      <div class="viz-kicker">speedup multiples / improvement, from the paper's own tables</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">ptrace interposition<small>vs kernel ptrace</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="25"><span>25× (27,317 → 1,091 cyc)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Page fault delivery<small>vs SIGSEGV</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="4.8"><span>~4.8× (2,821 → 587 cyc)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Appel &amp; Li VM ops<small>user-level VM primitives</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="7.4"><span>~7× (701k → 94k cyc)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Wedge sthread create<small>vs fork</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="25"><span>~40× (81 → 2 µs)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">GC (dirty bit, HashMap)<small>execution time cut</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="25"><span>40.7% faster</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale clipped at 25× for display; labels show true values</p>
+      <figcaption><b>The pattern:</b> the biggest wins come from removing a software-mediated round-trip — ptrace's tracer/tracee hop, sthread's from-scratch process creation — not kernel involvement itself, which Dune still uses via <code>VMCALL</code> for real syscalls. EPT overhead is the recurring cost that eats into everything else. (Paper §6, Tables 2–6)</figcaption>
+    </figure>
+
+    <div class="subhead">Related work</div>
+    <div class="read-item reveal"><h4>Exokernel <span class="diff hard">hard</span></h4><div class="meta">Engler, Kaashoek, O'Toole · SOSP · 1995</div><p>Exposes hardware via a low-level kernel interface for application-managed resources — Dune's closest philosophical ancestor, minus the virtualization hardware.</p></div>
+    <div class="read-item reveal"><h4>SPIN <span class="diff med">medium</span></h4><div class="meta">Bershad et al. · SOSP · 1995</div><p>Safe in-kernel extensions instead of user-level hardware access — the alternative Dune avoids (kernel modification risk).</p></div>
+    <div class="read-item reveal"><h4>Fluke <span class="diff hard">hard</span></h4><div class="meta">Ford et al. · OSDI · 1996</div><p>Nested process/OS layering in software; Dune could support one such extra layer via hardware privilege modes, though only a single level.</p></div>
+    <div class="read-item reveal"><h4>Native Client <span class="diff med">medium</span></h4><div class="meta">Yee et al. · IEEE S&amp;P · 2009</div><p>The portable, no-virtualization-hardware sandboxing alternative Dune's sandbox is benchmarked against.</p></div>
+    <div class="read-item reveal"><h4>Virtual Memory Primitives for User Programs <span class="diff med">medium</span></h4><div class="meta">Appel &amp; Li · ASPLOS · 1991</div><p>Source of the appel1/appel2 benchmarks Dune reports a ~7× speedup on.</p></div>
+    <div class="read-item reveal"><h4>Wedge: Splitting Applications into Reduced-Privilege Compartments <span class="diff med">medium</span></h4><div class="meta">Bittau et al. · NSDI · 2008</div><p>The original Wedge system, later reimplemented on top of Dune with far simpler code and better performance.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="read-item reveal">
+      <p><b>From the paper:</b> all cycle counts (Tables 2–6), LOC counts (module 2,509; libDune 5,898; sandbox 450/200 SLOC; Wedge 750 lines), SPEC2000/lighttpd/GC benchmark results, and the threat-model/EPT-limitation discussion are drawn directly from Belay et al., "Dune: Safe User-level Access to Privileged CPU Features," USENIX ATC 2012.</p>
+      <p><b>Framing added here:</b> the process-vs-machine SVG figure, all six analogies, the CXL/tiering connections in Insights, and the Class Prep questions are original synthesis for this study guide, not claims from the paper itself.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Belay, Bittau, Mashtizadeh, Terei, Mazières, Kozyrakis, "Dune: Safe User-level Access to Privileged CPU Features" (USENIX ATC 2012)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
