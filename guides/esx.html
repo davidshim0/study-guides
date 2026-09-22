@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<!-- ESX field guide — Memory Resource Management in VMware ESX Server (Waldspurger, OSDI'02).
+     Semantic colors: teal = ballooning (guest-cooperative reclaim) · amber = idle memory tax (the economic lever)
+     · indigo = ESX Server's allocation machinery · terracotta = demand paging (the forced fallback). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Renting Out a Server You Don't Fully Own — Memory Resource Management in VMware ESX Server, A Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98F2B; --honey-deep:#B06D10; --honey-soft:#FCEBCE;
+  --dram:#1F8577; --dram-soft:#DAF0EA;      /* teal  = ballooning (guest cooperates)   */
+  --ltram:#4C5FC7; --ltram-soft:#E6E8F8;    /* indigo = ESX Server allocation machinery */
+  --optane:#BE5B3B; --optane-soft:#F6E1D7;  /* terracotta = demand paging (forced fallback) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>USENIX OSDI 2002 · A Field Guide</span>
+    <h1>Renting out a server you don't fully <span class="swash">own</span></h1>
+    <p class="lede">Ten virtual machines think they each have a dedicated box. Only one physical machine actually exists. This is the plain-English story of how VMware's <strong>ESX Server</strong> lies to every guest OS convincingly enough that they never notice — and reclaims memory from them anyway.</p>
+    <div class="hero-meta">
+      <span>📄 "Memory Resource Management in VMware ESX Server" · Waldspurger</span>
+      <span>🎓 Basic OS memory management assumed — primers cover it</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🎈</div>
+      <p>When memory is scarce, <span class="ro">ask the guest to give back what it values least</span> — only <span class="wo">force pages out from the outside</span> when the guest can't or won't cooperate.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="insights"><span class="n">08</span>Insights</button>
+    <button class="tab-btn" data-tab="classprep"><span class="n">09</span>Class Prep</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">10</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>What this paper assumes you already know</h2>
+      <p class="sub">A TL;DR, a glossary of the load-bearing terms, then eight short primers. Skip anything you're already solid on.</p>
+    </div>
+
+    <div class="card" style="background:var(--ltram-soft);border-color:#bcbfe8">
+      <h3>⚡ TL;DR</h3>
+      <ul style="margin:0;padding-left:20px;color:#3a409a">
+        <li>ESX Server manages memory for unmodified guest VMs using four coordinated mechanisms — <b>ballooning</b> (guest-cooperative reclaim), <b>demand paging</b> (forced fallback), <b>content-based page sharing</b> (dedup), and an <b>idle memory tax</b> layered on proportional shares — so machine memory can be safely overcommitted.</li>
+        <li>Ballooning tracks non-ballooned performance within <b>1.4–4.4%</b> overhead; content-based sharing found up to <b>67%</b> content overlap across 10 identical VMs (reclaiming nearly <b>60%</b> of memory) and reclaimed <b>7.2–32.9%</b> of memory in three production deployments; raising the idle tax from 0%→75% boosted a starved VM's throughput by <b>over 30%</b>.</li>
+        <li>It matters because it's the first system to reclaim memory intelligently from <i>unmodified</i> commodity OSes — no guest source changes, no new APIs — which is exactly the constraint any OS-transparent memory-tiering system faces today.</li>
+      </ul>
+    </div>
+
+    <div class="subhead" style="margin-top:0">Quick glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>VMM / hypervisor</b><span>the software layer that pretends to be real hardware for each guest OS.</span></div>
+      <div class="term-def"><b>pmap</b><span>ESX's per-VM table translating the guest's fake "physical" page numbers to real machine pages.</span></div>
+      <div class="term-def"><b>PPN / MPN</b><span>"physical" page number (the guest's illusion) vs. machine page number (actual RAM).</span></div>
+      <div class="term-def"><b>Ballooning</b><span>a driver inside the guest that "inflates," pinning pages so the guest's own OS chooses what to give up.</span></div>
+      <div class="term-def"><b>Copy-on-write (COW)</b><span>letting two mappings share one physical page until either side writes, then splitting.</span></div>
+      <div class="term-def"><b>Idle memory tax</b><span>charging more shares-per-page for memory a VM isn't actively touching, so it drifts toward whoever needs it.</span></div>
+      <div class="term-def"><b>Proportional-share allocation</b><span>dividing a resource by "shares" owned by each client, like a weighted lottery.</span></div>
+      <div class="term-def"><b>Working set</b><span>the pages a program is actually using right now, as opposed to everything it's ever touched.</span></div>
+      <div class="term-def"><b>Admission control</b><span>refusing to power on a VM unless enough memory/disk is reserved to guarantee its minimum.</span></div>
+      <div class="term-def"><b>Hot I/O page remapping</b><span>moving frequently-DMA'd pages into low, DMA-addressable memory to avoid a copy through a bounce buffer.</span></div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> ballooning (guest-cooperative)</span>
+      <span><i style="background:var(--honey-deep)"></i> idle memory tax</span>
+      <span><i style="background:var(--ltram)"></i> ESX's allocation machinery</span>
+      <span><i style="background:var(--optane)"></i> demand paging (forced fallback)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Virtual machines and the VMM<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A virtual machine monitor sits below one or more guest operating systems, exporting a virtual hardware interface so each guest believes it owns the machine. Unlike VMware Workstation's <b>hosted</b> architecture (which piggybacks on a host OS for I/O), ESX Server manages hardware directly for full control over resource management.</p>
+          <div class="ready"><b>Now you're ready:</b> that direct control is exactly what lets ESX intercept and reshape memory allocation decisions the guest OS thinks it's making unilaterally.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Guest "physical" memory vs. real machine memory<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A guest OS expects a zero-based physical address space. ESX gives it that illusion via a per-VM <b>pmap</b> mapping PPNs (guest "physical" page numbers) to MPNs (real machine pages). The guest never sees or controls this second layer of indirection.</p>
+          <div class="ready"><b>Now you're ready:</b> every trick in this paper — ballooning, sharing, remapping — works by silently rewriting PPN→MPN mappings behind the guest's back.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Page tables, TLBs, and shadow page tables<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Hardware TLBs cache virtual-to-physical translations read from page tables. ESX intercepts the guest's attempts to install page-table entries and maintains a separate <b>shadow page table</b> with true virtual-to-machine mappings, so ordinary memory accesses hit the TLB directly with no per-access overhead.</p>
+          <div class="ready"><b>Now you're ready:</b> the extra indirection is essentially free at access time — the cost only shows up when ESX decides to remap something.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Paging and swapping, the classic version<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>When memory is scarce, an OS picks victim pages, writes them to a swap device, and frees the RAM. A replacement policy (LRU, clock, etc.) decides which pages to evict, trading off accuracy against bookkeeping cost.</p>
+          <div class="ready"><b>Now you're ready:</b> ESX could just page VM memory to its own swap disk — but doing so <i>from outside</i> the guest, with no idea which pages the guest cares about, is the core problem ballooning is built to avoid.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Working sets<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Denning's classic notion: at any moment, a program is actively using only some fraction of the memory it has ever touched — its <b>working set</b>. Pages outside it are cold and safe to reclaim without much performance cost.</p>
+          <div class="ready"><b>Now you're ready:</b> ESX's idle memory tax is entirely about estimating each VM's working-set fraction cheaply, without any cooperation from the guest OS.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Proportional-share resource allocation<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Clients own <b>shares</b> (tickets); a client with twice the shares of another is entitled to roughly twice the resource, degrading gracefully under contention. Min-funding revocation reallocates a resource from whoever has the lowest "shares-per-unit" price to whoever has the highest.</p>
+          <div class="ready"><b>Now you're ready:</b> ESX's memory allocation is proportional-share at its core — the idle tax is just an adjustment to each VM's effective price-per-page.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Copy-on-write and content hashing<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Two mappings can point at one physical page marked read-only (COW); a write triggers a fault that makes a private copy. To find candidates for sharing without knowing where duplicates come from, hash each page's contents and look for matches in a table — far cheaper than comparing every page to every other page.</p>
+          <div class="ready"><b>Now you're ready:</b> ESX applies exactly this to find identical pages across <i>unrelated</i> VMs, with no guest OS help at all.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Overcommitment and admission control<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Overcommitment means the sum of configured VM memory exceeds physical RAM — useful for consolidation, dangerous if unmanaged. Admission control refuses to start a new client unless the system can still guarantee existing commitments (e.g. reserving a minimum plus overhead before power-on).</p>
+          <div class="ready"><b>Now you're ready:</b> everything else in this paper exists to make overcommitment safe and efficient rather than a recipe for thrashing.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>ESX memory management in a nutshell</h2>
+      <p class="sub">Four mechanisms, one coordinating policy, and a hard constraint: never touch the guest's source.</p>
+    </div>
+    <div class="prose">
+      <p>ESX Server needed to overcommit memory across virtual machines running <b>unmodified</b> commodity operating systems — no source changes, no new APIs, no guest cooperation it couldn't opt out of. A naive approach — a meta-level page-replacement policy that picks victim pages from outside each VM — is fundamentally under-informed: only the guest OS knows which of its own pages are least valuable, and a second, uncoordinated eviction policy can even cause the same page to be paged out <i>twice</i> (the "double paging" problem).</p>
+      <p>ESX's answer is <span class="mem-chip chip-hi">ballooning</span>: a tiny driver installed in the guest inflates on command, forcing the guest's own memory manager to decide what to reclaim, using its native paging device if needed. When ballooning isn't available or fast enough, ESX falls back to <span class="mem-chip chip-lru">demand paging</span> to its own swap area, using randomized replacement specifically to avoid pathological guest interactions.</p>
+      <p>Layered on top, an <span class="mem-chip chip-sat">idle memory tax</span> extends proportional-share allocation with a statistically-sampled working-set estimate, so idle VMs are charged more per page and their unused memory drifts to active VMs — without breaking each VM's minimum-share guarantee. Two more mechanisms conserve memory system-wide: <span class="mem-chip chip-ucp">content-based page sharing</span> deduplicates identical pages across VMs by hashing content, and <span class="mem-chip chip-ucp">hot I/O page remapping</span> moves frequently-DMA'd pages into low, DMA-addressable memory to avoid bounce-buffer copies.</p>
+      <p><strong>The payoff:</strong> ballooning tracks native performance within 1.4–4.4% overhead; page sharing found up to 67% content overlap among identical VMs (reclaiming nearly 60% of their memory) and reclaimed 7.2–32.9% of memory in three production deployments, at under 0.5% space overhead and negligible CPU cost; raising the idle tax from 0% to 75% increased a memory-starved VM's throughput by over 30%.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li><b>Ballooning</b> reclaims memory by letting the guest OS choose the victim pages — sidestepping meta-level policy mismatch entirely.</li>
+        <li><b>Demand paging</b> is the forced fallback, using randomized (not "smart") replacement to avoid fighting the guest's own algorithms.</li>
+        <li>Working-set fraction is estimated via cheap <b>statistical sampling</b> (100 pages / 30s), not per-page tracking.</li>
+        <li>The <b>idle memory tax</b> (default 75%) reconciles proportional-share fairness with efficient utilization.</li>
+        <li><b>Content-based page sharing</b> dedups by hashing page contents — no guest hooks, no API changes needed.</li>
+        <li><b>Hot I/O remapping</b> avoids bounce-buffer copies for DMA into high memory.</li>
+        <li>A four-threshold (high/soft/hard/low) state machine coordinates when to use ballooning vs. paging vs. blocking VMs outright.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">from shares to reclaimed machine memory</div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="ESX memory allocation pipeline">
+        <rect x="20" y="30" width="200" height="70" rx="10" fill="#E6E8F8" stroke="#4C5FC7" stroke-width="2"/>
+        <text x="120" y="58" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#3a409a">Shares + min/max</text>
+        <text x="120" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">per-VM entitlement</text>
+        <path d="M220 65 h50" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow)"/>
+        <rect x="270" y="30" width="200" height="70" rx="10" fill="#FCEBCE" stroke="#B06D10" stroke-width="2"/>
+        <text x="370" y="58" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#6e4a09">Idle memory tax</text>
+        <text x="370" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">sampled working set</text>
+        <path d="M470 65 h50" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow)"/>
+        <rect x="520" y="30" width="200" height="70" rx="10" fill="#E6E8F8" stroke="#4C5FC7" stroke-width="2"/>
+        <text x="620" y="58" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#3a409a">Target allocation</text>
+        <text x="620" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">per VM, per interval</text>
+        <path d="M620 100 v40" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow)"/>
+        <rect x="500" y="150" width="220" height="70" rx="10" fill="#DAF0EA" stroke="#1F8577" stroke-width="2"/>
+        <text x="610" y="178" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#1f5b51">Ballooning (soft)</text>
+        <text x="610" y="198" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">guest picks victims</text>
+        <path d="M500 185 h-30" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow)"/>
+        <rect x="260" y="150" width="220" height="70" rx="10" fill="#F6E1D7" stroke="#BE5B3B" stroke-width="2"/>
+        <text x="370" y="178" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#9a3a22">Demand paging (hard)</text>
+        <text x="370" y="198" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">forced, randomized</text>
+        <path d="M370 220 v30" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow)"/>
+        <path d="M610 220 v30" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrow)"/>
+        <rect x="140" y="255" width="480" height="34" rx="8" fill="#FCEBCE" stroke="#B06D10" stroke-width="1.6"/>
+        <text x="380" y="277" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#6e4a09">machine memory reclaimed → redistributed by share + tax</text>
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#9A8E7C"/></marker></defs>
+      </svg>
+      <figcaption><b>Read it left to right, then down:</b> shares plus the idle tax set a target allocation; ESX tries ballooning first (guest-cooperative, cheap) and falls back to demand paging (forced, randomized) only when ballooning can't keep up — both feed the same reclaimed pool.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about ESX memory management</h2>
+      <p class="sub">Each stands alone; each ends with where it breaks down.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <ellipse cx="70" cy="70" rx="36" ry="14" fill="#DAF0EA" stroke="#1F8577" stroke-width="2.5"/>
+          <circle cx="70" cy="40" r="26" fill="#DAF0EA" stroke="#1F8577" stroke-width="2.5"/>
+          <path d="M70 66 v18" stroke="#1F8577" stroke-width="2.5"/>
+        </svg></div>
+        <span class="term">Ballooning</span>
+        <h3>Asking a tenant to declutter their own storage unit</h3>
+        <p>Instead of a landlord rummaging through boxes deciding what to throw out, you tell the tenant "free up 30 cubic feet" — they know their own junk best. The balloon driver is that request: it inflates inside the guest, and the <i>guest's own</i> memory manager decides what to page out.</p>
+        <div class="breaks"><b>Where it breaks:</b> the tenant might be asleep (guest still booting), have moved out the "manager" (driver disabled/uninstalled), or be too overwhelmed to respond fast enough — exactly ballooning's known limitations.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="42" height="52" rx="4" fill="#E6E8F8" stroke="#4C5FC7" stroke-width="2.5"/>
+          <rect x="78" y="30" width="42" height="52" rx="4" fill="#E6E8F8" stroke="#4C5FC7" stroke-width="2.5"/>
+          <path d="M62 56 h16" stroke="#4C5FC7" stroke-width="3" stroke-dasharray="3 3"/>
+          <circle cx="70" cy="56" r="5" fill="#4C5FC7"/>
+        </svg></div>
+        <span class="term">Content-based page sharing</span>
+        <h3>Two students, one photocopied chapter</h3>
+        <p>A librarian doesn't need to know who photocopied what or when — she just notices two "different" copies have identical text and merges them into one shared original, splitting only if someone starts writing in the margins (copy-on-write). ESX does this by hashing page contents, oblivious to which VM or process the page came from.</p>
+        <div class="breaks"><b>Where it breaks:</b> the librarian check ("do the hashes match?") is nearly free, but comparing every page to every other page directly would be O(n²) — which is why hashing, not brute force, is essential.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="50" width="30" height="34" fill="#FCEBCE" stroke="#B06D10" stroke-width="2.5"/>
+          <rect x="60" y="34" width="30" height="50" fill="#FCEBCE" stroke="#B06D10" stroke-width="2.5"/>
+          <rect x="96" y="20" width="30" height="64" fill="#F6E1D7" stroke="#BE5B3B" stroke-width="2.5" stroke-dasharray="4 3"/>
+          <text x="111" y="55" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">$</text>
+        </svg></div>
+        <span class="term">Idle memory tax</span>
+        <h3>Property tax on an empty lot</h3>
+        <p>Own a big empty lot and you still pay tax on it — more than someone actively farming a small plot, if the town wants land in productive use. ESX's idle tax raises the effective shares-per-page "price" of memory a VM isn't touching, so unused pages drift, via revocation, toward VMs that would actually use them — without ever seizing the whole lot.</p>
+        <div class="breaks"><b>Where it breaks:</b> a town sets tax rates by policy vote; ESX's default 75% is a single global knob (tunable per-VM in the implementation but not exposed) — a coarser lever than true differentiated pricing.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="6" fill="#4C5FC7"/><circle cx="70" cy="30" r="6" fill="#4C5FC7"/>
+          <circle cx="95" cy="55" r="6" fill="#4C5FC7"/><circle cx="60" cy="70" r="6" fill="#4C5FC7"/>
+          <circle cx="110" cy="35" r="6" fill="#4C5FC7"/>
+          <rect x="10" y="12" width="120" height="72" rx="10" fill="none" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="4 3"/>
+        </svg></div>
+        <span class="term">Statistical working-set sampling</span>
+        <h3>A pollster, not a full census</h3>
+        <p>You don't interview every citizen to estimate a national opinion — a modest random sample, refreshed periodically, tracks the true trend closely. ESX samples ~100 random pages per VM every 30 seconds, checks how many were touched, and estimates active-memory fraction from that ratio — no per-page tracking of all of memory.</p>
+        <div class="breaks"><b>Where it breaks:</b> a pollster assumes voters don't change their mind the instant they're asked; ESX addresses the analogous risk with three moving averages (slow/fast/current) and takes the max, to react fast to <i>growth</i> without over-reacting to noise.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="46" height="30" rx="4" fill="#F6E1D7" stroke="#BE5B3B" stroke-width="2.5"/>
+          <rect x="74" y="30" width="46" height="30" rx="4" fill="#F6E1D7" stroke="#BE5B3B" stroke-width="2.5"/>
+          <path d="M45 60 v10 M95 60 v10" stroke="#BE5B3B" stroke-width="2" stroke-dasharray="3 2"/>
+          <path d="M45 70 q25 20 50 0" fill="none" stroke="#9a3a22" stroke-width="2"/>
+        </svg></div>
+        <span class="term">The double-paging problem</span>
+        <h3>Two moving companies, one box</h3>
+        <p>An outside meta-level policy decides to move a box (VM page) to storage; unaware, the guest's own OS — under its own pressure — decides to move the exact same box to <i>its</i ‑ storage. The box gets fetched back just to be shipped right back out. ESX's answer is mostly to avoid the situation: prefer ballooning (which never surprises the guest) over independent meta-level paging.</p>
+        <div class="breaks"><b>Where it breaks:</b> the analogy suggests this is rare bad luck; the paper treats it as a structural risk of <i>any</i> transparent meta-level paging scheme, not an edge case — which is why they picked randomized (cheap, hard to game) rather than clever replacement for the fallback path.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="60" width="30" height="20" fill="#DAF0EA" stroke="#1F8577" stroke-width="2"/>
+          <rect x="55" y="60" width="30" height="20" fill="#DAF0EA" stroke="#1F8577" stroke-width="2"/>
+          <rect x="94" y="20" width="30" height="60" fill="#F6E1D7" stroke="#BE5B3B" stroke-width="2" stroke-dasharray="4 3"/>
+          <path d="M46 70 h9 M85 70 h9" stroke="#9A8E7C" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Hot I/O page remapping</span>
+        <h3>Moving your most-used files to the desk drawer</h3>
+        <p>Documents you touch constantly belong in the drawer nearest you, not the far filing cabinet down the hall — the trip cost adds up fast. Network buffers that get DMA'd repeatedly get "hot," and ESX tracks a copy-count per page; past a threshold, it transparently remaps that page into low, DMA-addressable memory to eliminate the bounce-buffer copy.</p>
+        <div class="breaks"><b>Where it breaks:</b> a drawer has near-infinite room compared to your desk; low memory is finite and can itself become scarce, so ESX must also consider evicting cold low pages back up to high memory — a cost/benefit tradeoff the paper leaves partly as future work.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Mechanism by mechanism, with the paper's numbers.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Virtualizing memory — one extra layer of indirection</h3>
+      <p>ESX gives each VM a zero-based "physical" address space backed by a per-VM <b>pmap</b> translating PPNs to MPNs. Guest attempts to manipulate page tables or the TLB are intercepted; a separate <b>shadow page table</b> holds true virtual-to-machine mappings for the hardware to use directly, so ordinary accesses incur zero extra overhead. This indirection is what makes every later trick possible: ESX can remap a "physical" page's backing MPN completely transparently to the guest.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Two levels of translation, one hidden from the guest</div>
+      <div class="viz-kicker">virtual → "physical" → machine</div>
+      <svg class="full" viewBox="0 0 700 180" role="img" aria-label="virtual to physical to machine address translation">
+        <rect x="20" y="60" width="160" height="60" rx="10" fill="#fff" stroke="#D8C8AC"/>
+        <text x="100" y="85" text-anchor="middle" font-family="Fraunces" font-size="14" fill="#332C24">Guest VPN</text>
+        <text x="100" y="103" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">what the app uses</text>
+        <path d="M180 90 h50" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a2)"/>
+        <rect x="240" y="20" width="160" height="60" rx="10" fill="#E6E8F8" stroke="#4C5FC7"/>
+        <text x="320" y="45" text-anchor="middle" font-family="Fraunces" font-size="14" fill="#3a409a">"Physical" PPN</text>
+        <text x="320" y="63" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">guest OS's illusion</text>
+        <rect x="240" y="100" width="160" height="60" rx="10" fill="#DAF0EA" stroke="#1F8577"/>
+        <text x="320" y="125" text-anchor="middle" font-family="Fraunces" font-size="14" fill="#1f5b51">Shadow PTE</text>
+        <text x="320" y="143" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">used by hardware TLB</text>
+        <path d="M400 50 h50" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a2)"/>
+        <path d="M400 130 h50" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a2)"/>
+        <rect x="460" y="60" width="200" height="60" rx="10" fill="#FCEBCE" stroke="#B06D10"/>
+        <text x="560" y="85" text-anchor="middle" font-family="Fraunces" font-size="14" fill="#6e4a09">Machine MPN</text>
+        <text x="560" y="103" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">real RAM — remappable by ESX</text>
+        <defs><marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#9A8E7C"/></marker></defs>
+      </svg>
+      <figcaption>The <b>pmap</b> (PPN→MPN) is ESX's private bookkeeping; the <b>shadow page table</b> (VPN→MPN) is what the hardware actually walks. Changing pmap entries — for ballooning, sharing, or remapping — never touches guest-visible state.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Reclamation: ballooning first, paging as forced fallback</h3>
+      <p>ESX prefers <b>ballooning</b>: a guest-resident driver polls once per second for a target size, then allocates (or frees) pinned pages via native OS interfaces (<code>get_free_page()</code> on Linux; <code>MmAllocatePagesForMdl()</code> on Windows). The guest's own memory manager decides what to evict to satisfy that allocation — sidestepping the fundamental problem that only the guest knows which of its pages are least valuable.</p>
+      <p>When ballooning is unavailable (driver missing, guest booting, insufficient headroom), ESX falls back to <b>demand paging</b> to its own swap area, using deliberately <b>randomized</b> replacement — not a "smarter" policy — specifically to avoid the double-paging pathology and unintended interference with the guest's native algorithms.</p>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Ballooning's real limits:</b> the driver can be disabled, uninstalled, unavailable during boot, or simply too slow to keep pace with sudden pressure — which is exactly when the hard paging fallback kicks in.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Content-based page sharing</h3>
+      <p>ESX hashes each scanned page's contents (a 64-bit hash) and looks it up in a global table. A match triggers a full byte comparison to rule out hash collisions, then both PPNs are remapped to one MPN and marked copy-on-write; a subsequent write faults and creates a private copy. Unmatched pages are kept as cheap <b>hint frames</b> rather than immediately marked COW, avoiding needless write-fault overhead. Each table entry is a compact <b>16 bytes</b>, and highly-shared pages (like the all-zero page) use a small reference count with overflow, keeping total space overhead under <b>0.5%</b> of system memory.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Shares, idle memory, and the tax</h3>
+      <p>Pure proportional-share allocation partitions memory by shares alone — an idle client with many shares can hoard memory while an active, low-share client starves. ESX fixes this with an <b>idle memory tax</b>: idle pages are charged more than active ones in the shares-per-page ratio used by min-funding revocation:</p>
+      <pre class="sketch"><span class="hl">shares_per_page = shares / (active_pages + (1 + tax_rate) × idle_pages)</span>
+<span class="cm"># tax_rate = 0   → pure share-based allocation (idle pages count the same as active)</span>
+<span class="cm"># tax_rate → 1   → idle pages count for far more, making them cheap to reclaim (default: 0.75)</span></pre>
+      <p>Working-set fraction (active_pages ÷ total) is estimated by sampling: each period, ~100 random pages have their mappings invalidated; the next touch is intercepted and counted, giving a statistical estimate at negligible cost (≤100 minor faults per 30-second period).</p>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Coordinating it all — thresholds and admission control</h3>
+      <p>Free memory is tracked against four thresholds — <b>high (6%), soft (4%), hard (2%), low (1%)</b> of system memory. Above high, no reclamation occurs; in the soft state, ballooning is used to proactively reclaim memory; in the hard state, paging is used to forcibly reclaim; below low, VMs above their target are additionally blocked from running. Hysteresis prevents state flapping. Before any VM powers on, <b>admission control</b> reserves machine memory for its min size plus overhead (typically ~32 MB: 4–8 MB frame buffer, the rest virtualization data structures) and disk swap space for max − min, guaranteeing the system can always honor commitments.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces using the paper's own measurements.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Ballooning overhead, from the dbench experiment</h3>
+      <p style="color:var(--ink-soft)">A 256 MB VM is ballooned down to 128 MB and to 224 MB; compare against VMs natively configured at those sizes.</p>
+      <ol class="seq">
+        <li><b>At 128 MB:</b> ballooned throughput trails native-128MB by <b>4.4%</b>.</li>
+        <li><b>At 224 MB (32 MB balloon):</b> the gap shrinks to <b>1.4%</b>.</li>
+        <li><b>Why the gap shrinks with balloon size:</b> most of the overhead comes from guest kernel data structures sized for the VM's <i>configured</i> max (256 MB), not its ballooned size — a 256 MB-configured VM has slightly more overhead than a genuinely 128 MB one, and that fixed cost matters less as the balloon shrinks.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> ballooning isn't free, but its cost is a small, mostly-fixed data-structure tax — not a fundamental performance penalty from reclaiming memory the "wrong" way.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② The idle memory tax, worked through the formula</h3>
+      <p style="color:var(--ink-soft)">Two VMs, equal shares, 256 MB each configured, ~360 MB machine memory available. VM1 (Windows) sits idle; VM2 (Linux) runs dbench.</p>
+      <ol class="seq">
+        <li><b>Tax rate = 0%:</b> idle pages count exactly the same as active pages — pure share allocation — so both VMs converge on the identical <b>179 MB</b> allocation, despite VM1 using almost none of it.</li>
+        <li><b>Tax rate raised to 75%:</b> VM1's idle pages now count as <code>1.75×</code> in the denominator of its shares-per-page ratio, inflating its apparent holdings and making it "cheaper" (lower shares-per-page) to reclaim from.</li>
+        <li><b>Min-funding revocation kicks in:</b> pages move from VM1 (idle) to VM2 (active), reallocating machine memory toward genuine demand.</li>
+        <li><b>Measured effect:</b> VM2's dbench throughput increases by <b>over 30%</b> after the tax change — with VM1's guaranteed min size untouched.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Pure proportional-share allocation is provably fair by shares but can be arbitrarily wasteful; the tax is the minimal fix that keeps the fairness guarantee while fixing the waste.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Content-based sharing across ten identical VMs</h3>
+      <p style="color:var(--ink-soft)">Ten identical 40 MB Linux VMs running SPEC95 benchmarks, sharing scanned over 30 minutes.</p>
+      <ol class="seq">
+        <li><b>With just one VM,</b> ~5 MB is already reclaimed — 55% of that from shared all-zero pages alone.</li>
+        <li><b>As VMs are added,</b> total shared memory grows roughly linearly (each new VM mostly duplicates existing content).</li>
+        <li><b>At ten VMs,</b> sharing approaches <b>67%</b> of aggregate VM memory (roughly two-thirds overlap), and nearly <b>60%</b> of all VM memory is actually reclaimed back to the free pool.</li>
+        <li><b>In production</b> (heterogeneous real workloads), the effect is smaller but still substantial: 10 Windows NT VMs reclaimed <b>32.9%</b>; 9 Linux VMs reclaimed <b>18.7%</b>; 5 Linux VMs reclaimed <b>7.2%</b>.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> homogeneity drives sharing — identical guest OS + application stacks overlap heavily, which is exactly the common case in server consolidation.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Admission control reservation, by the numbers</h3>
+      <p style="color:var(--ink-soft)">A VM is configured with min = 128 MB, max = 256 MB, typical overhead ~32 MB.</p>
+      <ol class="seq">
+        <li><b>Machine memory reserved at power-on:</b> min + overhead = 128 + 32 = <b>160 MB</b>, guaranteed regardless of system load.</li>
+        <li><b>Disk swap space reserved:</b> max − min = 256 − 128 = <b>128 MB</b>, ensuring the system can always page out the rest if needed.</li>
+        <li><b>In practice</b> only a small fraction of that swap reservation is ever actually used — it's a worst-case guarantee, not an expected cost.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Admission control turns "we probably have enough memory" into a guarantee, which is what makes aggressive overcommitment (the five-VM experiment overcommitted by &gt;60%) safe to run in production.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Why can't ESX simply run a clever meta-level LRU policy from outside each guest, instead of bothering with ballooning?</div>
+      <details><summary>Show answer</summary><div class="ans">Only the guest OS truly knows which of its own pages are least valuable — its policy may depend on undocumented heuristics or even application hints. A meta-level policy is uninformed by comparison and can conflict with the guest's own decisions, causing the "double paging" problem where a page gets faulted back in only to be immediately paged out again.<span class="mis">Misconception: that a sophisticated enough algorithm can substitute for guest knowledge. The problem isn't algorithm quality — it's an information asymmetry no external policy can close.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">A VM's balloon driver crashes and the guest reboots without the driver noticing. What does ESX do with the pages it had already reclaimed via that balloon?</div>
+      <details><summary>Show answer</summary><div class="ans">Any subsequent guest access to a ballooned PPN faults, since ESX deallocated the backing MPN. ESX treats this as the balloon having been "popped" — the next interaction with the (freshly booted) driver resets its state, and the fault is handled by allocating a brand-new MPN, as if the page were being touched for the first time.<span class="mis">Misconception: that a crash leaves the guest permanently short of memory. ESX's fault handler safely and transparently re-establishes normal memory on demand.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Two VMs have equal shares, but VM A is 90% idle and VM B is fully active. With tax rate = 0%, describe their allocations; with tax rate = 100%, describe them.</div>
+      <details><summary>Show answer</summary><div class="ans">At 0%, allocations are purely proportional to shares — equal shares mean equal allocation regardless of activity, so VM A keeps its half even mostly unused. At 100%, VM A's idle pages count for double in the denominator of its shares-per-page ratio, inflating its apparent holdings so nearly all its unused memory becomes reclaimable and drifts to VM B via min-funding revocation — while VM A's guaranteed min size is still respected.<span class="mis">Misconception: that a 100% tax rate means the idle VM gets nothing. It still keeps its min size and its actively-used pages — only genuinely idle memory beyond that is reclaimable.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">ESX's content-based sharing hashes page contents rather than comparing pages directly. Why does the "false match" risk not matter in practice, and what's the mitigation anyway?</div>
+      <details><summary>Show answer</summary><div class="ans">With a good 64-bit hash, collision probability doesn't exceed 50% until roughly 2^32 distinct pages are hashed; even at the largest IA-32 memory configuration (64 GB ≈ 2^24 pages), the collision probability is under 0.01%. As a belt-and-suspenders mitigation, ESX still performs a full byte-for-byte comparison before actually sharing two pages, so even a freak hash collision can never cause silent data corruption — it only costs a wasted comparison.<span class="mis">Misconception: that hash-based matching risks merging different pages. The full comparison after every hash match makes that impossible; the hash is only a cheap pre-filter.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why does ESX sample only ~100 pages every 30 seconds per VM instead of tracking access bits on every page?</div>
+      <details><summary>Show answer</summary><div class="ans">Guest-OS access bits are unreliable from outside (DMA I/O bypasses them, and semantics vary by OS), and full per-page tracking at every access would be expensive. A small random sample gives a statistically sound estimate of the active fraction at a cost of at most 100 minor page faults per period — negligible overhead for an estimate accurate enough to drive tax decisions.<span class="mis">Misconception: that more precision requires tracking every page. Statistical sampling deliberately trades a small, bounded error for a large reduction in overhead — the same logic behind any monitoring system that samples rather than exhaustively measures.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">Why does ESX use randomized rather than "smart" replacement for its own demand-paging fallback?</div>
+      <details><summary>Show answer</summary><div class="ans">A sophisticated meta-level replacement policy is exactly the mechanism the paper argues against for the same reason ballooning was invented: it risks unintended, pathological interactions with the guest's own memory management (including double paging), and paging is expected to be a rare event anyway, so the payoff from cleverness is low relative to its risk.<span class="mis">Misconception: that any eviction is better than random eviction. Interference with the guest's own policy can make an "informed" but uncoordinated choice actively worse than a neutral random one.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What's the difference between ballooning and ordinary paging?<span class="chev">▾</span></summary><div class="a">Ballooning reclaims memory by asking the <i>guest OS</i> to give up pages it considers least valuable, using its own algorithms. Ordinary (demand) paging reclaims memory from <i>outside</i> the guest, with no idea which pages matter to it — used only as a forced fallback.</div></details>
+      <details><summary><span class="q">Q2</span>Does ballooning require modifying the guest OS?<span class="chev">▾</span></summary><div class="a">No — it requires installing a small, unprivileged driver (a pseudo-device or kernel service) inside the guest, using entirely standard, documented OS interfaces for allocating pinned memory. The guest OS kernel itself is never modified.</div></details>
+      <details><summary><span class="q">Q3</span>How can two unrelated VMs end up sharing a memory page?<span class="chev">▾</span></summary><div class="a">If their contents happen to be byte-identical — e.g. both running the same OS kernel binary, shared library, or an all-zero page — ESX's content-hashing scan will find the match regardless of which VM created the page or when, and merge them via copy-on-write.</div></details>
+      <details><summary><span class="q">Q4</span>Is the idle memory tax a hard cap or a bias?<span class="chev">▾</span></summary><div class="a">A bias, layered on top of proportional shares. It changes the effective "price" of idle vs. active pages within the min-funding revocation algorithm; it never overrides a VM's configured minimum size.</div></details>
+      <details><summary><span class="q">Q5</span>What happens if the system runs out of memory faster than reclamation can respond?<span class="chev">▾</span></summary><div class="a">Free memory drops through the four thresholds. Below the rare "low" threshold, ESX not only forces paging but also blocks execution of VMs currently above their target allocation, buying time for reclamation to catch up.</div></details>
+      <details><summary><span class="q">Q6</span>Does page sharing slow the system down?<span class="chev">▾</span></summary><div class="a">Measured overhead was negligible — in controlled experiments, aggregate throughput was actually ~0.5% <i>higher</i> with sharing enabled (better physical cache locality from consolidated pages), ranging from 1.6% lower to 1.8% higher across runs.</div></details>
+      <details><summary><span class="q">Q7</span>Why is hot I/O page remapping needed at all?<span class="chev">▾</span></summary><div class="a">Some DMA-capable devices (e.g. 32-bit PCI NICs) can only address the lowest 4 GB of memory. Without remapping, I/O to pages in high memory requires an extra copy through a low-memory bounce buffer; remapping "hot" pages into low memory eliminates that copy for frequently-transferred data.</div></details>
+      <details><summary><span class="q">Q8</span>What guest OSes did ESX Server 1.5 actually support unmodified?<span class="chev">▾</span></summary><div class="a">The paper reports production use with unmodified Microsoft Windows 2000 Advanced Server and Red Hat Linux 7.2 on the Intel IA-32 architecture.</div></details>
+      <details><summary><span class="q">Q9</span>What did the authors leave for future work?<span class="chev">▾</span></summary><div class="a">Using page remapping/coloring to manage cache allocation to VMs, exploiting remapping for NUMA locality and fault containment, higher-level VM grouping abstractions, multi-resource tradeoffs, and adaptive feedback-driven workload management.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: INSIGHTS -->
+<section class="tab-panel" id="tab-insights">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Beyond this paper</div>
+      <h2>Connections to modern memory-systems research</h2>
+      <p class="sub">Short, specific links to today's OS-managed memory tiering and disaggregation work.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>Ballooning vs. transparent tiering reclaim</h3>
+      <p>Ballooning solves guest-cooperative reclaim by asking the OS what it values least — but modern OS-transparent tiering (TPP, AutoTiering) reclaims/demotes pages via PTE Accessed-bit scanning with <i>zero</i> guest cooperation. ESX's central lesson — meta-level policies mismatch native ones — is exactly the failure mode transparent hot/cold classifiers must avoid when demoting to CXL-attached or NVM tiers.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>Idle memory tax as a hotness signal</h3>
+      <p>The idle tax's core move — charge more for pages you aren't touching — is structurally the same idea as hotness-based page placement in tiering systems like Memtis or HeMem: idleness (or its inverse, access frequency) is the currency both use to decide who deserves fast memory. ESX just applies it economically (shares-per-page) rather than spatially (DRAM vs. NVM).</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>Statistical sampling as a general low-overhead trick</h3>
+      <p>Sampling 100 pages per 30 seconds to estimate a whole VM's working set is the same tradeoff modern tiering systems make when they sample a subset of pages or use PEBS-based hardware sampling instead of scanning every PTE — bounded overhead for a statistically-sound hotness estimate at scale.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>Content-based sharing and memory pooling</h3>
+      <p>ESX dedups identical pages within one physical machine; CXL-based memory pooling extends the same intuition — memory as a shared, poolable resource across hosts — but now with real network/fabric latency and coherence costs the single-machine hashing scheme never had to consider.</p>
+    </div>
+
+    <div class="callout takeaway"><span class="ic">🍯</span><div>The through-line for tiering research is more modest than "transparent signals can replace cooperation": ESX's <i>preferred</i> reclamation mechanism, ballooning, still leans on the guest to pick victim pages. Its genuinely guest-transparent piece — statistical sampling — only decides <i>how much</i> memory each VM gets, not <i>which pages</i> to evict. That narrower bet — that cheap, transparent activity signals are good enough to drive allocation and placement decisions — is exactly what OS-managed DRAM/NVM/CXL tiering systems rely on today.</div></div>
+  </div>
+</section>
+
+<!-- TAB 9: CLASS PREP -->
+<section class="tab-panel" id="tab-classprep">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Seminar-ready</div>
+      <h2>Sharp discussion questions</h2>
+      <p class="sub">Each references a specific claim, number, or design choice in the paper.</p>
+    </div>
+    <ol class="seq">
+      <li>Why default the idle memory tax to 75% rather than 100%, given the paper's own framing that 100% "allows all of a client's idle memory to be reclaimed for more productive uses"? <em style="color:var(--ink-faint)">(the paper mentions the residual 25% buffers against rapid working-set growth and masks reclamation latency — is that the whole story, or is it also hedging against the sampling estimator being wrong?)</em></li>
+      <li>Ballooning fails when the driver is disabled, uninstalled, or the guest is still booting — how much does this fragility matter today given that virtio-balloon and "free page reporting" are now standard in most hypervisors? <em style="color:var(--ink-faint)">(is guest-cooperative reclaim still the right default, or has transparent access-bit scanning made it a legacy mechanism?)</em></li>
+      <li>The working-set estimator takes the max of three moving averages (slow, fast, current-period) — what adversarial or bursty access pattern could still fool it into over- or under-estimating a VM's true working set? <em style="color:var(--ink-faint)">(think about a workload that oscillates faster than the 30-second sampling period)</em></li>
+      <li>Content-based sharing found 67% overlap (reclaiming nearly 60% of memory) among ten <i>identical</i> VMs but only 7.2–32.9% reclaimed in the three production deployments — how would this number likely change on today's heterogeneous, containerized, or CXL-pooled multi-tenant hosts? <em style="color:var(--ink-faint)">(consider whether dedup opportunity shrinks or shifts with more diverse guest images)</em></li>
+      <li>ESX deliberately chose randomized page replacement for its paging fallback specifically to avoid double-paging and guest interference — could a modern access-bit-based hot/cold classifier (as used in tiering systems) safely replace "random" today without reintroducing that same pathology? <em style="color:var(--ink-faint)">(the risk was about second-guessing the guest's own policy, not about replacement quality per se)</em></li>
+    </ol>
+  </div>
+</section>
+
+<!-- TAB 10: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Ballooning</b><span>A guest-resident driver that pins pages on ESX's command so the guest's own OS chooses what to reclaim — the primary, cooperative reclamation mechanism.</span></div>
+      <div class="term-def"><b>Demand paging (ESX)</b><span>Forced reclamation to ESX's own swap area with randomized replacement, used only when ballooning is unavailable or too slow.</span></div>
+      <div class="term-def"><b>Content-based page sharing</b><span>Hashing page contents to find and merge identical pages across VMs via copy-on-write, without any guest OS knowledge.</span></div>
+      <div class="term-def"><b>Idle memory tax</b><span>A charge on idle (vs. active) pages within the proportional-share allocation formula, defaulting to 75%, that lets idle memory drift to active VMs.</span></div>
+      <div class="term-def"><b>Hot I/O page remapping</b><span>Transparently moving frequently-DMA'd "hot" pages into low, DMA-addressable memory to avoid bounce-buffer copies.</span></div>
+      <div class="term-def"><b>pmap</b><span>ESX's per-VM PPN-to-MPN translation table, the extra level of indirection that makes all of the above transparent.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>PPN / MPN</b><span>"Physical" (guest-visible) page number vs. actual machine page number.</span></div>
+      <div class="term-def"><b>Shadow page table</b><span>ESX's virtual-to-machine translation table used directly by hardware, kept consistent with the pmap.</span></div>
+      <div class="term-def"><b>Double paging</b><span>The pathology where an uncoordinated meta-level policy and the guest's own OS both page out the same data independently.</span></div>
+      <div class="term-def"><b>Min-funding revocation</b><span>The proportional-share algorithm that reallocates a resource from the client with the lowest shares-per-unit price.</span></div>
+      <div class="term-def"><b>Hint frame</b><span>A cheap, non-COW record of an unmatched scanned page's hash, checked lazily on the next potential match.</span></div>
+      <div class="term-def"><b>Admission control</b><span>Refusing to power on a VM unless min-size machine memory, overhead, and disk swap space (max − min) can be reserved.</span></div>
+      <div class="term-def"><b>High / soft / hard / low thresholds</b><span>Four free-memory levels (6%/4%/2%/1%) that determine whether ESX reclaims nothing, prefers ballooning, forces paging, or additionally blocks VM execution.</span></div>
+      <div class="term-def"><b>PAE / bounce buffer</b><span>IA-32's 36-bit addressing extension, and the low-memory staging buffer some DMA-limited devices require for high-memory transfers.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What each mechanism buys</div>
+      <div class="viz-kicker">headline numbers from the paper's experiments</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Ballooning overhead<small>at 128 MB</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="4.4"><span>4.4% (down to 1.4% at 224MB)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Sharing, 10 VMs<small>identical guests</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="67"><span>67% shared, ~60% reclaimed</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Sharing, production<small>10 WinNT VMs</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="32.9"><span>32.9% reclaimed (673 MB)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Idle tax effect<small>0%→75%</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="30"><span>+30% dbench throughput</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Sharing space cost<small>overhead</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="0.5"><span>&lt;0.5% of system memory</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 70%</p>
+      <figcaption>All figures as reported in the paper's dbench, SPEC95, and production-deployment experiments (§3.2, §4.3, §5.4).</figcaption>
+    </figure>
+
+    <div class="subhead">Related work</div>
+    <div class="read-item reveal"><h4>Disco: Running Commodity Operating Systems on Scalable Multiprocessors <span class="diff med">medium</span></h4><div class="meta">Bugnion, Devine, Govil, Rosenblum · ACM TOCS · 1997</div><p>Introduced transparent page sharing and the pmap-style indirection ESX builds on, but required guest OS source modifications ESX avoids.</p></div>
+    <div class="read-item reveal"><h4>Self-Paging in the Nemesis Operating System <span class="diff med">medium</span></h4><div class="meta">Hand · OSDI · 1999</div><p>A related "let the client decide" idea for applications rather than guest OSes — ballooning's closest conceptual cousin.</p></div>
+    <div class="read-item reveal"><h4>Lottery and Stride Scheduling <span class="diff hard">hard</span></h4><div class="meta">Waldspurger · PhD thesis, MIT/LCS/TR-667 · 1995</div><p>The proportional-share allocation foundation the idle memory tax extends.</p></div>
+    <div class="read-item reveal"><h4>Isolation with Flexibility <span class="diff med">medium</span></h4><div class="meta">Sullivan &amp; Seltzer · USENIX ATC · 2000</div><p>Prior attempts to compensate for idleness in share-based systems that the paper cites as unsuccessful — the gap the idle tax fills.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="callout note"><span class="ic">📎</span><div><b>Paper facts</b> (all numbers, formulas, figure descriptions, and quoted mechanisms above) are drawn directly from Waldspurger, "Memory Resource Management in VMware ESX Server," OSDI 2002. <b>Framing and connective material</b> — the analogies, the tiering/CXL connections in Insights, and the discussion angles in Class Prep — are this guide's own, written to bridge the paper to contemporary OS-managed memory-tiering research; they are not claims made by the original authors.</div></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Waldspurger, "Memory Resource Management in VMware ESX Server" (USENIX OSDI, 2002)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 70;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Not optimal — adjust.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
