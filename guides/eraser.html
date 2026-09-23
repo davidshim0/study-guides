@@ -366,9 +366,9 @@ pre.sketch .kw{color:#D98C3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="card" style="background:var(--ltram-soft);border-color:#c1bdea">
       <h3 style="color:#3a3696">⚡ TL;DR</h3>
       <ul style="margin:0;padding-left:20px;color:#3a3696">
-        <li>Eraser's <b>Lockset algorithm</b> checks that every shared variable is protected by a <em>consistent</em> lock, by intersecting the locks each accessing thread holds into a shrinking candidate set — no need to replay a specific bad interleaving.</li>
-        <li>Deployed via binary rewriting (ATOM) with only 10–30× slowdown, it found real data races in <b>3 of 4</b> production Digital Equipment servers (mhttpd, Vesta, and Petal) and in <b>10%</b> of ~100 runnable undergraduate OS assignments.</li>
-        <li>It matters because scheduler-dependent tools (happens-before) can silently miss a race that never happened to manifest during testing — Eraser catches the <em>discipline violation</em> whether or not the race actually fires.</li>
+        <li>Eraser's <b>Lockset algorithm</b> checks that every shared variable is guarded by the <em>same</em> lock every single time, by keeping a shrinking list of "locks seen so far" for each variable — no need for the exact bad timing to actually happen during your test.</li>
+        <li>Built by directly editing already-compiled programs (no source code needed), and costing only a 10-30× slowdown during testing, it found real bugs in <b>3 of 4</b> real production programs at Digital Equipment Corporation, and in <b>10%</b> of ~100 real undergraduate OS assignments.</li>
+        <li>It matters because older tools that depend on watching one run's actual timing can silently miss a bug that never happened to show itself during testing — Eraser instead catches a broken locking <em>habit</em>, whether or not the bad timing ever actually occurs.</li>
       </ul>
     </div>
 
@@ -381,85 +381,87 @@ pre.sketch .kw{color:#D98C3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 
     <div class="subhead" style="margin-top:36px">Quick glossary</div>
     <div class="gloss">
-      <div class="term-def"><b>Lockset algorithm</b><span>Eraser's core check: shrink each variable's set of "locks that have always protected it" and flag when that set empties out.</span></div>
-      <div class="term-def"><b>Candidate set C(v)</b><span>The running set of locks that could still be the one consistently protecting variable v; starts as "all locks," only ever shrinks.</span></div>
-      <div class="term-def"><b>Happens-before relation</b><span>Lamport's ordering of events across threads via synchronization; the older race-detection approach Eraser deliberately avoids.</span></div>
-      <div class="term-def"><b>ATOM</b><span>DEC's binary-rewriting tool; lets Eraser insert monitoring code into a compiled program without its source.</span></div>
-      <div class="term-def"><b>Shadow memory / shadow word</b><span>A hidden metadata word Eraser keeps alongside every real 32-bit shared word, holding its lockset index and state.</span></div>
-      <div class="term-def"><b>Lockset index</b><span>A small integer standing in for a whole set of locks, so shadow words don't need to store full lock lists.</span></div>
-      <div class="term-def"><b>Virgin / Exclusive / Shared / Shared-Modified</b><span>The four-state life cycle Eraser tracks per variable so it doesn't false-alarm on ordinary initialization or read-only sharing.</span></div>
-      <div class="term-def"><b>Benign race</b><span>A real, intentional data race a programmer accepts (e.g. a "kill" flag) because the nondeterminism is harmless.</span></div>
+      <div class="term-def"><b>Thread</b><span>One of several independent, simultaneously-running "workers" inside a single program, all able to read and write the same shared memory.</span></div>
+      <div class="term-def"><b>Schedule (interleaving)</b><span>The specific order the operating system happened to run different threads' steps in during one particular run — it can differ between runs of the exact same program.</span></div>
+      <div class="term-def"><b>Lockset algorithm</b><span>Eraser's core check: for each variable, keep shrinking a list of "locks that have been present at every single visit" and raise a flag once that list is empty.</span></div>
+      <div class="term-def"><b>Candidate set C(v)</b><span>The running list of locks that could still be the one consistently guarding variable v; it starts as "every lock" and can only ever shrink.</span></div>
+      <div class="term-def"><b>Happens-before relation</b><span>An older approach: watch which events (like a lock/unlock) prove a definite before/after order between two threads' actions. Eraser avoids this because it only catches a race if the one schedule it happened to observe exposes it.</span></div>
+      <div class="term-def"><b>ATOM</b><span>A tool from Digital Equipment Corp. that edits an already-compiled program directly, letting Eraser insert its monitoring code without needing the program's source code.</span></div>
+      <div class="term-def"><b>Shadow memory / shadow word</b><span>A hidden extra piece of memory Eraser keeps alongside every real shared variable, just to record which locks have guarded it and what stage it's in.</span></div>
+      <div class="term-def"><b>Lockset index</b><span>A small number that stands in for a whole list of locks, so the hidden shadow word only needs to store a number, not a full list.</span></div>
+      <div class="term-def"><b>Virgin / Exclusive / Shared / Shared-Modified</b><span>Four stages Eraser tracks per variable — new, single-owner setup, shared for reading, shared and being written — so it doesn't wrongly complain about normal setup or safe read-only sharing.</span></div>
+      <div class="term-def"><b>Benign race</b><span>A real, uncoordinated access to shared memory by two threads that the programmer allowed on purpose, because it happens to be harmless (e.g. a simple on/off flag).</span></div>
     </div>
 
     <div class="primer-grid">
       <details class="primer">
         <summary><span class="pnum">1</span>Threads and shared memory<span class="chev">▾</span></summary>
         <div class="body">
-          <p>A <b>thread</b> is an independent stream of execution inside one process; several threads share the same address space, so they can all read and write the same variables. That sharing is what makes multithreading powerful — and dangerous.</p>
-          <div class="ready"><b>Now you're ready:</b> Eraser exists because two threads touching the same word of memory, with no coordination, is where bugs live.</div>
+          <p>Imagine one program running several "mini-programs" at once inside it, called <b>threads</b> — like several cooks working in the same kitchen at the same time. All the threads in a program can see and use the exact same variables, the same way all the cooks share the same countertop and ingredients. That sharing is what makes this style of programming fast and powerful — and also where bugs sneak in, the same way two cooks grabbing the same bowl at once can cause a mess.</p>
+          <div class="ready"><b>Now you're ready:</b> Eraser exists because two threads touching the same piece of memory, with nothing coordinating them, is exactly where bugs live.</div>
         </div>
       </details>
       <details class="primer">
         <summary><span class="pnum">2</span>Locks and mutual exclusion<span class="chev">▾</span></summary>
         <div class="body">
-          <p>A <b>lock</b> (mutex) is either free or owned by one thread. <code>lock(mu)</code> blocks until it's free, then claims it; <code>unlock(mu)</code> releases it. Only the current owner may unlock it — that's what distinguishes a lock from a plain semaphore.</p>
-          <div class="ready"><b>Now you're ready:</b> the paper's whole argument is about <i>which</i> lock — if any — consistently guards each shared variable.</div>
+          <p>A <b>lock</b> is like a single bathroom key hanging on a hook: at any moment it's either free, or one thread is holding it and everyone else has to wait. Calling <code>lock(mu)</code> means "wait for the key, then take it"; <code>unlock(mu)</code> means "hang the key back up." Only whoever is currently holding the key is allowed to hang it back up — that's the one detail that makes a lock different from some other coordination tools.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's whole argument is about <i>which</i> key — if any — was consistently required before touching each shared variable.</div>
         </div>
       </details>
       <details class="primer">
         <summary><span class="pnum">3</span>What a data race actually is<span class="chev">▾</span></summary>
         <div class="body">
-          <p>The paper's definition: two concurrent threads access a shared variable, <b>at least one access is a write</b>, and nothing prevents the accesses from happening simultaneously. If those conditions hold, the outcome depends on scheduling luck — a serious, usually accidental, bug.</p>
-          <div class="ready"><b>Now you're ready:</b> Eraser's whole job is detecting exactly this pattern, without needing the bad interleaving to actually occur during the test run.</div>
+          <p>The paper's definition of a <b>data race</b>: two threads touch the same shared variable at around the same time, <b>at least one of those touches is a write</b>, and nothing (no lock) is stopping them from happening at literally the same instant. When that's true, what actually happens is down to luck in the timing — which is a serious bug, even if it doesn't visibly break anything today.</p>
+          <div class="ready"><b>Now you're ready:</b> Eraser's whole job is spotting exactly this pattern in the code's habits — without needing the unlucky timing to actually happen during the one test run you watched.</div>
         </div>
       </details>
       <details class="primer">
         <summary><span class="pnum">4</span>The happens-before relation<span class="chev">▾</span></summary>
         <div class="body">
-          <p>Lamport's <b>happens-before</b> orders events: within one thread by program order, and across threads through synchronization (e.g. an unlock happens-before the next lock of the same mutex). Classic race detectors flag two accesses only if happens-before doesn't order them.</p>
-          <div class="ready"><b>Now you're ready:</b> this approach only sees a race if the test run's specific schedule happens to expose it — Eraser's central complaint.</div>
+          <p><b>Happens-before</b> is a way of proving a definite before/after order between two threads' actions, using events like locking and unlocking as evidence (e.g., "thread A's unlock happened before thread B's lock of that same key, so A definitely finished first"). Older race-detecting tools only raise an alarm if they can't find any such proof of ordering between two touches of a variable.</p>
+          <div class="ready"><b>Now you're ready:</b> this only catches a race if the one schedule that actually ran during your test happens to expose it — that's Eraser's central complaint about it.</div>
         </div>
       </details>
       <details class="primer">
         <summary><span class="pnum">5</span>Hoare's monitor<span class="chev">▾</span></summary>
         <div class="body">
-          <p>A <b>monitor</b> bundles shared variables with the only procedures allowed to touch them, all guarded by one implicit lock acquired on entry. It's a static, compile-time guarantee against races — but it breaks down for dynamically allocated shared data, which monitors can't scope.</p>
-          <div class="ready"><b>Now you're ready:</b> Eraser's goal is to recover monitor-like safety guarantees, dynamically, for programs that allocate shared data on the heap.</div>
+          <p>A <b>monitor</b> is an older idea: bundle a group of shared variables together with the only functions allowed to touch them, and automatically lock them as a set whenever any of those functions runs. Because this is set up when the program is written (not while it's running), it breaks down for data that gets created fresh, on the fly, while the program is already running — a monitor can't automatically know to protect something that didn't exist yet.</p>
+          <div class="ready"><b>Now you're ready:</b> Eraser's goal is to get that same kind of safety back, but by watching the running program instead of requiring it to be structured a certain way in advance.</div>
         </div>
       </details>
       <details class="primer">
         <summary><span class="pnum">6</span>Binary rewriting (ATOM)<span class="chev">▾</span></summary>
         <div class="body">
-          <p>Instead of modifying source code, a <b>binary rewriter</b> takes a compiled executable and inserts new instrumentation directly into the machine code, producing a functionally identical but monitored binary. ATOM is the DEC Alpha tool Eraser is built on.</p>
-          <div class="ready"><b>Now you're ready:</b> this is how Eraser instrumented every load, store, lock, and unlock in production servers it had no special access to modify.</div>
+          <p>Normally, adding monitoring code means editing and recompiling the source code. A <b>binary rewriter</b> skips that: it takes the already-compiled program (the file the computer actually runs) and inserts new tracking instructions directly into it, producing a new version that behaves identically but is now being watched. ATOM is the specific tool, from Digital Equipment Corp., that Eraser is built on.</p>
+          <div class="ready"><b>Now you're ready:</b> this is how Eraser was able to watch every memory access and every lock/unlock inside real production programs, without needing their original source code.</div>
         </div>
       </details>
       <details class="primer">
         <summary><span class="pnum">7</span>Shadow memory<span class="chev">▾</span></summary>
         <div class="body">
-          <p><b>Shadow memory</b> is a parallel region of memory holding metadata about the "real" memory, addressable by a fixed offset from the real address. It lets a tool attach bookkeeping (like "which locks protect this word?") without touching the program's own data layout.</p>
-          <div class="ready"><b>Now you're ready:</b> Eraser gives every 32-bit shared word its own shadow word, storing a lockset index and a small state.</div>
+          <p><b>Shadow memory</b> is a second, hidden region of memory that mirrors the real one — for every real piece of data, there's a matching hidden slot right alongside it, used to store extra bookkeeping (like "which lock(s) have guarded this?") without touching the program's real data at all.</p>
+          <div class="ready"><b>Now you're ready:</b> Eraser gives every shared variable its own small hidden slot, used to store which locks have been seen protecting it.</div>
         </div>
       </details>
       <details class="primer">
-        <summary><span class="pnum">8</span>Set intersection as "narrowing suspects"<span class="chev">▾</span></summary>
+        <summary><span class="pnum">8</span>Narrowing down a list of suspects<span class="chev">▾</span></summary>
         <div class="body">
-          <p>Intersecting two sets keeps only elements common to both. Start with "every lock is a suspect protector" and intersect in the locks held at each new access — the suspect set can only shrink or stay the same, never grow.</p>
-          <div class="ready"><b>Now you're ready:</b> this monotonic shrinking is the entire Lockset algorithm; when the set empties, no lock protected every access.</div>
+          <p>Think of it like narrowing down a list of suspects: you start by assuming every lock in the whole program <i>could</i> be the one protecting this variable, and every time the variable gets touched, you cross off any lock that wasn't being held at that moment. The list of remaining "suspects" can only ever get smaller or stay the same — it never grows back.</p>
+          <div class="ready"><b>Now you're ready:</b> this crossing-off process is the entire Lockset algorithm; once the suspect list hits zero, you've proven no single lock protected every touch.</div>
         </div>
       </details>
       <details class="primer">
         <summary><span class="pnum">9</span>Reader/writer locks<span class="chev">▾</span></summary>
         <div class="body">
-          <p>A <b>read-write lock</b> lets many threads hold it simultaneously in read mode, but only one thread at a time in write mode (and never together with a reader). This safely allows concurrent reads while still serializing writes.</p>
-          <div class="ready"><b>Now you're ready:</b> Eraser's discipline must treat "held in read mode" differently from "held in write mode" — a subtlety the basic algorithm ignores.</div>
+          <p>A <b>read-write lock</b> is a smarter kind of key: any number of threads can hold it at once as long as they only want to <i>read</i> the data, but only one thread at a time may hold it to <i>write</i> — and no reader is allowed in while a writer holds it. This lets safe, harmless reading happen in parallel while still preventing writes from colliding with anything.</p>
+          <div class="ready"><b>Now you're ready:</b> Eraser has to tell the difference between "holding the key just to read" and "holding the key to write" — a distinction the simplest version of the algorithm ignores.</div>
         </div>
       </details>
       <details class="primer">
         <summary><span class="pnum">10</span>False alarms and testing tools<span class="chev">▾</span></summary>
         <div class="body">
-          <p>A dynamic testing tool can only observe what actually ran, so it can both miss real bugs (false negatives) and flag correct-but-unusual code as suspicious (false positives / false alarms). A good tool needs a way for programmers to tell it "this is intentional."</p>
-          <div class="ready"><b>Now you're ready:</b> Eraser is explicitly a testing tool, not a prover — hence its suite of program annotations for suppressing known-safe patterns.</div>
+          <p>Any tool that only watches a program while it runs (rather than mathematically proving something about the code) can only judge what it actually saw happen. That means it can miss real bugs it never happened to observe, and it can also wrongly flag perfectly fine, just-unusual-looking code as suspicious (a <b>false alarm</b>). A good tool needs some way for the programmer to say "yes, I know, this one's fine on purpose."</p>
+          <div class="ready"><b>Now you're ready:</b> Eraser is upfront that it's a testing tool, not a mathematical guarantee — which is why it comes with a small set of annotations programmers can use to tell it "this pattern is intentional, stop complaining."</div>
         </div>
       </details>
     </div>
@@ -475,22 +477,23 @@ pre.sketch .kw{color:#D98C3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
       <p class="sub">Why happens-before wasn't enough, what Lockset checks instead, and how the pieces fit together.</p>
     </div>
     <div class="prose">
-      <p>Classic dynamic race detectors use Lamport's <span class="mem-chip chip-lru">happens-before</span> relation: they flag two accesses as racing only if the actual observed schedule leaves them unordered. That's a real weakness — a program can have a live data race that a given test run's interleaving simply never exposes, so the tool reports nothing even though the bug is there (paper's Figure 2: an unprotected variable <code>y</code>, raced on by two threads, escapes detection purely because Thread 1 happened to run first).</p>
-      <p><strong>Eraser</strong>'s <span class="mem-chip chip-ucp">Lockset algorithm</span> sidesteps this by checking a <em>discipline</em> instead of a specific execution: for every shared variable v, maintain a candidate set <code>C(v)</code> of locks that have protected it consistently so far. On every access, intersect <code>C(v)</code> with the locks the accessing thread currently holds. If <code>C(v)</code> ever becomes empty, no single lock protected every access — a locking-discipline violation, and very likely a real race — regardless of which interleaving happened to run.</p>
-      <p>The raw rule is too strict for real code, so the paper refines it with a four-state life cycle per variable (<span class="mem-chip chip-hi">Virgin → Exclusive → Shared → Shared-Modified</span>) that quietly tolerates unlocked initialization and pure read-sharing, and with a read/write split so reader-locks don't falsely "protect" a write. Eraser implements all of this via <span class="mem-chip chip-ucp">ATOM binary rewriting</span> plus a compact <span class="mem-chip chip-ucp">shadow-word / lockset-index</span> representation, at a real but tolerable 10–30× slowdown.</p>
-      <p><strong>The payoff:</strong> run against production Digital Equipment Corporation servers with no special preparation, Eraser found genuine races in <b>3 of 4</b> systems (mhttpd, the Vesta cache server, and Petal), plus real bugs and intentional <span class="mem-chip chip-sat">benign races</span> — and flagged races in <b>10%</b> of ~100 runnable undergraduate multithreading assignments.</p>
+      <p>First, some quick vocabulary. A program can run several <b>threads</b> at once — think of them as several workers inside the same program, all able to read and write the same pieces of memory. Whenever the program runs, the operating system decides, moment to moment, whose turn it is to execute next; that specific ordering of "who ran when" is called the <b>schedule</b> (or <b>interleaving</b>) for that run. Run the exact same program twice and you can get two different schedules, because the OS is juggling lots of other things too. A tool that watches the program while it actually runs (rather than just reading the source code) is called a <b>dynamic</b> tool.</p>
+      <p>Older dynamic race-detection tools used an idea called <span class="mem-chip chip-lru">happens-before</span>: while the program runs, watch which events (like locking and unlocking) tie two threads' actions into a definite before/after order. If two threads touch the same variable and the tool can't find anything tying those two touches into an order — they look like they could have happened at the same moment — it calls that a race. The catch: this only works for the <i>one schedule that actually happened</i> during that run. If, purely by luck, the OS happened to run things in an order where the two threads' visits looked "in order" this time (even though nothing in the program actually guarantees that order), the tool sees nothing wrong — even though the bug is real and could still hit someone the next time the schedule comes out differently. The paper's Figure 2 shows exactly this: an unguarded variable <code>y</code> is touched by two threads with zero real coordination between them, but because of a coincidence in this particular run, happens-before-based tools miss it entirely.</p>
+      <p><strong>Eraser's</strong> big idea, called the <span class="mem-chip chip-ucp">Lockset algorithm</span>, is to stop caring about any one schedule and instead check a <i>rule</i>: has this variable been protected by a lock <i>every single time</i>, consistently? Here's how: for every shared variable <code>v</code>, Eraser keeps a running list, <code>C(v)</code>, of "locks that might be the one consistently guarding v." Every time any thread touches <code>v</code>, Eraser looks at which locks that thread is currently holding, and throws out of <code>C(v)</code> any lock that isn't one of them. Over time this list can only shrink. If it ever shrinks all the way down to nothing, that proves no single lock was present at every single touch — meaning the variable was never actually being protected consistently, whether or not the threads happened to collide badly during this particular run.</p>
+      <p>The plain "shrink the list to nothing" rule is too trigger-happy for real programs — it would wrongly complain about perfectly normal things, like one thread quietly setting up a new variable before anyone else even knows it exists. So the paper adds a small set of exceptions: a per-variable status that starts as "brand new, being set up by one thread" and only starts being checked strictly once a second thread gets involved and someone writes to it (four stages: <span class="mem-chip chip-hi">Virgin → Exclusive → Shared → Shared-Modified</span>) — plus a special case for locks that let many threads read at once but only one thread write. Eraser builds all of this by editing an already-compiled program directly (a technique called <span class="mem-chip chip-ucp">binary rewriting</span>, via a tool named ATOM) and by attaching a small hidden tracking record to every shared variable (a <span class="mem-chip chip-ucp">shadow word</span>). The cost: the instrumented program runs 10 to 30 times slower — noticeable, but fine for a one-time testing run, not something you'd ship to users.</p>
+      <p><strong>Did it work?</strong> The authors ran Eraser, with no special setup, against four real production programs used inside Digital Equipment Corporation. It found genuine, previously-unknown bugs in <b>3 of the 4</b> (mhttpd, the Vesta cache server, and Petal), plus several places where a race was intentional and harmless (a <span class="mem-chip chip-sat">benign race</span>) — and when they pointed it at about 100 real student operating-systems assignments, <b>10%</b> of them turned out to have a genuine, previously unnoticed race.</p>
     </div>
 
     <div class="card" style="background:var(--honey-soft);border-color:#EFD2A0">
       <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
       <ul style="margin:0;padding-left:20px;color:#6e4a09">
-        <li>Lockset checks a <b>discipline</b> (consistent locking), not a specific schedule — it doesn't need the race to actually fire to catch it.</li>
-        <li><code>C(v)</code> only ever shrinks; empty means "no lock protected every access to v."</li>
-        <li>Three exceptions had to be built in: unlocked <b>initialization</b>, unlocked <b>read-sharing</b>, and <b>read-write locks</b> (read-mode locks don't count for writes).</li>
-        <li>A <b>four-state machine</b> (Virgin/Exclusive/Shared/Shared-Modified) implements those exceptions and gates when races are actually reported.</li>
-        <li>Implemented with <b>ATOM</b> binary rewriting + a compact <b>shadow word</b> (lockset index + 2-bit state) per shared word — no source changes needed.</li>
-        <li>Found real races in <b>3 of 4</b> production servers and <b>10%</b> of undergraduate assignments, at 10–30× runtime overhead.</li>
-        <li>Not sound or complete: it's a <b>testing</b> tool — false alarms are handled with annotations, and some scheduler-dependence survives around initialization.</li>
+        <li>Lockset checks whether the code has a <b>consistent habit</b> of locking a variable — it doesn't need the bad timing to actually happen during the test to catch the problem.</li>
+        <li><code>C(v)</code> (the candidate-lock list for variable v) only ever gets smaller; empty means "no single lock was present at every visit to v."</li>
+        <li>Three exceptions had to be built in so it wouldn't cry wolf: unlocked <b>setup</b> by one thread, unlocked <b>read-only sharing</b>, and <b>read/write locks</b> (a lock held only for reading doesn't count as protecting a write).</li>
+        <li>A <b>four-stage status</b> per variable (new → single-owner → shared-for-reading → shared-and-being-written) implements those exceptions and decides when a warning actually fires.</li>
+        <li>Built by editing the already-compiled program directly (<b>binary rewriting</b>, via a tool called ATOM) plus a small hidden tracking record per shared variable — no source-code changes needed.</li>
+        <li>Found real races in <b>3 of 4</b> production servers and <b>10%</b> of student assignments, at the cost of running 10 to 30 times slower during testing.</li>
+        <li>It's a <b>testing</b> tool, not a mathematical proof: it can still raise false alarms (handled with manual annotations), and one specific corner case around initial setup can still depend on lucky timing.</li>
       </ul>
     </div>
 
@@ -574,7 +577,7 @@ pre.sketch .kw{color:#D98C3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         <span class="term">The core idea · Lockset refinement</span>
         <h3>Narrowing a suspect list</h3>
         <p>A detective starts with every employee as a suspect and, after each new witness account, keeps only names consistent with <i>all</i> testimony. C(v) works the same way: every lock is a suspect protector until an access rules some out. When the list empties, nobody is consistent — meaning no single lock ever guarded every visit.</p>
-        <div class="breaks"><b>Where it breaks:</b> a detective can reopen the case with new information; C(v) is monotonic — it never grows back, even if the "true" protecting lock briefly looked ruled out by a coincidence (see Problem 5).</div>
+        <div class="breaks"><b>Where it breaks:</b> a detective can reopen the case with new information; C(v) can only shrink, never grow back — even if the "true" protecting lock briefly got crossed off by pure coincidence (see Problem 5).</div>
       </div>
 
       <div class="analogy reveal">
@@ -637,7 +640,7 @@ pre.sketch .kw{color:#D98C3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         <span class="term">Read vs write locks · Asymmetric protection</span>
         <h3>A library reading room vs. the archive vault</h3>
         <p>Any number of patrons may sit and read in the reading room at once — no conflict. But only one archivist at a time may go into the vault to re-shelve, and while they're in there, nobody reads from that shelf. Eraser's read/write refinement mirrors this: a lock held only in read mode never counts toward protecting a <i>write</i>, only toward protecting other reads.</p>
-        <div class="breaks"><b>Where it breaks:</b> a library has one vault; real programs sometimes protect one variable with <i>several</i> locks simultaneously (multiple-locks discipline), a pattern the paper admits Eraser handles only approximately, trading false alarms for false negatives.</div>
+        <div class="breaks"><b>Where it breaks:</b> a library has one vault; real programs sometimes protect one variable with <i>several</i> locks held at once, a pattern the paper admits Eraser only handles approximately — fixing false alarms there risks letting some real races slip through instead.</div>
       </div>
 
       <div class="analogy reveal">
@@ -667,14 +670,14 @@ pre.sketch .kw{color:#D98C3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     </div>
 
     <div class="prose">
-      <h3>1 · The problem with scheduler-dependent detection</h3>
-      <p>Tools based on <span class="mem-chip chip-lru">happens-before</span> monitor every access and flag two accesses to a shared variable as racing only if the happens-before relation doesn't order them <i>in this particular run</i>. The paper's Figure 2 shows exactly how this fails: an unprotected variable <code>y</code> is accessed by two threads, but because Thread 1's lock/unlock of a shared mutex happens to occur before Thread 2 begins, happens-before considers the accesses ordered — the real, schedule-independent bug goes unreported. Catching it would require a lucky (or exhaustive) test run with the opposite interleaving.</p>
-      <div class="callout warn"><span class="ic">⚠</span><div>This scheduler-dependence is the whole motivation for Lockset: check a <b>property of the code's locking behavior</b>, not a property of one particular interleaving.</div></div>
+      <h3>1 · The problem with tools that depend on lucky timing</h3>
+      <p>Tools based on <span class="mem-chip chip-lru">happens-before</span> watch every touch of a variable and only raise an alarm if they can't prove a before/after order between two threads' touches <i>in this one run</i>. The paper's Figure 2 shows exactly how this fails: an unguarded variable <code>y</code> is touched by two threads with no real coordination between them, but purely because Thread 1's lock/unlock of some unrelated shared key happens to finish before Thread 2 even starts, happens-before can "prove" an order existed — even though nothing in the program actually guarantees that order. So the real, timing-independent bug goes unreported. Catching it this way would need a lucky (or exhaustively repeated) test run where the timing came out differently.</p>
+      <div class="callout warn"><span class="ic">⚠</span><div>This dependence on lucky timing is the whole reason Lockset exists: check a <b>habit in the code's locking behavior</b>, not a property of one particular run's timing.</div></div>
     </div>
 
     <div class="prose">
       <h3>2 · The basic Lockset algorithm</h3>
-      <p>The simplest locking discipline: every shared variable is protected by <i>some</i> lock, meaning that lock is held by whichever thread accesses it, every time. Eraser can't be told which lock protects which variable, so it infers the protection relation purely from execution history via <b>lockset refinement</b>.</p>
+      <p>The simplest possible rule: every shared variable should be protected by <i>some</i> lock, meaning that same lock is held by whichever thread touches it, every single time. Nobody tells Eraser in advance which lock is supposed to protect which variable — it has to figure that out purely by watching what actually happens as the program runs, narrowing down the "suspect" locks step by step (the "narrowing suspects" idea from the primers).</p>
       <pre class="sketch"><span class="kw">let</span> locks_held(t) = set of locks held by thread t
 <span class="kw">for</span> each v: initialize C(v) = <span class="hl">ALL LOCKS</span>
 <span class="kw">on</span> each access to v by thread t:
@@ -684,8 +687,8 @@ pre.sketch .kw{color:#D98C3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     </div>
 
     <div class="prose">
-      <h3>3 · Handling initialization and read-sharing</h3>
-      <p>The raw rule above is too strict: it flags ordinary unlocked <b>initialization</b> and safe unlocked <b>read-only sharing</b> as violations. The fix is a per-variable state machine that delays refinement and reporting until they're actually meaningful.</p>
+      <h3>3 · Handling initial setup and read-sharing</h3>
+      <p>The raw rule above is too strict: it would wrongly flag ordinary unlocked <b>initial setup</b> by one thread, and safe unlocked <b>read-only sharing</b>, as if they were bugs. The fix is to give each variable a status — one of four stages — and only start actually checking and reporting problems once that status shows the variable has moved past simple setup and read-sharing into a state where it actually matters.</p>
     </div>
 
     <figure class="viz reveal">
@@ -728,7 +731,7 @@ pre.sketch .kw{color:#D98C3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 
     <div class="prose">
       <h3>4 · Read-write locks</h3>
-      <p>Real programs also use single-writer, multiple-reader locks. The final discipline: some lock <code>m</code> must be held in <b>write mode</b> for every write, and in <b>some</b> mode (read or write) for every read. So reads refine against all held locks, but writes refine against only the write-held ones:</p>
+      <p>Real programs also use the "many readers, one writer" locks from the primers. The final version of the rule: some lock <code>m</code> must be held in <b>write mode</b> for every write to the variable, and in <b>either</b> mode (read or write) for every read. So a read gets checked against every lock the thread is holding, but a write only gets checked against locks held specifically in write mode — a lock held just for reading doesn't count toward protecting a write:</p>
       <pre class="sketch"><span class="kw">on</span> each read of v by thread t:
     C(v) := C(v) ∩ locks_held(t)
     <span class="kw">if</span> C(v) == {}: warn
@@ -739,7 +742,7 @@ pre.sketch .kw{color:#D98C3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 
     <div class="prose">
       <h3>5 · Implementation — binary rewriting and shadow memory</h3>
-      <p>Eraser is built on <b>ATOM</b>, which rewrites a Digital Unix/Alpha binary to add calls to the Eraser runtime around every load, store, lock, unlock, thread create/exit, and allocator call — no source code required. Every 32-bit word in the heap or global data gets a paired <b>shadow word</b>, found by a fixed address offset, storing a 30-bit <b>lockset index</b> plus a 2-bit state (Virgin/Exclusive/Shared/Shared-Modified); in the Exclusive state those 30 bits instead hold the owning thread's ID.</p>
+      <p>Eraser is built on <b>ATOM</b> (the already-compiled-program editor from the primers), which inserts a small bit of extra tracking code around every single memory read, memory write, lock, unlock, thread creation/exit, and memory-allocation call in the already-compiled program — no source code needed. Every chunk of shared memory gets a paired hidden <b>shadow word</b> sitting at a fixed, predictable distance away from it, storing a number that identifies its current lockset (the <b>lockset index</b>) plus a small code for which of the four stages (Virgin/Exclusive/Shared/Shared-Modified) it's in; while a variable is still in the single-owner Exclusive stage, that same space instead just stores the ID of the one thread that owns it.</p>
     </div>
 
     <figure class="viz reveal">
@@ -767,12 +770,12 @@ pre.sketch .kw{color:#D98C3D} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         <rect x="475" y="126" width="200" height="24" rx="4" fill="#F6DBD9"/><text x="575" y="142" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#8a2c2c">2 → { }</text>
         <defs><marker id="a4" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0L8,4L0,8z" fill="#5B55B8"/></marker></defs>
       </svg>
-      <figcaption><b>Every shared word carries only a small integer</b>, never a full lock list — because the paper observed at most 10,000 distinct locksets in any run, a shared, hash-deduplicated table of sorted lock vectors makes intersection a cache lookup, not a set computation. (Paper §3.1, Fig. 5)</figcaption>
+      <figcaption><b>Every shared variable carries only a small number</b>, never a full list of locks — because the paper never saw more than 10,000 different lock-combinations show up in any one run, one shared table can hold every combination ever seen, and checking a variable becomes a quick lookup in that table instead of comparing full lists every time. (Paper §3.1, Fig. 5)</figcaption>
     </figure>
 
     <div class="prose">
       <h3>6 · Performance</h3>
-      <p>Instrumenting <i>every</i> load and store is expensive: applications typically slow down <b>10–30×</b> under Eraser. The authors estimate about half of that overhead comes from making a procedure call at every single load and store instruction — inlining the monitoring code (rather than calling out to it) was identified as the main available optimization, left for future work.</p>
+      <p>Checking <i>every single</i> memory read and write isn't free: programs typically run <b>10 to 30 times slower</b> under Eraser. About half of that slowdown, the authors estimate, comes from the overhead of jumping out to a separate piece of tracking code every single time — pasting that tracking code directly inline instead (rather than jumping to it each time) was identified as the main way to speed this up, but the authors left actually building that for future work.</p>
       <div class="callout why"><span class="ic">💡</span><div>10–30× sounds large, but it's a <b>testing-time</b> cost paid once per debugging run, not a production cost — and the paper found it didn't materially change which races got reported (see the 2-thread vs. 10-thread sensitivity experiment in Worked Examples).</div></div>
     </div>
 
@@ -787,7 +790,7 @@ EraserReadLock(lock) / EraserWriteLock(lock)  <span class="cm"># declare a priva
 
     <div class="prose">
       <h3>8 · Beyond user-level locks — the SPIN kernel</h3>
-      <p>Porting toward the SPIN OS kernel surfaced two new synchronization idioms Lockset doesn't natively understand. <b>Interrupt levels</b> act like nested locks — raising to level <code>n</code> implicitly protects everything protected at any lower level — so Eraser was extended to treat each interrupt level as its own lock, with raising to level <code>n</code> counted as acquiring the first <code>n</code> interrupt-locks at once. <b>Post/wait semaphores</b> (a driver signaling a waiting thread) are harder: since a semaphore isn't "owned" the way a lock is, Eraser can't infer which data it protects, producing false alarms in this style of synchronization.</p>
+      <p>Trying to use Eraser inside the SPIN operating-system kernel surfaced two coordination tricks that don't look like ordinary locks at all. Kernels often protect data simply by temporarily blocking certain interrupts (signals from hardware) rather than using a lock — this is called an <b>interrupt level</b>, and raising it to a higher level automatically also blocks everything a lower level would have blocked, working much like holding several nested locks at once. Eraser was extended to treat each interrupt level as if it were its own lock, so raising to level <code>n</code> counts as grabbing the first <code>n</code> of these implicit locks together. Trickier still are <b>post/wait semaphores</b> — a signal a driver sends to wake up a thread that's waiting for something. Unlike a lock, nobody "owns" a semaphore the way a thread owns a lock, so Eraser has no way to figure out which piece of data the signal is actually meant to protect, and it produces false alarms around this pattern.</p>
     </div>
   </div>
 </section>
@@ -810,19 +813,19 @@ EraserReadLock(lock) / EraserWriteLock(lock)  <span class="cm"># declare a priva
         <li><b>Thread B accesses v holding {mu2}:</b> C(v) := {mu1} ∩ {mu2} = <b>{ }</b>.</li>
         <li><b>C(v) is now empty</b> → Eraser issues a warning: no lock has protected every access to v.</li>
       </ol>
-      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this is the entire algorithm. No replay, no scheduler dependence — just two accesses under different locks are enough to prove the discipline was violated. (Paper §2, Fig. 3)</div></div>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this is the entire algorithm. No replaying the run, no dependence on lucky timing — just two accesses under different locks are enough to prove the habit was broken. (Paper §2, Fig. 3)</div></div>
     </div>
 
     <div class="card reveal">
       <h3>② Sizing the shadow-word overhead</h3>
-      <p style="color:var(--ink-soft)">Every 32-bit shared word gets a paired shadow word holding a 30-bit lockset index + 2-bit state. What's the memory overhead, and why doesn't the lockset index need to be larger?</p>
+      <p style="color:var(--ink-soft)">Every shared variable gets a paired hidden shadow word (a mostly-numeric tracking record). What's the memory cost of that, and why doesn't the number identifying its lockset need to be huge?</p>
       <ol class="seq">
-        <li><b>Shadow word size = program word size:</b> 32 bits shadow for every 32 bits of real heap/global data → a flat <b>100% memory overhead</b> on instrumented data.</li>
-        <li><b>30 bits of index space</b> = up to 2³⁰ ≈ 1.07 billion distinct locksets addressable.</li>
-        <li><b>The paper never observed more than 10,000 distinct locksets</b> in any execution — so 30 bits is enormous headroom, not a tight fit.</li>
-        <li><b>Consequence:</b> the real saving isn't in the index width, it's in never storing a full lock list per word — only a table lookup, shared and deduplicated across the whole heap.</li>
+        <li><b>The hidden shadow word is the same size as the real word:</b> for every 32 bits of real shared data, there's another 32 bits of hidden tracking data → a flat <b>100% extra memory cost</b> on anything being watched.</li>
+        <li><b>Most of that 32 bits is spent as an index number</b> that can identify up to about 1.07 billion different lock combinations.</li>
+        <li><b>The paper never actually saw more than 10,000 different lock combinations</b> show up in any one run — so that huge number space is way more room than it ever needed.</li>
+        <li><b>The real savings:</b> it's not really about how big the number is — it's that Eraser never has to store a full written-out list of locks per variable, only a small number that points into one shared, deduplicated table.</li>
       </ol>
-      <div class="callout why"><span class="ic">💡</span><div>A naive design (a full list of locks per shared word) would scale with the number of live locks per variable; the index design scales instead with the number of <i>distinct patterns</i> ever seen — which stays tiny in practice.</div></div>
+      <div class="callout why"><span class="ic">💡</span><div>A naive design (writing out the full list of locks for every single shared variable) would grow with how many locks touch each variable; Eraser's index design instead only grows with the number of <i>distinct lock combinations ever seen at all</i> — which stays small in practice.</div></div>
     </div>
 
     <div class="card reveal">
@@ -834,19 +837,19 @@ EraserReadLock(lock) / EraserWriteLock(lock)  <span class="cm"># declare a priva
         <li><b>Vesta cache server</b> (~30,000 lines C++, 10 threads, 26 locks, 70 locksets): <b>10 annotations + 1 real bug fix</b> (the unprotected <code>validFP</code> fingerprint flag) reduced reports from several hundred to zero.</li>
         <li><b>Petal</b> (~25,000 lines C, 64 worker threads): found one genuine unprotected read (<code>gmap_state</code>) and two intentional statistics races; one false alarm (stack-frame reuse in a fork/join pattern) could <i>not</i> be annotated away.</li>
       </ol>
-      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> lock/lockset counts scale with codebase size (900 locks for 20k lines vs. 26 for 30k lines of a less lock-heavy design), but the annotation burden stayed small — a dozen or so lines per program — in nearly every case, Petal's one un-annotatable false alarm from stack-frame reuse being the exception.</div></div>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> how many locks and lock-combinations show up scales with how big the codebase is (900 locks for 20k lines vs. 26 for 30k lines of a design that just uses fewer locks), but the number of manual annotations needed to quiet the tool stayed small — around a dozen lines per program — in nearly every case. Petal's one false alarm that couldn't be annotated away (caused by memory being reused for a different purpose) was the one exception.</div></div>
     </div>
 
     <div class="card reveal">
-      <h3>④ The reintroduced-race and thread-count sensitivity experiments</h3>
-      <p style="color:var(--ink-soft)">Two experiments test whether Eraser's results depend on luck or on thread count.</p>
+      <h3>④ Checking the results aren't just luck</h3>
+      <p style="color:var(--ink-soft)">Two experiments test whether Eraser's results depend on lucky timing or on how many threads happen to be running.</p>
       <ol class="seq">
-        <li><b>Reintroduced races:</b> two historical Ni2 races (an unlocked reference-count and a missing lock around a subroutine) — both present in the source for months before being manually found — were put back in.</li>
-        <li><b>Result:</b> one author located <i>both</i> races using Eraser within a few minutes, with no hints about their location, and fixed and re-verified them in <b>30 minutes total</b>.</li>
-        <li><b>Thread-count sensitivity:</b> Ni2 and Vesta were rerun with only <b>2</b> concurrent threads instead of 10.</li>
-        <li><b>Result:</b> the exact same set of race reports appeared (only the order differed) — evidence that Eraser's reports are not an artifact of a particular thread count or timing.</li>
+        <li><b>Putting old bugs back in:</b> two real, historical Ni2 bugs (an unlocked counter, and a missing lock around a subroutine) — both of which had sat undiscovered in the code for months before someone found them by hand — were deliberately reintroduced.</li>
+        <li><b>Result:</b> one of the authors found <i>both</i> bugs using Eraser within a few minutes, with no hints about where to look, and fixed and double-checked them in <b>30 minutes total</b>.</li>
+        <li><b>Does thread count matter?</b> Ni2 and Vesta were rerun with only <b>2</b> threads running at once instead of 10.</li>
+        <li><b>Result:</b> the exact same set of race reports showed up either way (just possibly in a different order) — evidence that what Eraser reports doesn't just depend on how many threads happened to be running or how the timing happened to fall.</li>
       </ol>
-      <div class="callout why"><span class="ic">💡</span><div>This is the paper's direct rebuttal to "but doesn't 10–30× slowdown change the schedule and invalidate the results?" — the discipline-violation signal doesn't depend on which schedule ran.</div></div>
+      <div class="callout why"><span class="ic">💡</span><div>This is the paper's direct answer to "doesn't running 10-30× slower change the timing enough to throw off your own results?" — the signal Eraser reports comes from the code's locking habits, not from which particular timing happened to occur.</div></div>
     </div>
   </div>
 </section>
@@ -862,50 +865,50 @@ EraserReadLock(lock) / EraserWriteLock(lock)  <span class="cm"># declare a priva
 
     <div class="prob reveal">
       <span class="ptag easy">Problem 1 · easy</span>
-      <div class="qtext">Thread A accesses v holding {mu1, mu2}. Thread B later accesses v holding {mu2, mu3}. What is C(v) after both accesses, and does Eraser report a race?</div>
-      <details><summary>Show answer</summary><div class="ans">C(v) = {mu1, mu2} ∩ {mu2, mu3} = <b>{mu2}</b>. No race is reported — the set is nonempty, meaning mu2 has consistently protected v so far.<span class="mis">Misconception: that using "different locks" automatically means a race. Only an <i>empty intersection</i> is a violation — partial overlap is fine and expected as more locks get ruled out over time.</span></div></details>
+      <div class="qtext">Thread A touches v while holding locks {mu1, mu2}. Thread B later touches v while holding {mu2, mu3}. What is C(v) after both touches, and does Eraser report a race?</div>
+      <details><summary>Show answer</summary><div class="ans">C(v) = {mu1, mu2} ∩ {mu2, mu3} = <b>{mu2}</b> (keep only the locks common to both). No race is reported — the list still has something in it, meaning mu2 has been present at every touch so far.<span class="mis">Misconception: assuming that using "different locks" automatically means a race. Only an <i>empty</i> list is a real violation — partial overlap is completely normal and expected as the list narrows down over time.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag easy">Problem 2 · easy</span>
-      <div class="qtext">A newly allocated variable has been accessed only by the thread that created it (state: Exclusive), always without holding any lock. Does Eraser report a race?</div>
-      <details><summary>Show answer</summary><div class="ans">No. In the <b>Exclusive</b> state, C(v) is not refined at all — the paper delays refinement specifically so a single thread can freely initialize newly allocated data without a lock.<span class="mis">Misconception: forgetting that the state machine, not the raw intersection rule, governs when C(v) actually gets updated. The basic algorithm alone (Tab 4, §2) would wrongly flag this.</span></div></details>
+      <div class="qtext">A brand-new variable has only ever been touched by the one thread that created it (status: Exclusive), always without holding any lock. Does Eraser report a race?</div>
+      <details><summary>Show answer</summary><div class="ans">No. While a variable is in the <b>Exclusive</b> stage, C(v) isn't being narrowed down at all — the paper deliberately holds off so a single thread can freely set up newly created data without needing a lock.<span class="mis">Misconception: forgetting that the four-stage status, not the raw narrowing rule alone, decides when C(v) actually gets updated. The plain version of the algorithm (Tab 4, §2) would wrongly flag this as a problem.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag medium">Problem 3 · medium</span>
-      <div class="qtext">A thread holds lock mu1 only in <i>read</i> mode and then writes to variable v, which had C(v) = {mu1}. Does this trigger a warning?</div>
-      <details><summary>Show answer</summary><div class="ans">Yes. Writes refine against <code>write_locks_held(t)</code>, not all held locks. Since mu1 is held only in read mode, write_locks_held(t) is empty here, so C(v) := {mu1} ∩ {} = <b>{ }</b> → warning.<span class="mis">Misconception: assuming "holding a lock" is enough regardless of mode. Read-mode locks protect against other <i>reads</i> racing, never against a write — that asymmetry is the whole point of the read-write extension.</span></div></details>
+      <div class="qtext">A thread holds lock mu1 only in <i>read</i> mode, then writes to variable v, whose list C(v) currently only contains {mu1}. Does this trigger a warning?</div>
+      <details><summary>Show answer</summary><div class="ans">Yes. Writes only get checked against locks held in write mode, not against every lock the thread happens to be holding. Since mu1 is only held in read mode here, there are zero write-mode locks to check against, so C(v) := {mu1} ∩ {} = <b>{ }</b> (empty) → warning.<span class="mis">Misconception: assuming "holding a lock at all" is enough, regardless of mode. A lock held just for reading only protects against other reads racing — never against a write. That's the whole point of the read/write split.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag medium">Problem 4 · medium</span>
-      <div class="qtext">In the paper's Figure 2 example, an unprotected variable y is accessed by two threads, but happens-before doesn't detect the race in the observed run. Would Lockset detect it in that same run? Why?</div>
-      <details><summary>Show answer</summary><div class="ans">Yes. Lockset only cares whether the two accesses to y were both made without a common lock — which is true regardless of the order they happened to run in. Happens-before instead asks whether the observed schedule <i>orders</i> the two accesses, and in this particular interleaving it does (via an unrelated lock/unlock pair), so it stays silent.<span class="mis">Misconception: assuming happens-before is strictly more sensitive because it "sees more relationships." It's actually schedule-dependent in a way that can hide exactly this kind of bug.</span></div></details>
+      <div class="qtext">In the paper's Figure 2 example, an unguarded variable y is touched by two threads, but happens-before doesn't catch the race in that one run. Would Lockset catch it in that same run? Why?</div>
+      <details><summary>Show answer</summary><div class="ans">Yes. Lockset only cares whether the two touches of y both happened without any lock in common — which is true no matter what order they happened to run in. Happens-before instead asks whether the specific timing that occurred that run happened to prove an order between the two touches, and in this case it did (through an unrelated lock/unlock pair), so it stayed quiet.<span class="mis">Misconception: assuming happens-before is strictly more sensitive because it "sees more relationships." It's actually dependent on lucky timing in a way that can hide exactly this kind of bug.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag hard">Problem 5 · hard</span>
-      <div class="qtext">C(v) only ever shrinks (intersection), never grows. Explain what this implies about recovering from a spurious drop caused by a one-off, unrelated access — and what tool the paper gives programmers for this situation.</div>
-      <details><summary>Show answer</summary><div class="ans">Because intersection is monotonic, once a lock is knocked out of C(v) it can never return, even if every other access is perfectly consistent with it — so a single anomalous access (e.g. touching recycled memory from a private free list under a different lock) can permanently poison C(v) and produce a false alarm forever after. The paper's fix isn't algorithmic — it's the <code>EraserReuse(address, size)</code> annotation, which manually resets a location's shadow state back to Virgin so refinement starts over.<span class="mis">Misconception: expecting the algorithm to "self-heal." The one-way ratchet is deliberate (it's what makes the empty-set signal trustworthy), so recovery has to be explicit.</span></div></details>
+      <div class="qtext">C(v) can only ever shrink, never grow back. What does that imply if one weird, one-off touch accidentally knocks the "true" protecting lock out of the list — and what tool does the paper give programmers for this situation?</div>
+      <details><summary>Show answer</summary><div class="ans">Because the list can only shrink, once a lock is knocked out of C(v) it can never come back — even if every other touch was perfectly consistent with it. So a single unusual touch (say, memory that got quietly reused for a new purpose under a different lock) can permanently wreck C(v) and cause a false alarm forever after. The paper's fix isn't a change to the algorithm — it's the <code>EraserReuse(address, size)</code> annotation, which manually resets that piece of memory's status back to brand-new so the narrowing-down process starts fresh.<span class="mis">Misconception: expecting the algorithm to "heal itself." The one-way, never-grows-back behavior is deliberate — it's exactly what makes an empty list a trustworthy signal — so recovering from a bad case has to be done by hand.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag medium">Problem 6 · medium</span>
-      <div class="qtext">Eraser considers a variable "initialized" the moment a <i>second</i> thread first accesses it. Describe a scenario where this heuristic itself reintroduces scheduler-dependence.</div>
-      <details><summary>Show answer</summary><div class="ans">If a thread allocates and starts initializing a shared variable without a lock, then erroneously publishes a reference to it (e.g. into a shared list) before initialization finishes, Eraser only detects the bug if the second thread's access happens to occur <i>before</i> the first thread's final initializing write completes. If the scheduler happens to let initialization finish first, Eraser misses it — exactly the kind of luck-dependence Lockset was built to avoid.<span class="mis">Misconception: that Eraser is entirely schedule-independent. The paper is explicit that this one corner case (premature publication during initialization) reintroduces the same weakness as happens-before.</span></div></details>
+      <div class="qtext">Eraser treats a variable as "done being set up" the moment a <i>second</i> thread first touches it. Describe a situation where this shortcut brings back the same lucky-timing problem Eraser was built to avoid.</div>
+      <details><summary>Show answer</summary><div class="ans">Suppose a thread creates a shared variable and starts setting it up without a lock, then by mistake shares a reference to it (say, by adding it to a shared list) before it's actually finished setting up. Eraser only catches this bug if the second thread happens to touch the variable <i>before</i> the first thread's last setup step finishes. If the timing happens to let setup finish first, Eraser misses it — exactly the same kind of luck-dependence Lockset was built to get away from.<span class="mis">Misconception: thinking Eraser is completely immune to timing luck. The paper is upfront that this one specific case — sharing something too early, during setup — brings back the same weakness happens-before has.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag easy">Problem 7 · easy</span>
-      <div class="qtext">Why does Eraser represent each variable's candidate lock set as a small integer index into a shared table, rather than storing the actual set of lock addresses per variable?</div>
-      <details><summary>Show answer</summary><div class="ans">Because the number of <i>distinct</i> locksets ever observed across a whole execution is small (the paper never saw more than 10,000), most shared variables end up pointing at the same handful of table entries. Storing a small integer per word (fitting in the shadow word) is vastly cheaper than storing a variable-length list of lock addresses per word, and it turns set intersection into a cached table lookup.<span class="mis">Misconception: that this is just "compression" for its own sake. The real payoff is turning an expensive per-access set operation into an O(1) lookup, which is what keeps the 10–30× overhead from being far worse.</span></div></details>
+      <div class="qtext">Why does Eraser represent each variable's candidate-lock list as a small number pointing into one shared table, instead of just storing the actual list of locks for each variable?</div>
+      <details><summary>Show answer</summary><div class="ans">Because the number of genuinely <i>different</i> lock combinations that ever show up across a whole run is small (the paper never saw more than 10,000), most shared variables end up pointing at the same handful of table entries. Storing one small number per variable (small enough to fit in the hidden shadow word) is far cheaper than storing a full, variable-length list of locks for every single variable — and it turns "narrow down the list" into a quick table lookup instead of comparing full lists every time.<span class="mis">Misconception: thinking this is just "compression" for its own sake. The real payoff is turning an expensive comparison into a fast lookup, which is what keeps the 10-30× slowdown from being far worse.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag hard">Problem 8 · hard</span>
-      <div class="qtext">Eraser slows programs down 10–30×, which changes thread scheduling. The paper argues this doesn't undermine its results — using which specific experiment, and what would you expect to see if it <i>did</i> undermine them?</div>
-      <details><summary>Show answer</summary><div class="ans">The 2-thread vs. 10-thread sensitivity experiment on Ni2 and Vesta: if Eraser's slowdown-induced scheduling changes mattered, running with a very different thread count (and thus very different interleavings) should produce a <i>different</i> set of reported races. Instead, the same reports appeared both times (just in different order) — evidence the reports reflect the fixed locking discipline of the code, not a lucky interleaving. If the sets of reported races had differed substantially between the two thread counts, that would be a red flag that Lockset's results were themselves schedule-dependent, undercutting its central claim.<span class="mis">Misconception: assuming any behavior-altering overhead invalidates a race detector's findings. What matters is whether the <i>reports</i> are schedule-sensitive, which this experiment directly tests.</span></div></details>
+      <div class="qtext">Eraser slows programs down 10 to 30 times, which changes exactly how threads get scheduled. The paper argues this doesn't undermine its results — using which specific experiment, and what would you expect to see if it <i>did</i> undermine them?</div>
+      <details><summary>Show answer</summary><div class="ans">The 2-threads-vs-10-threads experiment on Ni2 and Vesta: if Eraser's own slowdown were quietly changing which bugs get found, then running with a very different number of threads (and therefore very different timing) should turn up a <i>different</i> set of reported races. Instead, the exact same reports showed up both times (just possibly in a different order) — evidence the reports reflect the code's actual locking habits, not a lucky run. If the two thread counts had produced substantially different sets of reported races, that would be a red flag that Lockset's own results depended on lucky timing too, undercutting its whole argument.<span class="mis">Misconception: assuming that any overhead which changes program behavior automatically invalidates a race detector's findings. What actually matters is whether the <i>reports themselves</i> change with timing, which this experiment directly tests.</span></div></details>
     </div>
   </div>
 </section>
@@ -919,18 +922,18 @@ EraserReadLock(lock) / EraserWriteLock(lock)  <span class="cm"># declare a priva
       <p class="sub">Twelve questions newcomers ask most.</p>
     </div>
     <div class="faq">
-      <details><summary><span class="q">Q1</span>What exactly counts as a "data race" in this paper?<span class="chev">▾</span></summary><div class="a">Two concurrent threads accessing the same shared variable, where at least one access is a write, and nothing (no lock, no other synchronization) prevents them from happening simultaneously. It's a definition about the <i>possibility</i> of simultaneous conflicting access, not about whether anything visibly went wrong.</div></details>
-      <details><summary><span class="q">Q2</span>Why not just use happens-before, like earlier tools?<span class="chev">▾</span></summary><div class="a">Happens-before only flags a race if the specific run's interleaving leaves the two accesses unordered. A program can have a live race that a given test never happens to expose this way, so happens-before tools need many test runs across many interleavings to be trustworthy. Lockset checks a discipline instead, so one good test run is often enough.</div></details>
-      <details><summary><span class="q">Q3</span>What is the "locking discipline" Eraser actually enforces?<span class="chev">▾</span></summary><div class="a">In its full form: every shared variable is protected by some lock m, meaning m is held in write mode for every write to it, and in some mode (read or write) for every read. Violating this — no such m exists — is what triggers a warning.</div></details>
-      <details><summary><span class="q">Q4</span>Doesn't checking every access without a lock spam warnings for normal initialization?<span class="chev">▾</span></summary><div class="a">It would, without the fix: Eraser delays refining C(v) until a variable is accessed by a <i>second</i> thread (the Exclusive state), so a single thread can freely initialize new data without holding a lock.</div></details>
-      <details><summary><span class="q">Q5</span>How does Eraser avoid flagging read-only sharing?<span class="chev">▾</span></summary><div class="a">Once a second thread has only <i>read</i> a variable (the Shared state), C(v) keeps being refined but warnings are suppressed. Only once some thread <i>writes</i> to it while it's shared (Shared-Modified) does Eraser start reporting races.</div></details>
-      <details><summary><span class="q">Q6</span>How does Eraser instrument a program without its source code?<span class="chev">▾</span></summary><div class="a">It uses ATOM, a binary rewriting system for the Alpha/Digital Unix platform, to insert calls to the Eraser runtime around every load, store, lock/unlock, thread start/exit, and memory-allocation call directly in the compiled binary.</div></details>
-      <details><summary><span class="q">Q7</span>How expensive is running Eraser?<span class="chev">▾</span></summary><div class="a">Typically 10–30× slower than the uninstrumented program. About half of that is estimated to come from making a procedure call at every load and store; the paper notes this could likely be reduced by inlining the monitoring code, but didn't implement that optimization.</div></details>
-      <details><summary><span class="q">Q8</span>Doesn't a 10–30× slowdown change the very schedule you're testing?<span class="chev">▾</span></summary><div class="a">It can, but the paper's 2-thread vs. 10-thread experiment on Ni2 and Vesta found the same races reported either way, suggesting the discipline-violation signal is not sensitive to the resulting interleaving changes.</div></details>
-      <details><summary><span class="q">Q9</span>What causes Eraser's false alarms, and how are they suppressed?<span class="chev">▾</span></summary><div class="a">Three main causes: privately recycled memory (custom free lists Eraser can't see resetting), private lock implementations it wasn't told about, and genuinely intentional benign races. Programmers suppress these with <code>EraserReuse()</code>, <code>EraserRead/WriteLock()</code>, and <code>EraserIgnoreOn/Off()</code> respectively.</div></details>
-      <details><summary><span class="q">Q10</span>Did Eraser find real bugs, or mostly false alarms?<span class="chev">▾</span></summary><div class="a">Both, but real bugs stood out: an unprotected fingerprint-validity flag in Vesta (unsafe under the Alpha's relaxed memory model), an unprotected status read in Petal's server-health check, and races in 10% of ~100 runnable undergraduate multithreading assignments — plus multiple intentional benign races the authors hadn't previously documented as such.</div></details>
-      <details><summary><span class="q">Q11</span>What can't Eraser handle well?<span class="chev">▾</span></summary><div class="a">Variables protected by <i>multiple</i> locks simultaneously (a pattern used to avoid deadlock with upcalls) produce false alarms under the basic algorithm; a proposed fix trades this for possible false negatives instead. It also doesn't detect deadlock, and porting to the SPIN kernel exposed trouble with post/wait-style semaphore synchronization between drivers and threads.</div></details>
-      <details><summary><span class="q">Q12</span>Can Eraser prove a program is race-free?<span class="chev">▾</span></summary><div class="a">No — it's explicitly a <b>testing</b> tool. It can only report on code paths actually exercised during a run, and (rarely) can still miss races tied to the initialization-ordering corner case. Absence of warnings means "no violation observed," not "provably race-free."</div></details>
+      <details><summary><span class="q">Q1</span>What exactly counts as a "data race" in this paper?<span class="chev">▾</span></summary><div class="a">Two threads touching the same shared variable at close to the same time, where at least one of those touches is a write, and nothing (no lock) is stopping them from happening at literally the same instant. It's about whether this <i>could</i> happen, not about whether the program visibly broke this particular time.</div></details>
+      <details><summary><span class="q">Q2</span>Why not just use happens-before, like earlier tools?<span class="chev">▾</span></summary><div class="a">Happens-before only raises a flag if it can't prove an order between two touches in that one specific run's timing. A program can have a real, live bug that a given test just never happens to expose this way, so happens-before tools need lots of test runs, with lots of different timings, to be trustworthy. Lockset instead checks a habit in the code, so a single good test run is often enough.</div></details>
+      <details><summary><span class="q">Q3</span>What is the "locking rule" Eraser actually checks?<span class="chev">▾</span></summary><div class="a">In its full form: every shared variable needs some lock m such that m is held in write mode for every write to it, and held in either mode (read or write) for every read. If no such lock exists — nothing was ever consistently present — that's what triggers a warning.</div></details>
+      <details><summary><span class="q">Q4</span>Doesn't checking every unlocked touch spam warnings for normal setup code?<span class="chev">▾</span></summary><div class="a">It would, without the fix: Eraser holds off on narrowing down C(v) until a variable gets touched by a <i>second</i> thread (the Exclusive stage), so one thread can freely set up new data without needing a lock.</div></details>
+      <details><summary><span class="q">Q5</span>How does Eraser avoid flagging read-only sharing?<span class="chev">▾</span></summary><div class="a">Once a second thread has only <i>read</i> a variable (the Shared stage), C(v) keeps getting narrowed down in the background, but warnings stay switched off. Only once some thread actually <i>writes</i> to it while it's shared (Shared-Modified) does Eraser start reporting races.</div></details>
+      <details><summary><span class="q">Q6</span>How does Eraser watch a program without its source code?<span class="chev">▾</span></summary><div class="a">It uses ATOM, a tool that edits an already-compiled program directly, to insert tracking code around every memory read, memory write, lock/unlock, thread start/exit, and memory-allocation call, right in the compiled program itself.</div></details>
+      <details><summary><span class="q">Q7</span>How expensive is running Eraser?<span class="chev">▾</span></summary><div class="a">Typically 10 to 30 times slower than the un-watched program. About half of that is estimated to come from jumping out to separate tracking code at every single memory read and write; the paper notes pasting that code inline instead would likely help, but they didn't build that.</div></details>
+      <details><summary><span class="q">Q8</span>Doesn't a 10-30× slowdown change the very timing you're testing?<span class="chev">▾</span></summary><div class="a">It can, but the paper's 2-threads-vs-10-threads experiment on Ni2 and Vesta found the same races reported either way, suggesting what Eraser reports doesn't actually depend much on exactly how the timing shifts.</div></details>
+      <details><summary><span class="q">Q9</span>What causes Eraser's false alarms, and how are they silenced?<span class="chev">▾</span></summary><div class="a">Three main causes: memory quietly being reused for a new purpose (Eraser can't see a program's own private "reuse this memory" bookkeeping), private lock implementations it was never told about, and genuinely intentional, harmless races. Programmers silence these with <code>EraserReuse()</code>, <code>EraserRead/WriteLock()</code>, and <code>EraserIgnoreOn/Off()</code> respectively.</div></details>
+      <details><summary><span class="q">Q10</span>Did Eraser find real bugs, or mostly false alarms?<span class="chev">▾</span></summary><div class="a">Both, but real bugs stood out: an unprotected "is this cached value still valid" flag in Vesta (genuinely unsafe on that hardware's memory behavior), an unprotected status read in Petal's server-health check, and real races in 10% of ~100 runnable undergraduate assignments — plus several intentional, harmless races the authors hadn't previously written down as such.</div></details>
+      <details><summary><span class="q">Q11</span>What can't Eraser handle well?<span class="chev">▾</span></summary><div class="a">Variables protected by <i>more than one</i> lock held at once (a pattern used to avoid a different problem, deadlock) cause false alarms under the basic algorithm; a proposed fix trades those false alarms for a risk of missing real bugs instead. It also doesn't catch deadlocks at all, and moving it into the SPIN kernel exposed trouble with signal-based coordination between drivers and threads (see How It Works, §8).</div></details>
+      <details><summary><span class="q">Q12</span>Can Eraser prove a program is race-free?<span class="chev">▾</span></summary><div class="a">No — it's explicitly a <b>testing</b> tool, not a mathematical proof. It can only report on the code paths that actually ran during your test, and in one rare corner case (something being shared too early, during setup) it can still miss a bug depending on lucky timing. No warnings means "nothing observed this run," not "guaranteed race-free."</div></details>
     </div>
   </div>
 </section>
@@ -945,26 +948,26 @@ EraserReadLock(lock) / EraserWriteLock(lock)  <span class="cm"># declare a priva
     </div>
 
     <div class="card reveal">
-      <h3>🧬 Shadow memory lives on, in varied forms, across modern sanitizers</h3>
-      <p>Eraser's core trick — a hidden metadata word paired with every real word, found by a fixed offset — is the same basic shadow-memory idea behind AddressSanitizer and the Linux kernel's KASAN. It's not a perfect lineage, though: Eraser's specific one-shadow-word-per-word, fixed-offset layout differs from ThreadSanitizer's denser, vector-clock-based shadow state, and the Linux kernel's own race detector, KCSAN, doesn't use shadow memory at all — it relies on watchpoint-based sampling instead (see below). Still, if you instrument a concurrent page-hotness tracker or a CXL memory-migration path for correctness testing today, some descendant of Eraser's 1997 shadow-memory idea is likely underneath.</p>
+      <h3>🧬 The "hidden tracking memory" trick lives on in modern bug-finding tools</h3>
+      <p>Eraser's core trick — a hidden extra word of memory paired with every real word, sitting at a fixed distance away — is the same basic idea behind two widely-used modern tools: AddressSanitizer and the Linux kernel's KASAN (both catch memory-corruption bugs, not races, but reuse this same "shadow memory" idea). It's not a perfect family tree, though — Google's ThreadSanitizer (a modern race detector) instead uses a denser tracking scheme based on per-thread timestamps, and the Linux kernel's own current race detector, KCSAN, doesn't use hidden tracking memory at all — it randomly spot-checks a few memory accesses per run instead (more on that below). Still, if you were instrumenting a concurrent page-hotness tracker or a memory-migration path for correctness testing today, some descendant of Eraser's 1997 idea is probably underneath the tool you'd reach for.</p>
     </div>
 
     <div class="card reveal">
-      <h3>🔀 Lockset-style checking struggles exactly where RCU lives</h3>
-      <p>Eraser's own admission — that variables protected by <i>multiple</i> locks at once produce false alarms — foreshadows a bigger problem: lock-free and RCU-protected structures (used heavily in Linux mm for page tables and VMAs) have no consistent lock to find at all. This is one reason the Linux kernel's race detector, KCSAN, takes a different approach entirely: watchpoint-based sampling rather than Lockset-style lock tracking, since there's often no single lock for it to check against.</p>
+      <h3>🔀 Lockset-style checking struggles exactly where lock-free code lives</h3>
+      <p>Eraser's own admission — that a variable protected by <i>more than one</i> lock at once causes false alarms — points at a bigger problem: some modern data structures (heavily used inside Linux's memory manager) are deliberately designed to avoid needing a lock at all for reading, using a technique called RCU. A Lockset-style checker has nothing to narrow down here, because there's no consistent lock to find in the first place. This is one reason the Linux kernel's actual race detector, KCSAN, takes a completely different approach: instead of tracking locks, it randomly watches a small number of memory locations per run and waits to see if two threads collide on one of them — sampling for evidence of a race, rather than checking a locking habit.</p>
     </div>
 
     <div class="card reveal">
-      <h3>⏱ Interrupt-levels-as-nested-locks is a similar idea to CXL device interrupt handling</h3>
-      <p>Eraser's SPIN extension — treating "interrupt level n" as implicitly holding the first n interrupt-locks — resembles the kind of reasoning needed for CXL.mem device drivers and hot-plug controllers, where correctness depends on interrupt level relative to preemption state, not just explicit spinlocks. Adapting this abstraction could be a reasonable starting point for instrumenting kernel-level tiering code that mixes IRQ-disabled sections with ordinary locks — though the paper itself only demonstrates the trick for SPIN's own, fairly clean interrupt-level discipline, not for a general kernel.</p>
+      <h3>⏱ Treating "interrupt level" as a stack of locks is a similar idea to modern device-driver code</h3>
+      <p>Eraser's SPIN extension — treating "we've currently blocked interrupts up to level n" as if it meant "we're holding n different locks at once" — resembles the kind of reasoning needed for modern device drivers on newer, pluggable memory hardware, where correctness depends on exactly which interrupts are currently blocked, not just which explicit locks are held. Adapting this same idea could be a reasonable starting point for instrumenting kernel-level memory-tiering code that mixes "interrupts temporarily blocked" sections with ordinary locks — though the paper itself only shows the trick working for SPIN's own fairly clean, simple interrupt-level setup, not for a full modern kernel.</p>
     </div>
 
     <div class="card reveal">
-      <h3>🏷 The four-state variable life cycle echoes per-page state machines</h3>
-      <p>Virgin → Exclusive → Shared → Shared-Modified is a small state machine designed to avoid false alarms on normal initialization and read-sharing. Per-page hotness trackers in tiered-memory systems (DAMON, TPP-style promotion queues) use analogous per-page state machines (cold/warm/hot, or accessed-bit histories) — and concurrent updates to that per-page state are exactly the kind of new shared-variable race a Lockset-style checker would need to be pointed at.</p>
+      <h3>🏷 The four-stage variable life cycle echoes per-page tracking in memory systems</h3>
+      <p>Virgin → Exclusive → Shared → Shared-Modified is a small four-stage status designed to avoid false alarms on normal setup and read-sharing. Systems that automatically move data between fast and slow memory (tracking which pages of memory are "hot" or "cold" to decide what to promote or demote) use very similar per-page status tracking — and whenever more than one thread might update that per-page status at the same time, that's exactly the kind of new shared-variable race a Lockset-style checker would need to be pointed at.</p>
     </div>
 
-    <div class="callout takeaway"><span class="ic">🍯</span><div>Building or instrumenting any new concurrent per-page or per-tier state (promotion queues, hotness counters, migration flags) in an OS memory-tiering system introduces exactly the kind of shared-variable races Eraser targets — a Lockset-style checker is a reasonable tool to point at that new state, alongside the sampling-based approaches (like KCSAN) that modern lock-free-heavy kernels increasingly rely on instead.</div></div>
+    <div class="callout takeaway"><span class="ic">🍯</span><div>Any time you build or instrument new tracking data that more than one thread can touch at once — a promotion queue, a hotness counter, a migration flag, in a system that moves data between memory tiers — you've created exactly the kind of shared-variable race Eraser targets. A Lockset-style checker is a reasonable tool to point at that new tracking data, alongside the sampling-based approaches (like KCSAN) that modern kernels increasingly lean on instead, precisely because so much of today's code avoids locks altogether.</div></div>
   </div>
 </section>
 
@@ -997,26 +1000,26 @@ EraserReadLock(lock) / EraserWriteLock(lock)  <span class="cm"># declare a priva
 
     <div class="subhead">Core terms</div>
     <div class="gloss">
-      <div class="term-def"><b>Eraser</b><span>The paper's tool: a dynamic race detector for lock-based multithreaded programs, built on binary rewriting.</span></div>
-      <div class="term-def"><b>Lockset algorithm</b><span>Eraser's core check: maintain and refine a candidate set of locks per shared variable; report when it empties.</span></div>
-      <div class="term-def"><b>Candidate set C(v)</b><span>The current set of locks believed to consistently protect variable v, refined by intersection on every access.</span></div>
-      <div class="term-def"><b>Locking discipline</b><span>A programming policy (e.g. "every shared variable has one protecting lock") whose consistent use rules out races.</span></div>
-      <div class="term-def"><b>Happens-before relation</b><span>Lamport's partial order on events across threads via synchronization; the schedule-dependent basis of earlier race detectors.</span></div>
-      <div class="term-def"><b>Virgin / Exclusive / Shared / Shared-Modified</b><span>The four states Eraser tracks per variable to tolerate unlocked init and read-sharing, reporting races only in the last state.</span></div>
-      <div class="term-def"><b>Shadow memory / shadow word</b><span>Hidden per-word metadata (lockset index + state) kept alongside real shared memory, addressed by a fixed offset.</span></div>
-      <div class="term-def"><b>Lockset index</b><span>A small integer standing in for a full set of locks in a shared, deduplicated table — never more than ~10,000 distinct entries observed.</span></div>
+      <div class="term-def"><b>Eraser</b><span>The paper's tool: a program that watches a running, lock-based multithreaded program and looks for data races, by editing the already-compiled program to add tracking code.</span></div>
+      <div class="term-def"><b>Lockset algorithm</b><span>Eraser's core check: keep a running, shrinking list of locks that could be consistently protecting each shared variable; raise a warning once that list is empty.</span></div>
+      <div class="term-def"><b>Candidate set C(v)</b><span>The current list of locks that could still be the one consistently protecting variable v — narrowed down by keeping only what's common at every touch, and only ever shrinking.</span></div>
+      <div class="term-def"><b>Locking discipline</b><span>A programming habit (e.g. "every shared variable always has one specific lock guarding it") that, if followed consistently, rules out races.</span></div>
+      <div class="term-def"><b>Happens-before relation</b><span>A way of proving a definite before/after order between two threads' actions using synchronization events as evidence; the basis of earlier race detectors, whose big weakness is that it only sees the one timing that actually happened during a given test.</span></div>
+      <div class="term-def"><b>Virgin / Exclusive / Shared / Shared-Modified</b><span>The four stages Eraser tracks per variable (new / single-owner setup / shared for reading / shared and being written) to tolerate unlocked setup and read-sharing, only reporting races in the last stage.</span></div>
+      <div class="term-def"><b>Shadow memory / shadow word</b><span>A hidden extra word of memory (holding a lockset index + stage) kept right alongside each real shared word, found at a fixed distance away.</span></div>
+      <div class="term-def"><b>Lockset index</b><span>A small number standing in for a full list of locks, pointing into one shared, deduplicated table — never more than about 10,000 distinct entries were ever observed.</span></div>
     </div>
 
     <div class="subhead">Supporting terms</div>
     <div class="gloss">
-      <div class="term-def"><b>ATOM</b><span>Digital Equipment's binary-rewriting/program-analysis tool for the Alpha architecture that Eraser is built on.</span></div>
-      <div class="term-def"><b>Benign race</b><span>A real, unsynchronized concurrent access the programmer intentionally allows because its nondeterminism is harmless.</span></div>
-      <div class="term-def"><b>Read-write lock (rwlock)</b><span>A lock allowing multiple simultaneous readers but only one writer, mutually exclusive with all readers.</span></div>
-      <div class="term-def"><b>Monitor (Hoare)</b><span>A static compile-time discipline bundling shared data with the only procedures allowed to touch it, under one implicit lock.</span></div>
+      <div class="term-def"><b>ATOM</b><span>Digital Equipment Corporation's tool for editing an already-compiled program (for the Alpha processor) that Eraser is built on top of.</span></div>
+      <div class="term-def"><b>Benign race</b><span>A real, uncoordinated access to shared memory that the programmer intentionally allows because it happens to be harmless (e.g. a simple flag).</span></div>
+      <div class="term-def"><b>Read-write lock (rwlock)</b><span>A lock that allows many threads to hold it at once for reading, but only one at a time for writing (and never together with a reader).</span></div>
+      <div class="term-def"><b>Monitor (Hoare)</b><span>An older idea: bundle shared data with the only functions allowed to touch it, all guarded by one automatic lock — decided when the program is written, not while it runs.</span></div>
       <div class="term-def"><b>Lock covers</b><span>Dinning &amp; Schonberg's earlier improvement to happens-before for lock-heavy programs; Eraser is framed as extending and simplifying this idea.</span></div>
-      <div class="term-def"><b>EraserIgnoreOn/Off, EraserReuse, EraserRead/WriteLock</b><span>Program annotations for suppressing false alarms from benign races, memory reuse, and private lock implementations.</span></div>
-      <div class="term-def"><b>Interrupt level</b><span>A kernel mechanism for mutual exclusion by masking lower-priority interrupts; modeled by Eraser as a set of nested implicit locks.</span></div>
-      <div class="term-def"><b>Deadlock (partial-order discipline)</b><span>A separate hazard from data races; the paper sketches a dynamic check for a consistent lock-acquisition order as related future work.</span></div>
+      <div class="term-def"><b>EraserIgnoreOn/Off, EraserReuse, EraserRead/WriteLock</b><span>Manual annotations programmers add to their code to tell Eraser "this specific pattern is fine, stop warning about it" — for benign races, memory reuse, and private lock implementations respectively.</span></div>
+      <div class="term-def"><b>Interrupt level</b><span>A kernel mechanism that keeps code safe from interruption by temporarily blocking lower-priority hardware signals, instead of using a lock; Eraser treats each level as if it were a set of nested locks.</span></div>
+      <div class="term-def"><b>Deadlock</b><span>A different hazard from a data race — two threads stuck forever, each waiting on a lock the other one holds. The paper sketches a way to check for this too, as related future work.</span></div>
     </div>
 
     <div class="subhead">Results at a glance</div>
