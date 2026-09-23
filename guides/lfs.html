@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<!-- LFS field guide — The Design and Implementation of a Log-Structured File System (Rosenblum & Ousterhout, SOSP'91 / ACM TOCS'92).
+     Built in the "friendly field guide" house style, CS240 seminar-prep edition.
+     Semantic colors: teal-blue = sequential log write (the winning technique) · violet = cost-benefit cleaner machinery ·
+     honey = write-cost economics · brick-red = Unix FFS / seek-bound baseline. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>One Big Sequential Write — Log-Structured File Systems, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98F2E; --honey-deep:#B36A0F; --honey-soft:#F8E4C0;
+  --dram:#1E7FA6; --dram-soft:#D9EEF5;      /* teal-blue = sequential log write (the winning technique) */
+  --ltram:#6B4FA0; --ltram-soft:#E9E1F5;    /* violet = cost-benefit cleaner machinery              */
+  --optane:#B0432E; --optane-soft:#F5DED8;  /* brick-red = Unix FFS / seek-bound baseline            */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,127,166,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,160,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,143,46,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(107,79,160,.05) 31px,rgba(107,79,160,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,143,46,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#123a49;font-size:.96rem}
+.primer .ready b{color:#0c2833}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#123a49}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a2d6e}
+.chip-lru{background:var(--optane-soft);color:#7a2c1c}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #b7dcea;color:#123a49}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#7a2c1c}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#a9d3e2;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c9bce0;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcd2ef}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#3596b8,#1E7FA6)}
+.bf-hi{background:linear-gradient(90deg,#8067b8,#6B4FA0)}
+.bf-lru{background:linear-gradient(90deg,#c96148,#B0432E)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive, kept for house-style script compatibility) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#123a49;border:1px solid #a9d3e2}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#123a49}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#7a2c1c}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#D98F2E} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#9d8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#123a49}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#7a2c1c}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,127,166,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,160,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,143,46,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 1991 / ACM TOCS 1992 · A Field Guide</span>
+    <h1>Stop <span class="swash" style="color:var(--optane)">seeking</span> around the disk — just <span class="swash">write it all as one log</span></h1>
+    <p class="lede">Small-file writes were killing 1990s Unix — five scattered seeks just to create one file. This is the plain-English story of <strong>LFS</strong>: buffer everything, flush it as one giant sequential write, and let a smart cleaner deal with the mess later.</p>
+    <div class="hero-meta">
+      <span>📄 "The Design and Implementation of a Log-Structured File System" · Rosenblum &amp; Ousterhout</span>
+      <span>🎓 Basic disk/inode knowledge assumed — the primers cover it</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">📜</div>
+      <p>Never overwrite in place. Buffer changes, then flush them <span class="ro">SEQUENTIALLY as one log</span> — not scattered <span class="wo">wherever the old data happened to live</span>.<br><em style="font-size:.9rem">The catch: someone has to clean up after the log, forever.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="insights"><span class="n">08</span>Insights</button>
+    <button class="tab-btn" data-tab="classprep"><span class="n">09</span>Class Prep</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">10</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Why writing a file was so slow, and the trick that fixes it</h2>
+      <p class="sub">Read the TL;DR, then work through the primers in order the first time — or skip to whatever's unfamiliar.</p>
+    </div>
+
+    <div class="card" style="background:var(--ltram-soft);border-color:#c9bce0">
+      <h3 style="color:#3a2d6e">⚡ TL;DR</h3>
+      <ul style="margin:0;padding-left:20px;color:#3a2d6e">
+        <li>LFS buffers all file-system changes in memory, then flushes them to disk as one <b>large sequential write ("the log")</b> — the log <i>is</i> the file system, not just an auxiliary speedup structure — and a <b>segment cleaner</b> with a <b>cost-benefit</b> policy reclaims fragmented free space.</li>
+        <li>Sprite LFS uses <b>65–75%</b> of raw disk bandwidth for writing (vs Unix FFS's <b>5–10%</b>) and is roughly <b>an order of magnitude faster</b> for small-file creates/deletes, while matching or beating FFS on reads and large writes.</li>
+        <li>It matters because it proves the bottleneck was <em>layout policy</em>, not disk hardware — the same buffer-batch-reclaim playbook now underlies SSD flash translation layers, LSM-trees, and copy-on-write filesystems.</li>
+      </ul>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> sequential log write (the win)</span>
+      <span><i style="background:var(--honey-deep)"></i> write-cost economics</span>
+      <span><i style="background:var(--ltram)"></i> cost-benefit cleaner machinery</span>
+      <span><i style="background:var(--optane)"></i> Unix FFS / seek-bound baseline</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Why seeks, not bandwidth, were the bottleneck<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A disk write has two costs: a mechanical <b>seek + rotational wait</b> (milliseconds, dominated by physics) and a <b>transfer</b> (fast, scales with bandwidth). CPUs were getting exponentially faster through the 1980s–90s; disk <i>access time</i> barely improved because it's mechanical. Any workload of small, scattered writes stays slow no matter how fast your CPU gets.</p>
+          <div class="ready"><b>Now you're ready:</b> LFS's whole strategy is to convert many small scattered writes into one big sequential write, so the mechanical seek cost is paid once instead of five times.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Unix FFS and the inode, briefly<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>In the Berkeley Fast File System, each file has an <b>inode</b> (attributes + block pointers) at a <i>fixed</i> disk address computed from the file's i-number. Directories are separate files mapping names to i-numbers. Creating one small file touches five separate, non-sequential places: the file's data, the file's inode (written twice for crash safety), the directory's data block, and the directory's own inode.</p>
+          <div class="ready"><b>Now you're ready:</b> LFS keeps the same logical structures (inodes, indirect blocks) but never gives them a fixed address — everything, including inodes, gets written wherever the log currently is.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Write buffering and why caches shift traffic toward writes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Growing main memory lets file caches absorb more and more <i>reads</i> — once a block is cached, re-reading it costs nothing. But writes must eventually reach disk for durability. As caches grow, disk traffic becomes dominated by writes, and the cache doubles as a write buffer that can accumulate many small changes before flushing.</p>
+          <div class="ready"><b>Now you're ready:</b> LFS is built on exactly this assumption — batch dirty blocks in the cache, then flush the batch as one sequential transfer.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>"Log-structured" means the log is the permanent home<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Journaling and database write-ahead logs use a log as a temporary staging area; data still lives permanently in a separate random-access structure. A <b>log-structured file system</b> is different: the log <i>is</i> the only structure on disk. There's no separate "real" location the data later moves to — the log itself contains everything, with enough indexing to read it back efficiently.</p>
+          <div class="ready"><b>Now you're ready:</b> this is why LFS needs a cleaner at all — a staging log gets flushed and reused, but a permanent log has to reclaim space from data that's still logically "the file system."</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Segments: the unit of free space<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>As the log fills the disk, deleted/overwritten data leaves scattered holes. LFS divides the disk into large fixed-size <b>segments</b> (512 KB or 1 MB in Sprite LFS). A segment is always written sequentially start-to-end, and cannot be reused until every live block in it is copied elsewhere — that copying is <b>segment cleaning</b>.</p>
+          <div class="ready"><b>Now you're ready:</b> the entire rest of the paper is about picking <i>which</i> segments to clean and how, since that decision determines whether LFS is fast or slow.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Live vs. dead blocks, and how the cleaner tells them apart<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A block is <b>dead</b> once it's been overwritten or its file deleted; otherwise it's <b>live</b>. Each segment carries a <b>segment summary block</b> naming which file and offset every block belongs to, so the cleaner can check the file's current inode to see if a block pointer still points there — or use a cheaper shortcut (a version number) to skip that check entirely.</p>
+          <div class="ready"><b>Now you're ready:</b> this is exactly what lets LFS avoid ever needing a free-block bitmap — liveness is derived, not tracked separately.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Write cost — the paper's central scorecard<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Write cost</b> = disk time spent per byte of <i>new</i> data written, including all cleaning overhead. A write cost of 1.0 is perfect (100% of bandwidth goes to new data); a write cost of 10 means only 10% of bandwidth is usable for new data. Unix FFS on small files runs at write cost 10–20; the paper's whole goal is to keep LFS's write cost low despite the overhead of cleaning.</p>
+          <div class="ready"><b>Now you're ready:</b> nearly every graph in the paper plots write cost against segment utilization — how "full" of live data the cleaned segments were.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Checkpoints and roll-forward (crash recovery, briefly)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Traditional Unix file systems recover from crashes by scanning the <i>entire disk</i> (fsck) since they don't know where the last writes landed. LFS always knows — they're at the end of the log. A periodic <b>checkpoint</b> marks a fully consistent state; after a crash, the system reads the checkpoint, then <b>rolls forward</b> through the log segments written since, replaying anything recoverable — the same pattern as a database's write-ahead redo log.</p>
+          <div class="ready"><b>Now you're ready:</b> the log that makes writes fast is the exact same structure that makes recovery fast — one design decision buys both.</div>
+        </div>
+      </details>
+    </div>
+
+    <div class="subhead">Quick glossary — key terms up front</div>
+    <div class="gloss">
+      <div class="term-def"><b>LFS</b><span>Log-structured file system — the general technique this paper introduces: the disk log is the only structure, not a staging area.</span></div>
+      <div class="term-def"><b>Sprite LFS</b><span>The authors' working prototype, built into the Sprite research network operating system and measured in production for months.</span></div>
+      <div class="term-def"><b>Unix FFS</b><span>The Berkeley Fast File System — the standard 1980s/90s Unix design, used throughout as the baseline LFS is compared against.</span></div>
+      <div class="term-def"><b>Segment</b><span>A large fixed-size chunk of disk (512 KB–1 MB) — the unit the log is written and cleaned in.</span></div>
+      <div class="term-def"><b>Write cost</b><span>Disk-busy-time per byte of new data, including cleaning; 1.0 is ideal, higher is worse.</span></div>
+      <div class="term-def"><b>Utilization (u)</b><span>Fraction of a segment's bytes that are still live (not yet overwritten/deleted) — the key variable driving write cost.</span></div>
+      <div class="term-def"><b>Cost-benefit policy</b><span>The segment-cleaning rule that picks segments by weighing free space reclaimed against how long that space will likely stay free.</span></div>
+      <div class="term-def"><b>Checkpoint / roll-forward</b><span>A periodic consistent snapshot, plus replaying the log written since it, to recover quickly after a crash.</span></div>
+      <div class="term-def"><b>uid (unique identifier)</b><span>Inode number + version number, stamped on each logged block so the cleaner can spot dead blocks without consulting the inode.</span></div>
+      <div class="term-def"><b>Directory operation log</b><span>A dedicated log record for directory changes, used to keep directory entries and inode reference counts consistent across crashes.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>LFS in a nutshell</h2>
+      <p class="sub">The problem, the fix, the catch it introduces, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>Unix FFS lays files out to optimize for <i>reads</i>, at the cost of scattering the writes needed to create or update a small file across five separate, seek-separated disk locations, most of them synchronous. As CPUs got faster and disk seek time didn't, this made small-file-heavy workloads (office/engineering environments, the paper's stated target) increasingly disk-bound no matter how fast the processor was.</p>
+      <p><strong>Log-structured file systems (LFS)</strong> fix this by buffering changes in the file cache and flushing them to disk as one large, purely sequential write — the <b>log</b> — which also serves as the file's <i>only</i> permanent storage (not a staging area, unlike database write-ahead logs). This converts nearly all write traffic from small random I/Os into large sequential transfers, using close to 100% of raw disk bandwidth.</p>
+      <p>The catch: a permanent, ever-growing log needs somewhere to reclaim space as files are deleted or overwritten. LFS divides the disk into <span class="mem-chip chip-ucp">segments</span> and runs a <b>segment cleaner</b> that copies live data out of fragmented segments to free them. Which segments to clean, and in what order, turns out to be the single decision that determines whether LFS is fast or merely mediocre — a naive <i>greedy</i> policy (always clean the least-utilized segment) actually gets <b>worse</b> as locality increases, a genuinely surprising result. The fix is a <b>cost-benefit</b> policy that treats old, slowly-changing ("cold") data differently from young, rapidly-changing ("hot") data — cold segments are worth cleaning even at high utilization, because their freed space stays free a long time.</p>
+      <p><strong>The payoff:</strong> Sprite LFS uses <b>65–75%</b> of raw disk bandwidth for new writes (Unix FFS: <b>5–10%</b>), is roughly <b>10× faster</b> creating/deleting 1 KB files, and matches or beats FFS on reads and large-file writes — with one honest exception (sequential re-read of a randomly-written file) and a crash-recovery scheme that's <i>faster</i>, not slower, than fsck.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Unix FFS optimizes layout for reads and pays for it with 5 scattered, often synchronous writes per small-file create.</li>
+        <li>LFS buffers changes and flushes them as one <b>sequential log write</b> — the log is the permanent home of the data, not a shortcut to it.</li>
+        <li><b>Write cost = 2/(1&minus;u)</b>: cleaning cost explodes as the utilization of cleaned segments rises toward 1.</li>
+        <li>Naive <b>greedy</b> cleaning (pick lowest-u segment) gets <i>worse</i> with locality — cold segments linger just above the cleaning threshold, tying up free space.</li>
+        <li><b>Cost-benefit</b> cleaning weighs free space reclaimed against how long it'll likely stay free (using age as a stability proxy) — this produces the bimodal "mostly full, a few empty" segment distribution that makes cleaning cheap.</li>
+        <li>No free-block bitmap needed anywhere — liveness is derived from inodes/uids, which also simplifies crash recovery.</li>
+        <li>Checkpoint + roll-forward gives fast, log-order crash recovery instead of a full-disk fsck scan.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE: write cost vs utilization -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one curve</div>
+      <div class="viz-kicker">write cost = 2 / (1 − u) · why cleaning policy is the entire game</div>
+      <div class="legend">
+        <span><i style="background:var(--ltram)"></i> write cost = 2/(1&minus;u)</span>
+        <span><i style="background:var(--optane)"></i> Unix FFS reference points</span>
+        <span><i style="background:var(--dram)"></i> Sprite LFS production (actual, below curve)</span>
+      </div>
+      <svg class="full" viewBox="0 0 700 260" role="img" aria-label="Write cost as a function of segment utilization u">
+        <line x1="70" y1="30" x2="70" y2="230" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="230" x2="660" y2="230" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end">
+          <text x="62" y="233">0</text><text x="62" y="173">4</text><text x="62" y="116">8</text><text x="62" y="59">12</text>
+        </g>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle">
+          <text x="70" y="246">0</text><text x="217" y="246">.3</text><text x="365" y="246">.5</text><text x="542" y="246">.8</text><text x="660" y="246">1.0</text>
+        </g>
+        <text x="365" y="258" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">utilization u of segments cleaned</text>
+        <text x="22" y="140" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 22,140)">write cost</text>
+        <polyline fill="none" stroke="#6B4FA0" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"
+          points="70,201 129,198 188,194 247,189 306,182 365,173 424,159 483,135 512,116 542,87 571,40"/>
+        <line x1="365" y1="30" x2="365" y2="230" stroke="#B0432E" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.6"/>
+        <circle cx="365" cy="173" r="5" fill="#fff" stroke="#B0432E" stroke-width="2.4"/>
+        <text x="375" y="166" font-family="JetBrains Mono" font-size="10" fill="#7a2c1c">u=.5 → cost 4 ("FFS improved")</text>
+        <line x1="542" y1="30" x2="542" y2="230" stroke="#B0432E" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.6"/>
+        <circle cx="542" cy="87" r="5" fill="#fff" stroke="#B0432E" stroke-width="2.4"/>
+        <text x="450" y="80" font-family="JetBrains Mono" font-size="10" fill="#7a2c1c">u=.8 → cost 10 ("FFS today")</text>
+        <circle cx="247" cy="210" r="5" fill="#1E7FA6"/>
+        <text x="257" y="216" font-family="JetBrains Mono" font-size="10" fill="#123a49">Sprite LFS actual: u≈.12–.54 → cost 1.2–1.6</text>
+        <line x1="247" y1="210" x2="247" y2="189" stroke="#1E7FA6" stroke-width="1" stroke-dasharray="2 3" opacity="0.6"/>
+      </svg>
+      <figcaption><b>Read it left to right:</b> as the utilization of segments the cleaner picks rises, write cost explodes — Unix FFS effectively cleans at u≈.8&ndash;.9 (write cost 10&ndash;20). LFS must keep the segments it cleans well below that. Production Sprite LFS lands even below the theoretical curve because many cleaned segments are <i>totally empty</i> (u=0, no read needed at all) — the cost-benefit policy's real win. (Paper, Fig. 3/7, Table 2)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">buffer → log → fragment → clean → recover</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Buffer</div><div class="nd">Dirty blocks (data, inodes, directories) collect in the file cache</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Flush as log</div><div class="nd">One sequential write per segment — near 100% of disk bandwidth</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-lru"><div class="nt">Fragment</div><div class="nd">Deletes/overwrites leave scattered dead blocks in old segments</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Clean (cost-benefit)</div><div class="nd">Pick segments by free-space-reclaimed × how-long-it-stays-free</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Compact &amp; rewrite</div><div class="nd">Copy live blocks, sorted by age, into fresh segments</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Recover fast</div><div class="nd">Checkpoint + roll-forward instead of a full-disk fsck scan</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about LFS</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="52" width="26" height="26" rx="3" fill="#F5DED8" stroke="#B0432E" stroke-width="2"/>
+          <rect x="58" y="30" width="26" height="26" rx="3" fill="#F5DED8" stroke="#B0432E" stroke-width="2"/>
+          <rect x="100" y="60" width="26" height="26" rx="3" fill="#F5DED8" stroke="#B0432E" stroke-width="2"/>
+          <path d="M20 20 h100" stroke="#D8C8AC" stroke-width="2" stroke-dasharray="3 3"/>
+          <rect x="24" y="8" width="92" height="16" rx="8" fill="#D9EEF5" stroke="#1E7FA6" stroke-width="2.5"/>
+          <text x="70" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#123a49">one big trip</text>
+        </svg></div>
+        <span class="term">The core idea · Log writing</span>
+        <h3>Doing all your errands in one drive</h3>
+        <p>Three errands across town, done as three separate round trips, waste most of your time driving back and forth. Batch them into one loop and you drive once. LFS does this with disk writes: instead of five scattered, seek-separated writes to create a file, it collects the changes and delivers them in a single sequential pass.</p>
+        <div class="breaks"><b>Where it breaks:</b> errands don't need to be found again later; file blocks do. The "one trip" only works because LFS also builds an index (inode map) so it can locate everything afterward — batching alone isn't enough.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="56" rx="4" fill="none" stroke="#9A8E7C" stroke-width="2"/>
+          <line x1="53" y1="20" x2="53" y2="76" stroke="#9A8E7C" stroke-width="1.5"/>
+          <line x1="86" y1="20" x2="86" y2="76" stroke="#9A8E7C" stroke-width="1.5"/>
+          <rect x="24" y="24" width="25" height="48" fill="#E9E1F5"/>
+          <rect x="57" y="24" width="25" height="20" fill="#fff"/>
+          <rect x="90" y="24" width="26" height="48" fill="#E9E1F5"/>
+          <text x="70" y="56" text-anchor="middle" font-family="monospace" font-size="8" fill="#6E6456">vacant unit</text>
+        </svg></div>
+        <span class="term">Segments &amp; cleaning</span>
+        <h3>Renovating one full floor at a time</h3>
+        <p>You can't reuse a floor of a fully-occupied apartment building until every remaining tenant has moved out or you've relocated them. LFS's segments work the same way: a whole segment must have all its live blocks copied elsewhere before the segment can be reused for new writes.</p>
+        <div class="breaks"><b>Where it breaks:</b> a landlord picks which floor to renovate by convenience; the cleaner has to pick by a cold calculation of which floor gives back the most usable space for the longest time (below).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="45" height="40" rx="4" fill="#D9EEF5" stroke="#1E7FA6" stroke-width="2.5"/>
+          <rect x="75" y="50" width="45" height="20" rx="4" fill="#F8E4C0" stroke="#B36A0F" stroke-width="2.5"/>
+          <path d="M42 26 v-10 M42 16 l-4 4 M42 16 l4 4" stroke="#123a49" stroke-width="1.6" fill="none"/>
+          <path d="M97 46 v-10 M97 36 l-4 4 M97 36 l4 4" stroke="#6e4a09" stroke-width="1.6" fill="none"/>
+          <text x="42" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#123a49">cold</text>
+          <text x="97" y="64" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">hot</text>
+        </svg></div>
+        <span class="term">Cost-benefit · Hot vs cold</span>
+        <h3>Recycling bins that fill at different rates</h3>
+        <p>Empty a bin that refills in an hour and you'll be back soon; empty one that refills once a year and that space stays useful for a year. LFS's cost-benefit policy treats segments the same way — a "cold," slowly-changing segment is worth cleaning even when it's mostly full, because the space it yields stays free a long time; a "hot" segment isn't worth cleaning until it's nearly empty, since it'll refill (with dead blocks, i.e. free up more space) soon anyway.</p>
+        <div class="breaks"><b>Where it breaks:</b> LFS estimates "how long it'll stay free" using the <i>age</i> of the data (older = more stable), a proxy that fails if cold data is suddenly rewritten in one burst.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="24" width="100" height="20" rx="4" fill="#F5DED8" stroke="#B0432E" stroke-width="2"/>
+          <text x="70" y="38" text-anchor="middle" font-family="monospace" font-size="9" fill="#7a2c1c">picking messiest first</text>
+          <rect x="20" y="56" width="100" height="20" rx="4" fill="#E9E1F5" stroke="#6B4FA0" stroke-width="2"/>
+          <text x="70" y="70" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a2d6e">picking by cost ÷ benefit</text>
+        </svg></div>
+        <span class="term">Greedy vs cost-benefit</span>
+        <h3>Tidying by "messiest right now" vs "going stale"</h3>
+        <p>Always tidying whatever looks messiest right now (greedy) sounds sensible — but a drawer you use daily gets messy again the moment you tidy it, while a closet you rarely touch stays tidy for months once cleared. LFS's greedy policy (always clean the least-utilized segment) fell into exactly this trap: cold segments lingered forever just above the cleaning threshold, tying up free space, and adding locality made it <i>worse</i>, not better.</p>
+        <div class="breaks"><b>Where it breaks:</b> real tidying has no formula; LFS's fix works specifically because "age" is a decent proxy for "won't get messy again soon" in real file-access patterns.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="30" fill="none" stroke="#6B4FA0" stroke-width="2.5"/>
+          <path d="M70 48 l0 -20 M70 48 l14 8" stroke="#332C24" stroke-width="2.2" stroke-linecap="round"/>
+          <rect x="18" y="70" width="104" height="14" rx="4" fill="#D9EEF5" stroke="#1E7FA6" stroke-width="2"/>
+          <text x="70" y="80" text-anchor="middle" font-family="monospace" font-size="8" fill="#123a49">replay from here</text>
+        </svg></div>
+        <span class="term">Crash recovery</span>
+        <h3>Autosave plus a flight recorder</h3>
+        <p>A video game's autosave gives you a known-good state; a flight recorder lets investigators replay exactly what happened right before an incident. LFS's checkpoint is the autosave — a fully consistent snapshot — and roll-forward is the flight recorder, replaying the log segments written since, to recover data from the seconds right before a crash.</p>
+        <div class="breaks"><b>Where it breaks:</b> a flight recorder is read-only after the fact; roll-forward actively repairs directory/inode inconsistencies as it replays, using a dedicated directory operation log to resolve races.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="34" height="40" rx="4" fill="#D9EEF5" stroke="#1E7FA6" stroke-width="2"/>
+          <text x="47" y="54" text-anchor="middle" font-family="monospace" font-size="9" fill="#123a49">v2</text>
+          <rect x="76" y="30" width="34" height="40" rx="4" fill="#F5DED8" stroke="#B0432E" stroke-width="2" stroke-dasharray="3 3"/>
+          <text x="93" y="54" text-anchor="middle" font-family="monospace" font-size="9" fill="#7a2c1c">v1</text>
+          <path d="M64 50 h12" stroke="#332C24" stroke-width="2"/>
+          <text x="70" y="44" text-anchor="middle" font-family="monospace" font-size="14" fill="#332C24">≠</text>
+        </svg></div>
+        <span class="term">The uid trick</span>
+        <h3>A claim ticket that expires the moment a new one is issued</h3>
+        <p>A coat-check ticket only works if it matches the currently-valid stub — an old ticket for a coat that's already been reissued is worthless without anyone checking the coat itself. Each logged block carries a <b>uid</b> (inode number + version); if it doesn't match what the current inode map says, the cleaner discards the block immediately — no need to open the file's inode and check block pointers.</p>
+        <div class="breaks"><b>Where it breaks:</b> this shortcut only tells you a block is <i>definitely dead</i>; a match still requires the full inode check to confirm the block is genuinely live at that offset.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key comparisons rebuilt as diagrams.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem — five seeks to create one file</h3>
+      <p>In Unix FFS, creating a one-block file named <code>dir/file</code> requires writing: the file's data block, the file's inode (written twice, for crash-safety reasons), the directory's data block (new entry), and the directory's own inode (updated modify time) — five non-sequential writes, several of them synchronous. Fewer than 5% of the disk's bandwidth ends up carrying new data; the rest is seeking.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Same logical write, two very different disk footprints</div>
+      <div class="viz-kicker">creating dir1/file1 and dir2/file2</div>
+      <svg class="full" viewBox="0 0 700 190" role="img" aria-label="Unix FFS scattered writes vs Sprite LFS sequential log">
+        <text x="20" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Unix FFS — scattered, 10 non-sequential writes</text>
+        <g font-family="JetBrains Mono" font-size="9" fill="#7a2c1c">
+          <rect x="20" y="34" width="60" height="26" rx="4" fill="#F5DED8" stroke="#B0432E" stroke-width="1.6"/><text x="50" y="50" text-anchor="middle">inode1</text>
+          <rect x="110" y="34" width="60" height="26" rx="4" fill="#F5DED8" stroke="#B0432E" stroke-width="1.6"/><text x="140" y="50" text-anchor="middle">data1</text>
+          <rect x="260" y="34" width="60" height="26" rx="4" fill="#F5DED8" stroke="#B0432E" stroke-width="1.6"/><text x="290" y="50" text-anchor="middle">dir1</text>
+          <rect x="400" y="34" width="60" height="26" rx="4" fill="#F5DED8" stroke="#B0432E" stroke-width="1.6"/><text x="430" y="50" text-anchor="middle">inode2</text>
+          <rect x="490" y="34" width="60" height="26" rx="4" fill="#F5DED8" stroke="#B0432E" stroke-width="1.6"/><text x="520" y="50" text-anchor="middle">data2</text>
+          <rect x="620" y="34" width="60" height="26" rx="4" fill="#F5DED8" stroke="#B0432E" stroke-width="1.6"/><text x="650" y="50" text-anchor="middle">dir2</text>
+        </g>
+        <line x1="20" y1="76" x2="680" y2="76" stroke="#E7DBC6"/>
+        <text x="20" y="100" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Sprite LFS — one sequential segment write</text>
+        <rect x="20" y="112" width="640" height="30" rx="4" fill="#D9EEF5" stroke="#1E7FA6" stroke-width="1.6"/>
+        <g font-family="JetBrains Mono" font-size="9" fill="#123a49">
+          <text x="70" y="131" text-anchor="middle">inode1</text><text x="150" y="131" text-anchor="middle">data1</text><text x="230" y="131" text-anchor="middle">dir1</text>
+          <text x="330" y="131" text-anchor="middle">inode2</text><text x="410" y="131" text-anchor="middle">data2</text><text x="490" y="131" text-anchor="middle">dir2</text>
+          <text x="590" y="131" text-anchor="middle">inode map</text>
+        </g>
+        <path d="M20 152 h640" stroke="#9A8E7C" stroke-width="1.4" marker-end="url(#arrow)"/>
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#9A8E7C"/></marker></defs>
+        <text x="340" y="168" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">one seek, one long transfer</text>
+      </svg>
+      <figcaption>Both systems perform the same amount of <i>reading</i> work later — the number of disk I/Os to read the file back is identical. The difference is entirely in how the write is delivered. (Paper, Fig. 1)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Retrieving data from the log — an inode map, not fixed addresses</h3>
+      <p>Sprite LFS keeps the same inode/indirect-block structure as FFS, but inodes aren't at fixed addresses — they move every time they're rewritten to the log. An <b>inode map</b> tracks each inode's current location; it's small enough to stay mostly cached in memory, so looking up a file rarely costs an extra disk access. A fixed <b>checkpoint region</b> records where the inode map's own blocks are.</p>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Free space: threading, copying, or both</h3>
+      <p>Once the log wraps around the disk, free space fragments. <b>Threading</b> the log through the holes avoids copying but fragments free space into unusably small pieces. <b>Copying</b> live data out to compact it gives large free extents but costs repeated copying, especially for long-lived files. Sprite LFS does <b>both</b>: it copies live data <i>within</i> a segment to free the whole segment, but <b>threads</b> the log <i>across</i> segments — a segment full of long-lived data can simply be skipped, never re-copied.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Segment cleaning mechanics</h3>
+      <p>Cleaning is a 3-step loop: read several segments into memory in full; use each segment's <b>summary block</b> (file number + offset per block) plus the current inode map to identify which blocks are still live; write the live blocks back, compacted, into fresh segments. The now-empty segments are marked clean and reused. No bitmap or free list is needed anywhere — liveness is always derived on demand.</p>
+    </div>
+
+    <div class="prose">
+      <h3>5 · The write-cost model, and why greedy backfires</h3>
+      <p>Reading N segments (utilization u) and writing back N·u live segments frees N·(1&minus;u) segments for new data, using 2N total bytes of disk traffic (N read + N written back, live and new combined) — giving:</p>
+      <pre class="sketch"><span class="hl">write cost = 2 / (1 − u)</span>      <span class="cm"># u = fraction of cleaned segments' bytes that are still live</span></pre>
+      <p>The naive <b>greedy</b> policy — always clean the least-utilized segment — sounds reasonable, but the paper's simulations found it gets <i>worse</i>, not better, as file-access locality increases. Under greedy, every segment (hot or cold) is only cleaned once it drops to the same low threshold utilization — but cold segments' utilization drops so slowly that they linger just above that threshold for a long time, tying up free blocks that could otherwise be reclaimed.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Greedy vs cost-benefit — segment utilization distributions</div>
+      <div class="viz-kicker">75% overall disk utilization, hot-and-cold access pattern</div>
+      <svg class="full" viewBox="0 0 700 220" role="img" aria-label="Segment utilization histograms for greedy vs cost-benefit cleaning">
+        <text x="20" y="22" font-family="Fraunces" font-size="14" font-weight="600" fill="#B0432E">Greedy — segments cluster near the cleaning threshold</text>
+        <g fill="#F5DED8" stroke="#B0432E" stroke-width="1.2">
+          <rect x="20" y="60" width="14" height="6"/><rect x="40" y="52" width="14" height="14"/><rect x="60" y="40" width="14" height="26"/>
+          <rect x="80" y="30" width="14" height="36"/><rect x="100" y="34" width="14" height="32"/><rect x="120" y="44" width="14" height="22"/>
+          <rect x="140" y="56" width="14" height="10"/><rect x="160" y="60" width="14" height="6"/><rect x="180" y="62" width="14" height="4"/>
+        </g>
+        <text x="20" y="80" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">u→</text>
+        <line x1="20" y1="66" x2="200" y2="66" stroke="#D8C8AC"/>
+        <text x="20" y="110" font-family="Fraunces" font-size="14" font-weight="600" fill="#6B4FA0">Cost-benefit — bimodal: mostly full, a cluster near u≈.15</text>
+        <g fill="#E9E1F5" stroke="#6B4FA0" stroke-width="1.2">
+          <rect x="20" y="180" width="14" height="6"/><rect x="40" y="176" width="14" height="10"/><rect x="60" y="150" width="14" height="36"/>
+          <rect x="80" y="182" width="14" height="4"/><rect x="100" y="184" width="14" height="2"/><rect x="120" y="184" width="14" height="2"/>
+          <rect x="140" y="150" width="14" height="36"/><rect x="160" y="120" width="14" height="66"/><rect x="180" y="184" width="14" height="2"/>
+        </g>
+        <text x="20" y="200" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">u→ (low, ~.15)</text>
+        <text x="440" y="200" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">u→ (high, ~1.0 — most segments)</text>
+        <line x1="20" y1="186" x2="200" y2="186" stroke="#D8C8AC"/>
+      </svg>
+      <figcaption>Cost-benefit deliberately produces a lopsided distribution: nearly all segments stay nearly full (untouched, valuable data), while a small pool sits at very low utilization (cheap to clean). Greedy instead pushes <i>every</i> segment down toward the same cleaning threshold — including cold ones that then sit there for a long time. (Paper, Fig. 5/6)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>6 · The cost-benefit formula, and checkpoint/roll-forward recovery</h3>
+      <p>The cost-benefit policy scores each candidate segment by estimated benefit (free space reclaimed × how long it'll likely stay free, using the segment's most-recently-modified block as an age proxy) against cost (1 read + u writes to preserve live data):</p>
+      <pre class="sketch"><span class="hl">cost / benefit = (1 + u) / ((1 − u) × age)</span>   <span class="cm"># clean segments with the LOWEST cost/benefit first</span></pre>
+      <p>Live blocks are then sorted by age before being rewritten, segregating hot data from cold — reinforcing the bimodal distribution above. Separately, crash recovery uses <b>checkpoints</b> (periodic fully-consistent snapshots) plus <b>roll-forward</b> (replaying segment summary blocks written since the last checkpoint). A dedicated <b>directory operation log</b> records create/link/rename/unlink events explicitly, because a crash can catch an inode's reference count and its directory entry on opposite sides of a write — ordinary block logging alone can't resolve that race.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why age, not access frequency?</b> Age (time since last write) is cheap to track per segment and correlates with "won't be touched again soon" — a genuinely different signal from LRU-style recency, which tracks reads, not writes.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations built from the paper's figures, tables, and formulas — one (marked below) uses illustrative numbers to demonstrate a formula rather than measured values.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Deriving the FFS reference points on the write-cost curve</h3>
+      <p style="color:var(--ink-soft)">The paper states Unix FFS today runs at write cost 10&ndash;20, and an "improved" FFS could reach write cost 4. What utilizations does that imply, using write cost = 2/(1&minus;u)?</p>
+      <ol class="seq">
+        <li><b>Solve for u at cost 10:</b> 10 = 2/(1&minus;u) → 1&minus;u = 0.2 → <b>u = 0.8</b>.</li>
+        <li><b>Solve for u at cost 20:</b> 1&minus;u = 0.1 → <b>u = 0.9</b>. So "FFS today" corresponds to effectively cleaning at u = 0.8&ndash;0.9.</li>
+        <li><b>Solve for u at cost 4 ("FFS improved"):</b> 1&minus;u = 0.5 → <b>u = 0.5</b>.</li>
+        <li><b>Interpretation:</b> LFS must keep the segments it actually cleans below u ≈ 0.8 to beat today's FFS, and below u ≈ 0.5 to beat an improved FFS — exactly the thresholds the paper states.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the entire cleaning-policy design problem reduces to one goal: keep the utilization of segments you clean low, however you manage it.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Cost-benefit ratio: why a fuller cold segment beats an emptier hot one</h3>
+      <p style="color:var(--ink-soft)">Compare a cold segment (u=0.75, age=1000 time-units) against a hot segment (u=0.15, age=10 time-units) using cost/benefit = (1+u)/((1&minus;u)×age). Lower is better (cleaned first). <em>(These specific age/u values are illustrative, chosen to demonstrate the formula's behavior — not measured values from the paper.)</em></p>
+      <ol class="seq">
+        <li><b>Cold segment:</b> (1+0.75) / ((1&minus;0.75)×1000) = 1.75 / 250 = <b>0.007</b>.</li>
+        <li><b>Hot segment:</b> (1+0.15) / ((1&minus;0.15)×10) = 1.15 / 8.5 = <b>0.135</b>.</li>
+        <li><b>Compare:</b> 0.007 ≪ 0.135 — the cold segment, despite having <i>5× the live data</i> to copy, is roughly <b>19× more favorable</b> to clean.</li>
+        <li><b>Why:</b> its huge <code>age</code> multiplier means the space it frees will likely stay free 100× longer than the hot segment's — worth paying more copy cost up front.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is exactly why cost-benefit lets cold segments be cleaned at ~75% utilization while hot segments wait until ~15% (paper, §3.5) — the opposite of what a naive "clean the emptiest one" rule would ever choose.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ How much CPU headroom does Sprite LFS have left?</h3>
+      <p style="color:var(--ink-soft)">On the 10,000×1KB-file benchmark, SunOS FFS keeps the disk 85% busy while using only 1.2% of its bandwidth for new data; Sprite LFS keeps the disk only 17% busy while saturating the CPU. How much faster could each get from a faster CPU alone?</p>
+      <ol class="seq">
+        <li><b>SunOS FFS:</b> disk is already 85% busy — at best a faster CPU buys back the remaining 15% of time, i.e. roughly <b>1.15–1.2×</b> speedup before the disk becomes the hard limit.</li>
+        <li><b>Sprite LFS:</b> disk is only 17% busy; the CPU is the current bottleneck. Headroom before the disk saturates ≈ 1/0.17 ≈ <b>5.9×</b>.</li>
+        <li><b>Paper's claim:</b> "performance of Sprite LFS will improve by another factor of 4&ndash;6 as CPUs get faster" — matches this estimate closely.</li>
+        <li><b>Takeaway:</b> the same disk hardware has wildly different remaining headroom depending purely on how writes are laid out.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Sanity-checking Table 2's production write costs</h3>
+      <p style="color:var(--ink-soft)">The <code>/swap2</code> file system had 66% of its cleaned segments come back totally empty (u=0) and the other 34% average u=0.535 (Table 2), yet the measured write cost was 1.6. Does that reconcile with write cost = 2/(1&minus;u)?</p>
+      <ol class="seq">
+        <li><b>Empty segments need no read at all</b> — with no live data to preserve, cleaning one costs only the write of new data into it: 1 unit of traffic, yielding 1 full segment of new/free space. 66 segments → traffic 66, free space 66.</li>
+        <li><b>Non-empty segments always cost 1 read + 1 write</b> — you read the whole segment (1), then write back a full segment's worth: the preserved live data (u) plus new data filling the freed space (1&minus;u), which sums to 1. Total traffic per segment = 2, regardless of u; free space produced = (1&minus;u) = 0.465. 34 segments → traffic 34×2=68, free space 34×0.465≈15.8.</li>
+        <li><b>Write cost = total traffic ÷ total new/free data</b> — not an average of per-segment costs: (66+68) / (66+15.8) = 134 / 81.8 ≈ <b>1.64</b>, matching the measured 1.6 almost exactly.</li>
+        <li><b>Why the naive average is wrong:</b> averaging 0.66×1.0 + 0.34×4.3 ≈ 2.1 weights each segment equally, but empty segments produce far more free space per segment than partially-full ones — the aggregate ratio has to weight each segment's contribution by how much free space it actually yields, not just count it once.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Takeaway:</b> Table 2's numbers aren't a mysterious extra gap beyond the formula — they're exactly what 2/(1&minus;u) predicts once you weight segments correctly by the free space each one contributes.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Using write cost = 2/(1&minus;u), what write cost corresponds to u = 0.9, and how does that compare to "FFS today" (write cost 10&ndash;20)?</div>
+      <details><summary>Show answer</summary><div class="ans">2/(1&minus;0.9) = 2/0.1 = <b>20</b>. That's at the high end of FFS's reported range — meaning if LFS cleaned segments at 90% utilization, it would be no better than the worst FFS behavior it's trying to beat.<span class="mis">Misconception: that any use of a log automatically makes writes fast. Without a good cleaning policy keeping u low, LFS's write cost can be just as bad as FFS's.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Why did adding <i>more</i> locality to the access pattern make the greedy cleaning policy's write cost <i>worse</i>, not better?</div>
+      <details><summary>Show answer</summary><div class="ans">Under greedy, every segment — hot or cold — only gets cleaned once its utilization drops to the same fixed threshold. Cold segments' utilization drops very slowly (their data barely changes), so with more locality they spend a very long time hovering just above that threshold, tying up free space that should have been reclaimed sooner. More locality means more segments behave this way, worsening the problem.<span class="mis">Misconception: that grouping related/similar data together (locality) is always good for a storage system. Here it actively defeats a cleaning policy that isn't designed to account for it.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">A segment has u=0.9 and age=5. Another has u=0.3 and age=500. Using cost/benefit = (1+u)/((1&minus;u)×age), which gets cleaned first?</div>
+      <details><summary>Show answer</summary><div class="ans">First segment: (1.9)/((0.1)×5) = 1.9/0.5 = 3.8. Second: (1.3)/((0.7)×500) = 1.3/350 ≈ 0.0037. The second (mostly-live but very old) segment has a far lower cost/benefit and is cleaned first, despite having 3× the live data to copy.<span class="mis">Misconception: that "how full" a segment is (utilization alone) determines cleaning priority. Age/stability can dominate the decision entirely.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Explain how Sprite LFS can discard a dead block during cleaning <i>without</i> reading the file's current inode at all, using the uid mechanism.</div>
+      <details><summary>Show answer</summary><div class="ans">Each segment summary block records, per block, the uid (inode number + version number) that was current when the block was written. During cleaning, if the inode map's current version number for that inode number doesn't match the uid stored in the segment, the file has since been deleted/truncated — the block is provably dead, full stop, with no need to open the inode and check block pointers. Only when the uid <i>does</i> match must the cleaner check the inode to see if that specific block offset is still referenced.<span class="mis">Misconception: that liveness always requires consulting the file's inode. The uid check is a cheap short-circuit that skips the expensive check in the common "clearly dead" case.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Sprite LFS has no free-block bitmap or free list at all. What does Unix FFS reserve 10% of disk space for, that LFS doesn't need?</div>
+      <details><summary>Show answer</summary><div class="ans">Unix FFS keeps 10% of the disk permanently unallocated so its free-space allocation algorithm (finding a good, low-fragmentation block to place new data) stays efficient as the disk fills. LFS never searches for free blocks this way — it always writes to the current end of the log, and liveness/free-space bookkeeping is derived from segment summaries and the segment usage table rather than maintained as a separate structure that needs slack space to stay efficient.<span class="mis">Misconception: that reserving free space is an inherent cost of any file system. It's specifically a cost of FFS's block-allocation strategy, not of storage management in general.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Why does Sprite LFS need a dedicated directory operation log, rather than just logging the changed directory block and inode normally?</div>
+      <details><summary>Show answer</summary><div class="ans">A directory entry (name → i-number) and the target inode's reference count are two separate on-disk structures that must stay consistent, but a crash can occur after one is written to the log and before the other is. Ordinary logging of "whatever blocks changed" doesn't record the <i>intent</i> of the operation (create/link/rename/unlink) needed to detect and repair that specific inconsistency. The directory operation log records the intent explicitly and is guaranteed to be written before the corresponding directory/inode blocks, so roll-forward can always tell what should have happened and finish the job.<span class="mis">Misconception: that logging the raw changed blocks is always enough for crash consistency. Some invariants span two structures and need the operation's intent logged separately.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">Why is read performance in Sprite LFS about the same as Unix FFS, given that writes are handled so differently?</div>
+      <details><summary>Show answer</summary><div class="ans">Both systems use the same logical lookup structure — find the inode, then follow direct/indirect block pointers to the data. The only difference is that LFS's inode isn't at a fixed address and must be found via the inode map, which is small enough to usually stay cached in memory. Once the inode is found, the number of disk I/Os to read the file is identical in both systems.<span class="mis">Misconception: that a completely different write strategy must come with a completely different (and presumably worse) read strategy. LFS deliberately preserves FFS's read-side structures.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">Why does Sprite LFS perform worse than Unix FFS specifically when a file is read back sequentially after being written randomly?</div>
+      <details><summary>Show answer</summary><div class="ans">LFS achieves <i>temporal</i> locality — blocks written around the same time end up near each other on disk, regardless of which file they belong to. FFS achieves <i>logical</i> locality — blocks of the same file end up near each other, regardless of when they were written. Random writes to one file, in LFS, get scattered across the log in write order, not file-offset order; reading the file back sequentially (by offset) then requires seeking around the log. FFS, by contrast, always keeps a file's blocks together on disk, so sequential reads stay cheap even after random writes.<span class="mis">Misconception: that sequential-log writing always implies sequential-file-order layout. Temporal and logical locality are different things, and they only coincide when a file is written in the same order it's later read.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly makes a file system "log-structured"?<span class="chev">▾</span></summary><div class="a">The log is the <i>only</i> permanent structure on disk — not a staging area that data later moves out of. Files are written once to the log and stay there; the only way data "moves" is when the cleaner copies still-live blocks to a fresh segment, which is still just another log write.</div></details>
+      <details><summary><span class="q">Q2</span>Isn't this the same as journaling?<span class="chev">▾</span></summary><div class="a">No. A journaling file system logs metadata (or data) changes temporarily for crash recovery or write-ordering, then commits the permanent copy elsewhere in a traditional layout. LFS has no "elsewhere" — the log entry itself is the permanent data. Database write-ahead logs work like journaling, not like LFS.</div></details>
+      <details><summary><span class="q">Q3</span>Why divide the disk into segments instead of one giant log?<span class="chev">▾</span></summary><div class="a">Segments are large enough that the transfer time dwarfs the one seek needed to reach them, so whole-segment reads/writes run at near-full disk bandwidth regardless of where on disk the segment sits. This lets the log be threaded — segments can be visited in any order — without losing sequential-write efficiency within each segment.</div></details>
+      <details><summary><span class="q">Q4</span>What is "write cost" measuring, exactly?<span class="chev">▾</span></summary><div class="a">The average disk-busy-time per byte of genuinely new data written, including all cleaning overhead. 1.0 is perfect (zero cleaning overhead, full bandwidth for new data); higher numbers mean more of the disk's time is spent moving old live data around rather than writing anything new.</div></details>
+      <details><summary><span class="q">Q5</span>Why did the "obviously reasonable" greedy cleaning policy do so badly?<span class="chev">▾</span></summary><div class="a">Greedy cleans whichever segment currently has the least live data, with no regard for <i>why</i> it's low or how long it'll stay that way. Cold, rarely-changing segments drop toward the cleaning threshold extremely slowly and then linger there, hoarding free space that a smarter policy could reclaim earlier and put to better use.</div></details>
+      <details><summary><span class="q">Q6</span>How does the cost-benefit policy actually decide?<span class="chev">▾</span></summary><div class="a">It ranks segments by cost/benefit = (1+u)/((1&minus;u)×age), and cleans the lowest-ranked (best) ones first. This lets a mostly-full but very old (cold) segment beat out a mostly-empty but very young (hot) segment — because the cold segment's freed space will likely stay free far longer.</div></details>
+      <details><summary><span class="q">Q7</span>Does LFS need a bitmap or free list like FFS?<span class="chev">▾</span></summary><div class="a">No — this is one of its simplifications. Liveness is always derived from segment summary blocks plus the current inode map (or the uid shortcut), and the segment usage table just tracks aggregate live-byte counts and ages per segment for cleaning decisions, not individual free blocks.</div></details>
+      <details><summary><span class="q">Q8</span>How is crash recovery faster than fsck?<span class="chev">▾</span></summary><div class="a">fsck must scan the <i>entire disk</i> because traditional file systems don't record where the last operations landed. LFS always knows: the last writes are at the end of the log. Recovery reads the last checkpoint, then rolls forward through only the segments written since — a bounded amount of work tied to the checkpoint interval, not the disk size.</div></details>
+      <details><summary><span class="q">Q9</span>Is LFS only good for small files?<span class="chev">▾</span></summary><div class="a">No — it was designed around small-file workloads (where FFS struggles most) but the paper shows it matches or beats FFS on large sequential writes and reads too, since large files are naturally efficient to log sequentially. The one weak spot is reading a file sequentially right after writing it randomly, where temporal and logical locality diverge.</div></details>
+      <details><summary><span class="q">Q10</span>Was Sprite LFS just a simulation, or did it actually run?<span class="chev">▾</span></summary><div class="a">Both. The cleaning-policy design was worked out via simulation first (Section 3), then implemented as a real, production file system inside the Sprite network operating system, used by about thirty users across five disk partitions for months, with measurements confirming (and in some ways beating) the simulated predictions.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: INSIGHTS ============ -->
+<section class="tab-panel" id="tab-insights">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Connecting to advanced OS &amp; memory-systems design</div>
+      <h2>Why this 1991 paper still matters</h2>
+      <p class="sub">Four short connections to ideas you'll recognize from tiering and persistent-memory work.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>🔧 Segment cleaning ≈ SSD garbage collection</h3>
+      <p>LFS's write-cost curve (2/(1&minus;u)) is a striking analogue of an SSD flash translation layer's <b>write amplification factor</b> — both punish reclaiming space from mostly-live regions, and both fix it the same way: never overwrite in place, batch writes sequentially, and garbage-collect opportunistically. If you've ever tuned an SSD's over-provisioning percentage, you were tuning the same fundamental tradeoff LFS identified for disks — not because one mechanism descends from the other, but because the same math shows up wherever in-place updates get replaced by an append-only log.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>🌡️ Age-as-stability ≈ hot/cold page classification</h3>
+      <p>The cost-benefit policy's core move — treat data differently based on how stable it's likely to be, using a cheap recency/age proxy instead of predicting the future — is exactly what DRAM/NVM tiering systems do when classifying pages as hot or cold for migration. LFS's "greedy gets worse with locality" surprise is a useful cautionary tale: a naive recency-only heuristic can misfire in the same way a naive LRU-based tiering policy can be fooled by scans or bursty cold-data rewrites.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>💾 Checkpoint + roll-forward ≈ persistent-memory logging</h3>
+      <p>The checkpoint/roll-forward pattern — a periodic consistent snapshot plus replay of everything since — has a clear echo in persistent-memory file systems like NOVA and PMFS, which use lightweight per-inode logging and periodic snapshots for the same reason LFS did: cheap, log-order recovery without scanning the whole device. Copy-on-write filesystems like ZFS and btrfs solve a related durability problem, but with a different mechanism — atomic transactional updates to an immutable tree, not checkpoint-plus-log-replay — so the resemblance there is looser, more a shared "never overwrite in place" philosophy than the same recovery algorithm.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>📚 Sequential batching ≈ LSM-trees and page migration batching</h3>
+      <p>Never-overwrite-in-place plus periodic compaction is also the definition of a log-structured merge tree (the design behind RocksDB/LevelDB). In tiering systems, the same principle shows up when batching cold-page migrations into large sequential transfers to amortize CXL/NVM fabric latency, rather than migrating pages one at a time.</p>
+    </div>
+
+    <div class="callout takeaway"><span class="ic">🍯</span><div>LFS's real lesson isn't "logging is fast" — it's that <b>reclamation policy</b>, not raw media speed, determines whether a write-heavy storage layer performs well. That's precisely the design tension in OS-managed DRAM/NVM tiering: deciding which cold pages to migrate, and whether the migration cost is worth paying, is a cost-benefit problem with the same shape as choosing which segment to clean.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 9: CLASS PREP ============ -->
+<section class="tab-panel" id="tab-classprep">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Walk into seminar ready</div>
+      <h2>Sharp questions to raise</h2>
+      <p class="sub">Each references a specific claim or number from the paper.</p>
+    </div>
+    <ol class="seq">
+      <li>Given that Sprite LFS's production write costs (1.2&ndash;1.6, Table 2) came out noticeably better than the paper's own simulated predictions (2.5&ndash;3), how much of the real-world win is the cost-benefit policy itself versus the paper's admission that its uniform-file simulator model is "much harsher than reality"? <em style="color:var(--ink-faint)">(worth asking which of the two the authors are actually claiming credit for)</em></li>
+      <li>Greedy cleaning got measurably <i>worse</i> as locality increased (Figs. 4&ndash;6) — the opposite of the authors' own initial expectation — so what would a workload look like that defeats the cost-benefit policy's age-as-stability heuristic in the same surprising way? <em style="color:var(--ink-faint)">(think: cold data that's suddenly rewritten in one large burst)</em></li>
+      <li>The production system uses a 30-second checkpoint interval that the authors themselves call "probably much too short," and Table 4 shows the inode map alone eats 7.8% of log bandwidth as a direct result — what would a principled way to pick that interval look like, instead of picking by feel? <em style="color:var(--ink-faint)">(there's a real tradeoff curve here between checkpoint overhead and recovery time bound)</em></li>
+      <li>Sequential-read-after-random-write is the one workload where LFS loses to FFS (Fig. 9), because temporal locality diverges from logical locality — is this the same tension that shows up as read amplification in log-structured merge trees, and would idle-time re-sorting eliminate the gap or just relocate the cost to a different point in time? <em style="color:var(--ink-faint)">(connects directly to LSM-tree compaction tradeoffs)</em></li>
+      <li>The paper's entire premise rests on "files are cached in memory, so disk traffic becomes write-dominated" — does that assumption still hold on modern NVMe SSDs and CXL-attached memory, where read latency is far closer to DRAM than 1991 disk read latency was, and if it doesn't, does the paper's central argument for the log even still apply? <em style="color:var(--ink-faint)">(a chance to connect 1991 disk economics to today's memory/storage economics)</em></li>
+    </ol>
+  </div>
+</section>
+
+<!-- ============ TAB 10: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results, &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>LFS (Log-Structured File System)</b><span>The paper's technique: write all changes sequentially to a log that is the only permanent structure on disk.</span></div>
+      <div class="term-def"><b>Segment</b><span>A large fixed-size disk extent (512 KB&ndash;1 MB); the unit the log is written in and the unit the cleaner reclaims.</span></div>
+      <div class="term-def"><b>Segment cleaning</b><span>Copying live blocks out of fragmented segments so those segments can be reused for new writes.</span></div>
+      <div class="term-def"><b>Write cost</b><span>Disk-busy-time per byte of new data written, including cleaning overhead: 2/(1&minus;u) in steady state.</span></div>
+      <div class="term-def"><b>Utilization (u)</b><span>Fraction of a segment's bytes still live when the cleaner reads it — the key driver of write cost.</span></div>
+      <div class="term-def"><b>Cost-benefit policy</b><span>Cleaning rule: pick segments minimizing (1+u)/((1&minus;u)×age), favoring old (cold) segments even at high utilization.</span></div>
+      <div class="term-def"><b>Segment usage table</b><span>On-disk structure tracking live-byte counts and last-modified time per segment, feeding the cost-benefit calculation.</span></div>
+      <div class="term-def"><b>Checkpoint</b><span>A periodic, fully consistent on-disk snapshot: inode map + segment usage table locations, plus a log pointer.</span></div>
+      <div class="term-def"><b>Roll-forward</b><span>Replaying segment summary blocks written after the last checkpoint to recover recent data after a crash.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Unix FFS</b><span>Berkeley Fast File System — the fixed-address-inode baseline LFS is compared against throughout.</span></div>
+      <div class="term-def"><b>Inode / inode map</b><span>Per-file attribute+pointer structure; in LFS its address moves, so a separate map tracks its current location.</span></div>
+      <div class="term-def"><b>Segment summary block</b><span>Per-segment index naming the file/offset of every block written, used to identify live data during cleaning.</span></div>
+      <div class="term-def"><b>uid</b><span>Inode number + version number stamped per block, letting the cleaner spot dead blocks without an inode lookup.</span></div>
+      <div class="term-def"><b>Directory operation log</b><span>Dedicated log records for directory create/link/rename/unlink, resolving inode-vs-directory-entry race conditions.</span></div>
+      <div class="term-def"><b>Threading vs copying</b><span>Two free-space strategies: skip over live data (threading, fragments free space) or relocate it (copying, costs bandwidth). LFS combines both.</span></div>
+      <div class="term-def"><b>Temporal vs logical locality</b><span>Grouping by "written at the same time" (LFS's natural layout) vs "belongs to the same file" (FFS's natural layout).</span></div>
+      <div class="term-def"><b>Sprite</b><span>The UC Berkeley research network operating system Sprite LFS was built into and measured within, in production.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What LFS buys (vs Unix FFS)</div>
+      <div class="viz-kicker">headline numbers from the paper</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Disk bandwidth for writes<small>LFS vs FFS</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="20"><span>65&ndash;75% (vs 5&ndash;10%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Small-file create/delete<small>speedup</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="24"><span>~10× faster</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Production write cost<small>Table 2 range</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="4"><span>1.2&ndash;1.6</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Cost-benefit vs greedy<small>write-cost reduction</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="13"><span>up to 50% lower</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Empty segments cleaned<small>free, no read needed</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="20"><span>52&ndash;83% of cleanings</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ +25 (illustrative bar lengths)</p>
+      <figcaption>Numbers pulled directly from the abstract, §5.1 micro-benchmarks, and Table 2 production measurements. (Paper, Abstract, §5)</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>Berkeley Unix Fast File System (FFS) basics <span class="diff easy">easy</span></h4><div class="meta">explainer · 20&ndash;30 min</div><p>Inode layout, cylinder groups, and why FFS is read-optimized. Foundational for understanding what LFS is reacting against.</p></div>
+    <div class="read-item reveal"><h4>Write-ahead logging in databases <span class="diff easy">easy</span></h4><div class="meta">explainer · 20 min</div><p>How redo logs and checkpoints work in transactional systems — the recovery model LFS borrows and simplifies.</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>A Fast File System for UNIX <span class="diff med">medium</span></h4><div class="meta">McKusick, Joy, Leffler, Fabry · ACM TOCS · 1984</div><p>The baseline FFS design LFS is compared against throughout this paper.</p></div>
+    <div class="read-item reveal"><h4>Reimplementing the Cedar File System Using Logging and Group Commit <span class="diff med">medium</span></h4><div class="meta">Hagmann · SOSP · 1987</div><p>An earlier logging file system that used the log only as a staging area — the contrast case that clarifies what makes LFS different.</p></div>
+    <div class="read-item reveal"><h4>DEcorum File System Architectural Overview <span class="diff med">medium</span></h4><div class="meta">Kazar et al. · USENIX Summer · 1990</div><p>Another contemporary logging-based design cited for comparison in §6.</p></div>
+    <div class="read-item reveal"><h4>A Real-Time Garbage Collector Based on the Lifetimes of Objects <span class="diff hard">hard</span></h4><div class="meta">Lieberman &amp; Hewitt · CACM · 1983</div><p>Source of the generational garbage-collection analogy the authors draw for segment cleaning and age-sorting.</p></div>
+    <div class="read-item reveal"><h4>A Case for Redundant Arrays of Inexpensive Disks (RAID) <span class="diff med">medium</span></h4><div class="meta">Patterson, Gibson, Katz · SIGMOD · 1988</div><p>Cited as a way disk transfer bandwidth (as opposed to access time) can be improved — the piece of the technology trend LFS doesn't need to fix.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="callout note"><span class="ic">📎</span><div>
+      <b>From the paper, verbatim or directly computed:</b> write cost = 2/(1&minus;u) (re-derived from the paper's own segment-read/write accounting in §3.4); the FFS write-cost reference points (10&ndash;20 today, 4 improved) and their implied u values (0.8&ndash;0.9, 0.5); Table 2's per-file-system write costs (1.2&ndash;1.6) and empty-segment fractions (52&ndash;83%); the cost-benefit formula (1+u)/((1&minus;u)×age); the ~10× small-file speedup and 17%/85% disk-busy figures from §5.1; Table 3's recovery times; Table 4's live-data vs log-bandwidth percentages.<br><br>
+      <b>Framing and analogies added for this guide:</b> the errand/apartment/recycling-bin/tidying/autosave/claim-ticket analogies; the CS240 Insights connecting LFS to SSD FTLs, hot/cold page tiering, persistent-memory logging, and LSM-trees (drawn as analogies, not claims of historical lineage); the Class Prep questions; and the illustrative (non-paper) numeric example in Worked Example ②'s hot/cold cost-benefit comparison (values chosen to demonstrate the formula's behavior, not measured from the paper).
+    </div></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Rosenblum &amp; Ousterhout, "The Design and Implementation of a Log-Structured File System" (SOSP 1991 / ACM TOCS Feb. 1992)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'});
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PARTITION EXPLORER (not used by this guide; kept for house-style script parity, all calls are guarded) ---- */
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Adjust the slider.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
