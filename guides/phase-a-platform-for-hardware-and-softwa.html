@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<!-- PHASE field guide — hardware-assisted hot-page tracking for CXL memory tiering (Tzafrir, Patel, Nider, Fedorova, DIMES'26).
+     Semantic colors: steel-blue = hardware tracker (M5-style top-k) · amber = general/optimal · indigo = PHASE platform machinery · rust = software scanning / thrashing baseline (ANB/TPP/Nomad under pressure). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PHASE: Tracking Hot Pages in Hardware — A Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D9922F; --honey-deep:#B06F12; --honey-soft:#FBE6C2;
+  --dram:#2C7A99; --dram-soft:#DCEAF0;
+  --ltram:#6152A6; --ltram-soft:#E7E3F3;
+  --optane:#BD5A35; --optane-soft:#F5DDD1;
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:80px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong);font-size:2.2rem}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>DIMES 2026 · A Field Guide</span>
+    <h1>Stop guessing which pages are hot — <span class="swash">snoop</span> the bus instead</h1>
+    <p class="lede">Software tiering guesses hotness from page faults and LRU lists; PHASE emulates hardware that watches every memory access directly, then plugs that clean signal into TPP and Nomad to see who actually wins.</p>
+    <div class="hero-meta">
+      <span>📄 Tzafrir, Patel, Nider, Fedorova · DIMES'26</span>
+      <span>🎓 Assumes CXL tiering, NUMA, mm-stack basics</span>
+      <span>⏱ ~20 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🎯</div>
+      <p>Measure hotness <span class="ro">precisely, in hardware</span> and migrate <span class="wo">conservatively</span> — precision beats eager guessing once the memory bus becomes the bottleneck.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>What PHASE assumes — and the acronyms up front</h2>
+      <p class="sub">You know CXL tiering and the Linux mm stack; these cards focus only on what's specific to PHASE and its baselines.</p>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--dram)"></i> hardware tracker (M5-style)</span>
+      <span><i style="background:var(--honey-deep)"></i> optimal / general</span>
+      <span><i style="background:var(--ltram)"></i> PHASE platform machinery</span>
+      <span><i style="background:var(--optane)"></i> software scanning / thrashing baseline</span>
+    </div>
+
+    <div class="subhead" style="margin-top:24px">Quick glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>PHASE</b><span>QEMU platform that lets a hardware hot-page tracker feed a software tiering policy (TPP/Nomad) with minimal kernel changes.</span></div>
+      <div class="term-def"><b>WSS</b><span>Working Set Size — Small/Medium/Large YCSB-Zipfian workloads with different memory pressure.</span></div>
+      <div class="term-def"><b>PPMA</b><span>Promotions Per 1 Million Accesses — the paper's proxy for migration/thrashing cost.</span></div>
+      <div class="term-def"><b>CMS</b><span>Count-Min Sketch — a fixed-size hashed structure that estimates per-page access frequency without a counter per page.</span></div>
+      <div class="term-def"><b>PFN</b><span>Physical Frame Number — the page identifier the tracker reports as a promotion candidate.</span></div>
+      <div class="term-def"><b>MMIO / VM-exit</b><span>A guest write to a device register that traps into the hypervisor — how PHASE's emulated PCI tracker sees accesses.</span></div>
+      <div class="term-def"><b>ANB</b><span>AutoNUMA Balancing — Linux's original, recency-based NUMA hint-fault mechanism; the weakest baseline here.</span></div>
+      <div class="term-def"><b>RSS / YCSB</b><span>Resident Set Size (memory footprint); YCSB is the Zipfian key-value benchmark generator used to build the WSS workloads.</span></div>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Why tracking hotness is hard without special hardware<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>General-purpose CPUs have no built-in per-page access counter. The only options are unmapping pages to force a hint fault (cheap-ish but coarse and CPU-visible) or sampling PEBS hardware counters (also CPU-cycle-consuming). Both cost cycles on the very thread you're trying to speed up.</p>
+          <div class="ready"><b>Now you're ready:</b> M5-style hardware sidesteps this entirely by snooping the memory bus in the CXL controller — zero host CPU involvement.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>The ANB → TPP → Nomad lineage<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>ANB hints on every remote access and calls it hot almost immediately (false positives). TPP filters that noise through the kernel's LRU active/inactive lists before promoting, and demotes asynchronously. Nomad keeps TPP's LRU filter but makes promotion asynchronous too, using a "shadow" copy of the slow-tier page so a later demotion is a free PTE remap.</p>
+          <div class="ready"><b>Now you're ready:</b> each step removed one synchronous, CPU-blocking operation — PHASE asks what's left to remove once even the <i>detection</i> step is hardware.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>M5's top-k tracker &amp; the Count-Min Sketch<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Instead of one counter per physical page (too much SRAM), a Count-Min Sketch hashes each PFN into a small grid and increments buckets; reading the minimum bucket across hash functions estimates that page's frequency. A sorted top-k array then tracks only the <i>k</i> hottest candidates.</p>
+          <div class="ready"><b>Now you're ready:</b> <i>k</i> isn't a page-count cap — it's the batch size of hot candidates reported per polling epoch.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>The metrics that matter here<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Locality</b> = fast-tier hit rate (higher looks better, but is misleading alone). <b>PPMA</b> = migrations per million accesses (proxy for bus/thrashing cost). Plus stable/transient latency and steady-state bandwidth.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's central twist is that low locality + low PPMA can beat high locality + high PPMA on real bandwidth and latency.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Why "free" hardware isn't free in emulation<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Real M5 hardware snoops passively with zero CPU cost. QEMU/KVM can't trap passive bus reads, so PHASE forces a VM-exit via an MMIO write per observed access — which itself perturbs timing and pollutes host caches/TLBs.</p>
+          <div class="ready"><b>Now you're ready:</b> this is exactly why PHASE subtracts tracker time from the guest clock (kvmclock) <i>and</i> samples accesses rather than trapping every one.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>PHASE's three-part architecture (preview)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A Remote Tier Tracker (emulated PCI device) detects accesses; a Zero-Copy Communication Bridge (a lock-free ring buffer) hands hot PFNs to the guest; an In-Kernel Promotion Engine batches and calls <code>migrate_pages()</code>. Detailed with diagrams in "How It Works."</p>
+          <div class="ready"><b>Now you're ready:</b> any hardware tracker (M5-like or otherwise) can plug into this same pipeline — that modularity is PHASE's own contribution, distinct from the evaluation results.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>PHASE in a nutshell</h2>
+      <p class="sub">What's broken, what PHASE builds, and the counter-intuitive result it surfaces.</p>
+    </div>
+    <div class="prose">
+      <p>A decade of memory-tiering research improved <i>migration</i>: TPP fixed ANB's lack of proactive demotion, and <strong>Nomad</strong> fixed TPP's synchronous, blocking promotion with asynchronous shadow paging. But all three still <i>detect</i> hotness in software — via page-table scans and hint page faults — which costs CPU cycles that scale with working-set size. Meanwhile <strong>M5</strong> showed hardware can track hotness with near-zero CPU overhead, but no one had combined it with these mature migration policies.</p>
+      <p><strong>PHASE</strong> is a QEMU-based platform that does exactly that: an emulated M5-style top-k tracker (Count-Min Sketch + sorted top-k, with MEMTIS-inspired epoch-based cooling) feeds hot PFNs through a zero-copy ring buffer into TPP or Nomad's promotion path, replacing their software scanning.</p>
+      <p>The headline finding is counter-intuitive: the hardware tracker achieves <i>lower</i> fast-tier locality than software methods (e.g. <span class="mem-chip chip-lru">67–71%</span> vs. TPP/Nomad's <span class="mem-chip chip-lru">100%/74–96%</span>), yet still delivers <b>up to 5.6× higher bandwidth and 6× lower latency</b>. Why: precise, conservative tracking collapses PPMA from the hundreds-of-thousands (TPP: 224,195 in Large WSS) down to single digits (N-top-64: 3.4), eliminating thrashing and freeing the bus and the CPU (System CPU falls from TPP's 45.24% to N-top-5's 0.26% in Large WSS).</p>
+    </div>
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Perfect locality isn't the goal — <b>low PPMA</b> (few, well-chosen migrations) is what actually buys bandwidth and latency.</li>
+        <li>Software methods (ANB/TPP/Nomad) over-migrate because their signal (recency/LRU) is too eager relative to true reuse.</li>
+        <li>The hardware tracker's conservatism <i>is</i> the feature: fewer, more confident promotions avoid ping-pong thrashing.</li>
+        <li>Once migration volume (PPMA) is low, TPP's synchronous-promotion weakness barely matters — T-top-k ≈ N-top-k on most workloads.</li>
+        <li>Nomad's shadow-paging advantage over TPP only shows up under real capacity pressure (Medium WSS), not everywhere.</li>
+        <li>PHASE's contribution is the platform itself: a modular way to swap hardware trackers under existing kernel policies.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The locality/latency paradox — Large WSS, steady state</div>
+      <div class="viz-kicker">stable-tier latency (ns) · locality (%) labeled per bar</div>
+      <div class="legend">
+        <span><i style="background:#9A8E7C"></i> No Migration</span>
+        <span><i style="background:var(--optane)"></i> TPP</span>
+        <span><i style="background:var(--honey-deep)"></i> Nomad</span>
+        <span><i style="background:var(--dram)"></i> N-top-64</span>
+      </div>
+      <svg class="full" viewBox="0 0 640 260" role="img" aria-label="Bar chart comparing stable latency across No Migration, TPP, Nomad, and N-top-64 for the Large working set">
+        <line x1="30" y1="210" x2="610" y2="210" stroke="#D8C8AC" stroke-width="1.4"/>
+        <rect x="60" y="164" width="80" height="46" rx="4" fill="#9A8E7C"/>
+        <rect x="210" y="30" width="80" height="180" rx="4" fill="#BD5A35"/>
+        <rect x="360" y="104" width="80" height="106" rx="4" fill="#B06F12"/>
+        <rect x="510" y="164" width="80" height="46" rx="4" fill="#2C7A99"/>
+        <g font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#332C24" text-anchor="middle">
+          <text x="100" y="156">509 ns</text>
+          <text x="250" y="22">7,838 ns</text>
+          <text x="400" y="96">2,719 ns</text>
+          <text x="550" y="156">504 ns</text>
+        </g>
+        <g font-family="JetBrains Mono" font-size="11" fill="#6E6456" text-anchor="middle">
+          <text x="100" y="228">No Migration</text><text x="100" y="242">58% locality</text>
+          <text x="250" y="228">TPP</text><text x="250" y="242">100% locality</text>
+          <text x="400" y="228">Nomad</text><text x="400" y="242">74% locality</text>
+          <text x="550" y="228">N-top-64</text><text x="550" y="242">71% locality</text>
+        </g>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> N-top-64 has <i>lower</i> locality than TPP or Nomad, yet its latency matches the no-migration baseline — because with PPMA near zero, it almost never pays the migration tax that dominates TPP's and Nomad's numbers. (Paper, §4.2, Table 2.)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → hardware signal → platform bridge → migration policy → outcome</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Software scanning + hint faults cost CPU and scale badly with WSS</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Hardware tracker</div><div class="nd">CM-Sketch + top-k snoops accesses at near-zero host CPU cost</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">PHASE bridge</div><div class="nd">Zero-copy ring buffer hands hot PFNs to the guest kernel</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Policy plug-in</div><div class="nd">TPP or Nomad consumes hot PFNs instead of scanning page tables</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Outcome</div><div class="nd">PPMA collapses; bandwidth and latency improve despite lower locality</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Five pictures</div>
+      <h2>How to think about PHASE</h2>
+      <p class="sub">Each stands alone. Every card ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+      <div class="analogy reveal">
+        <div class="ill">📹</div>
+        <span class="term">Detection · hardware vs. software</span>
+        <h3>A doorbell camera vs. a sign-in sheet</h3>
+        <p>ANB/TPP/Nomad make every visitor (memory access) stop and sign a sheet (a hint page fault) — informative, but it slows down foot traffic. M5's hardware tracker is a doorbell camera: it watches from the bus, unnoticed, at zero cost to the visitor.</p>
+        <div class="breaks"><b>Where it breaks:</b> PHASE's camera is <i>emulated</i> — QEMU can't passively watch KVM guest memory, so each sampled access still forces a real VM-exit. The "free camera" costs something until you run it on real silicon.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill">🚦</div>
+        <span class="term">Sampling rate · Table 1</span>
+        <h3>Stopping every car vs. every 100th car</h3>
+        <p>Trapping every access (sampling rate 1) is like a tollbooth that stops every car to count it — perfect data, backed-up traffic. Sampling every 100th car keeps traffic flowing with nearly the same estimate; that's why PHASE settles on a rate of 100.</p>
+        <div class="breaks"><b>Where it breaks:</b> too sparse isn't free either — in the Medium WSS, sampling rate 500 actually <i>drops</i> bandwidth from 8,328 to 7,869 MB/s versus rate 100, because it starts missing genuinely hot pages, not just easing congestion.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill">🔑</div>
+        <span class="term">Enforcement · Nomad's shadow copy</span>
+        <h3>Keeping a spare key after you move</h3>
+        <p>Nomad doesn't delete the old (slow-tier) copy of a page when it promotes it — it keeps a "shadow." If the page must be demoted later, that's just handing back the spare key (a PTE remap), not paying movers again.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real spare key costs nothing to hold; the shadow copy occupies real slow-tier capacity indefinitely, which is a genuine (if usually cheap) tradeoff Nomad accepts.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill">📚</div>
+        <span class="term">Hardware · Count-Min Sketch</span>
+        <h3>A tally sheet with only five shelves for a million books</h3>
+        <p>Instead of one counter per page, the CM-Sketch hashes each page onto a few shared "shelves" and increments a tally. Reading the smallest tally across shelves gives a good frequency estimate without a counter per book.</p>
+        <div class="breaks"><b>Where it breaks:</b> shared shelves mean a cold book that hashes onto the same shelf as a hot one can look artificially popular (a collision) — which is exactly why K (tracking granularity) and sketch width are tuned, not maximized blindly.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill">⏱️</div>
+        <span class="term">Emulation fidelity · kvmclock</span>
+        <h3>Pausing the stopwatch, not the runner</h3>
+        <p>PHASE freezes the guest's logical clock during tracker emulation so the workload's <i>reported</i> time excludes the tracking overhead — like pausing a stopwatch while a runner ties their shoe.</p>
+        <div class="breaks"><b>Where it breaks:</b> the runner's muscles still got cold. Pausing the clock hides the software cost of the VM-exit but can't undo the real host-cache and TLB displacement it caused — hence PHASE still needs sampling to limit how often this happens.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How PHASE actually works</h2>
+      <p class="sub">The pipeline, the emulation trick that makes it plausible, and the tracker's internals.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Three components, one pipeline</h3>
+      <p>A guest access to slow-tier memory triggers an MMIO write to a PCI device (the <b>Remote Tier Tracker</b>), forcing a VM-exit into QEMU where the C-level tracker logic runs. Hot PFN candidates are periodically pushed into a <b>Zero-Copy Communication Bridge</b> — a lock-free ring buffer built on Linux's <code>u-dma-buf</code>, shared as guest physical memory. A guest-side kernel thread, the <b>In-Kernel Promotion Engine</b>, polls this buffer, converts PFNs to page structures in O(1), and batches them for <code>migrate_pages()</code>.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">PHASE's pipeline</div>
+      <div class="viz-kicker">access → trap → hardware tracker → zero-copy bridge → kernel promotion</div>
+      <svg class="full" viewBox="0 0 700 170" role="img" aria-label="Flow diagram of the PHASE pipeline">
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24" text-anchor="middle">
+          <rect x="10" y="55" width="120" height="60" rx="10" fill="#F5DDD1" stroke="#BD5A35" stroke-width="1.5"/><text x="70" y="80">Guest access to</text><text x="70" y="95">slow tier (MMIO trap)</text>
+          <rect x="170" y="55" width="150" height="60" rx="10" fill="#DCEAF0" stroke="#2C7A99" stroke-width="1.5"/><text x="245" y="78">Tracker (QEMU)</text><text x="245" y="93">CM-Sketch + top-k</text>
+          <rect x="360" y="55" width="150" height="60" rx="10" fill="#E7E3F3" stroke="#6152A6" stroke-width="1.5"/><text x="435" y="78">Zero-copy ring</text><text x="435" y="93">buffer (u-dma-buf)</text>
+          <rect x="550" y="55" width="140" height="60" rx="10" fill="#FBE6C2" stroke="#B06F12" stroke-width="1.5"/><text x="620" y="78">Kernel promotion</text><text x="620" y="93">engine → migrate_pages()</text>
+        </g>
+        <g stroke="#9A8E7C" stroke-width="2" fill="none" marker-end="url(#arrow)">
+          <line x1="130" y1="85" x2="168" y2="85"/><line x1="320" y1="85" x2="358" y2="85"/><line x1="510" y1="85" x2="548" y2="85"/>
+        </g>
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#9A8E7C"/></marker></defs>
+      </svg>
+      <figcaption>All four stages are asynchronous relative to the application thread; only the initial MMIO trap briefly steals host CPU. (Paper §3.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Why sampling, not full tracking</h3>
+      <p>Freezing the guest clock during tracker emulation (kvmclock subtraction) hides <i>reported</i> execution time, but can't undo the host cache/TLB pollution each VM-exit causes. So PHASE traps only a sample of accesses; Table 1 shows continuous tracking (rate 1) tanks bandwidth across all workload sizes, while rate 100 recovers most of it.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Sampling rate vs. locality and bandwidth — Medium WSS</div>
+      <div class="viz-kicker">from Table 1</div>
+      <svg class="full" viewBox="0 0 660 220" role="img" aria-label="Line chart of locality and bandwidth across sampling rates for the Medium working set">
+        <line x1="60" y1="20" x2="60" y2="180" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="60" y1="180" x2="600" y2="180" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle">
+          <text x="130" y="196">rate 1</text><text x="270" y="196">rate 10</text><text x="410" y="196">rate 100</text><text x="550" y="196">rate 500</text>
+        </g>
+        <polyline fill="none" stroke="#6152A6" stroke-width="2.6" points="130,72 270,96 410,112 550,124" stroke-linecap="round"/>
+        <polyline fill="none" stroke="#2C7A99" stroke-width="2.6" points="130,150 270,90 410,60 550,78" stroke-linecap="round"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#3a409a">
+          <text x="130" y="65">43%</text><text x="270" y="89">37%</text><text x="410" y="105">33%</text><text x="550" y="117">29%</text>
+        </g>
+        <g font-family="JetBrains Mono" font-size="10" fill="#1f5b51">
+          <text x="130" y="163">3,630</text><text x="270" y="83">5,534</text><text x="410" y="53">8,328</text><text x="550" y="71">7,869</text>
+        </g>
+        <text x="600" y="72" font-family="JetBrains Mono" font-size="10" fill="#2C7A99" text-anchor="end">bandwidth (MB/s)</text>
+        <text x="600" y="128" font-family="JetBrains Mono" font-size="10" fill="#6152A6" text-anchor="end">locality (%)</text>
+      </svg>
+      <figcaption>Locality falls monotonically as sampling gets sparser, but bandwidth peaks at rate 100 then <i>drops</i> at 500 — too few samples start missing real hot pages, not just easing VM-exit pressure. This nuance justified PHASE's rate-100 baseline. (Paper §3.1, Table 1.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · Hardware tracker internals</h3>
+      <p>Each access hashes its PFN into the CM-Sketch, increments buckets, and the minimum bucket value estimates that page's frequency. A sorted top-k list is maintained via localized "bubble-up" insertion — O(N) in software, approximating the O(1) CAM comparator array of real hardware. Three hyperparameters govern freshness: <b>aging shift</b> (decay aggressiveness, dividing scores by 2<sup>shift</sup>), <b>reset interval</b> (how often decay applies), and <b>publish period</b> (accesses between OS interrupts with new candidates). Best found: shift 400-cycle reset interval, aggressive (shift=5) decay, 1,000-access publish period.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Plugging into TPP and Nomad</h3>
+      <p>N-top-k and T-top-k replace Nomad's and TPP's software page-table scanning with polling the hardware's top-k list — everything downstream (asynchronous migration, shadow paging for Nomad) is unchanged. The kernel's page-table insertion batch size was raised from 8 to 512 pages (matching a 2MB huge page) to avoid PT spinlock thrashing under the hardware tracker's higher promotion rate.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why T-top-k ≈ N-top-k on most workloads:</b> Nomad's whole reason for existing was to fix TPP's synchronous-promotion bottleneck under heavy migration. Once the hardware tracker drives PPMA down to single digits, that bottleneck is rarely triggered — so TPP's simpler machinery performs nearly as well as Nomad's.</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations straight from Tables 2–3 and §4.4.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① How much does the hardware tracker cut migration volume?</h3>
+      <p style="color:var(--ink-soft)">Large WSS PPMA: TPP = 224,195; N-top-64 = 3.4.</p>
+      <ol class="seq">
+        <li>Ratio = 224,195 ÷ 3.4 ≈ <b>65,940×</b> fewer promotions per million accesses.</li>
+        <li>Nomad (189,739 PPMA) is only modestly better than TPP — still five orders of magnitude above N-top-64.</li>
+        <li>This is the paper's core mechanism: precision, not faster migration machinery, is what removes the thrashing.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>② The headline latency claim, traced to a table row</h3>
+      <p style="color:var(--ink-soft)">Large WSS stable latency: Nomad = 2,719 ns; N-top-64 = 504 ns; TPP = 7,838 ns; N-top-5 = 491 ns.</p>
+      <ol class="seq">
+        <li>Nomad → N-top-64: 2,719 ÷ 504 ≈ <b>5.4×</b> lower latency — the row that best matches the abstract's "6× lower" claim.</li>
+        <li>TPP → N-top-5: 7,838 ÷ 491 ≈ <b>16×</b> — an even larger gap against the weaker baseline.</li>
+        <li>Both use the identical migration mechanism as their software counterpart (Nomad's or TPP's) — only the hotness signal changed.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ CPU overhead, Large WSS</h3>
+      <p style="color:var(--ink-soft)">System (kernel) CPU: TPP 45.24%, Nomad 15.40%, N-top-5 0.26%.</p>
+      <ol class="seq">
+        <li>TPP → N-top-5: 45.24 ÷ 0.26 ≈ <b>174×</b> less kernel CPU spent.</li>
+        <li>Kernel counters confirm the cause: millions of NUMA hint faults drive TPP/Nomad's System CPU; the hardware tracker generates none.</li>
+        <li>User CPU differs far less (11.38% vs 7.17%) — the overhead is almost entirely in fault-handling, not application logic.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Tracking granularity K — locality isn't free</h3>
+      <p style="color:var(--ink-soft)">Medium WSS: K=64 → 41% locality / 8,412 MB/s; K=1024 → 52% / 8,007 MB/s; K=4096 → 66% / 7,626 MB/s.</p>
+      <ol class="seq">
+        <li>K=64 → K=4096: locality gains <b>+25 points</b> (41%→66%), bandwidth loses <b>~9.3%</b> (8,412→7,626 MB/s).</li>
+        <li>More hardware tracking granularity costs SRAM (sketch collisions) and, past a point, actively hurts bandwidth.</li>
+        <li>The paper settles on K=64 — direct numeric evidence that maximizing locality is the wrong objective.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">TPP achieves 100% locality on the Small WSS, yet its steady-state bandwidth still trails the No-Migration baseline. Why?</div>
+      <details><summary>Show answer</summary><div class="ans">Locality only measures hit rate, not cost. TPP's page-table scanning and occasional synchronous promotions consume CPU cycles even when migrations are infrequent, and that overhead eats directly into achievable bandwidth despite a perfect hit rate.<span class="mis">Misconception: that maximizing locality (fast-tier hit rate) is equivalent to maximizing performance. It's necessary but not sufficient — the cost of <i>achieving</i> that locality matters just as much.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">The hardware tracker has lower locality than Nomad in every WSS, yet dramatically lower PPMA. What does that combination tell you about its migration decisions?</div>
+      <details><summary>Show answer</summary><div class="ans">It migrates far less often, but when it does, those migrations are more confidently "worth it" — the tracker only surfaces the genuinely top-k hottest pages via the CM-Sketch, rather than promoting on the first or second repeated access like LRU-based filtering. Some potential hits are sacrificed (lower locality) to avoid speculative, soon-reversed migrations (thrashing).<span class="mis">Misconception: that hardware tracking works by migrating faster or more efficiently. It works by migrating <i>less</i>, more selectively.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Compute the stable-latency ratio between Nomad and N-top-64 for the Large WSS (2,719 ns vs. 504 ns), and state which headline claim in the abstract it corresponds to.</div>
+      <details><summary>Show answer</summary><div class="ans">2,719 ÷ 504 ≈ <b>5.4×</b>. This is the table row behind the abstract's claim of "up to... 6× lower memory access latency using the same migration strategy as Nomad" (i.e., comparing the hardware tracker against Nomad specifically, holding the migration mechanism constant).<span class="mis">Misconception: that the 5.6×/6× headline numbers come from comparing against the weakest baseline (TPP/ANB). They're specifically hardware-tracker-vs-Nomad, the paper's strongest software baseline.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">In the Medium WSS, N-top-k noticeably trails T-top-k less than expected, but N-top-k still beats T-top-k on latency (464 ns vs. 501 ns for top-64). Why does Nomad's advantage persist here but barely elsewhere?</div>
+      <details><summary>Show answer</summary><div class="ans">Medium WSS is capacity-constrained enough that demotions actually happen at a non-trivial rate even with a precise tracker. Nomad's shadow-paging means those demotions are free PTE remaps; TPP must physically copy data back to the slow tier. In Small and Large WSS, demotion volume is low enough (or, in Large, the WSS is nearly all "hot" with little cold data) that this difference rarely triggers.<span class="mis">Misconception: that Nomad's shadow-paging benefit is a constant multiplier. It only matters when demotions are frequent — i.e., under genuine capacity pressure.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why did the authors exclude MEMTIS from their empirical evaluation rather than just running it?</div>
+      <details><summary>Show answer</summary><div class="ans">Prior work already showed Nomad outperforms MEMTIS in most tiered-memory scenarios; for the remaining high-pressure workloads where MEMTIS reportedly beats Nomad, the authors argue the no-migration baseline outperforms MEMTIS anyway — so adding MEMTIS wouldn't change any conclusion, only cost implementation effort.<span class="mis">Misconception: that exclusion implies MEMTIS is a weak design. It's excluded on relevance grounds (already-known relative ordering), not a judgment about its ideas — several of which (dynamic histograms, cooling) PHASE's own tracker borrows.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">M5's real hardware supposedly has "near zero overhead," yet PHASE still needs to sample accesses instead of tracking every one. Why isn't the emulation just as free?</div>
+      <details><summary>Show answer</summary><div class="ans">Real M5 hardware physically snoops the memory bus outside the CPU pipeline. QEMU/KVM guest memory accesses don't natively trap, so PHASE must force a VM-exit (an MMIO write) to observe each access — which does cost real host CPU time and pollutes host caches/TLBs, unlike passive silicon snooping.<span class="mis">Misconception: that an emulator can perfectly reproduce a hardware property like "zero overhead." Emulation can reproduce the <i>logic</i> of hardware, but the discussed absence of cost is a property of silicon, not of software standing in for it.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is PHASE a new tiering algorithm?<span class="chev">▾</span></summary><div class="a">No — it's an emulation <i>platform</i>. Its contribution is letting a hardware hot-page tracker (modeled on M5) plug into existing software policies (TPP, Nomad) inside QEMU with minimal kernel changes, so the two can be evaluated together for the first time.</div></details>
+      <details><summary><span class="q">Q2</span>Why does the hardware tracker have lower locality but still win?<span class="chev">▾</span></summary><div class="a">Because locality alone ignores the cost of achieving it. The hardware tracker trades some hit rate for a drastically lower promotion volume (PPMA), which avoids thrashing and frees both the memory bus and the CPU — and that dominates overall bandwidth and latency.</div></details>
+      <details><summary><span class="q">Q3</span>What exactly is PPMA measuring?<span class="chev">▾</span></summary><div class="a">Promotions Per 1 Million Accesses at steady state — how often the system moves a page into the fast tier, normalized by access volume. High PPMA under memory pressure signals thrashing (ping-ponging pages between tiers).</div></details>
+      <details><summary><span class="q">Q4</span>Why is TPP paired with the hardware tracker (T-top-k) almost as good as Nomad paired with it (N-top-k)?<span class="chev">▾</span></summary><div class="a">Nomad's asynchronous, shadow-paged migration exists specifically to solve TPP's synchronous-promotion bottleneck under heavy migration. With the hardware tracker driving PPMA down to single digits, that bottleneck rarely fires, so TPP's simpler design performs nearly as well — except under real capacity pressure (Medium WSS), where Nomad's free demotions still help.</div></details>
+      <details><summary><span class="q">Q5</span>Why sample accesses instead of tracking every one, if the goal is "hardware precision"?<span class="chev">▾</span></summary><div class="a">In real silicon, sampling wouldn't be necessary — snooping is free. In QEMU emulation, every tracked access forces a VM-exit, which is not free; continuous tracking floods the host with context switches and artificially tanks bandwidth (Table 1, rate 1). Sampling at rate 100 balances telemetry coverage against this emulation-specific cost.</div></details>
+      <details><summary><span class="q">Q6</span>What real applications did they test beyond microbenchmarks?<span class="chev">▾</span></summary><div class="a">A YCSB-A Redis key-value workload (N-top-5: 89.32K ops/s vs. TPP's 63.27K and Nomad's 79.81K, with far fewer promotions per million ops) and a PageRank graph workload (N-top-5 delivered a 1.38× speedup over TPP, versus Nomad's 1.04× and no-migration's 1.22×).</div></details>
+      <details><summary><span class="q">Q7</span>What's the purpose of the epoch-based aging mechanism?<span class="chev">▾</span></summary><div class="a">It lets the tracker adapt to workload phase changes without M5's hard resets. Periodically right-shifting (halving-style decaying) the CM-Sketch and top-k values lets newly hot pages quickly outrank historically hot but now-inactive ones, governed by three tuned hyperparameters (aging shift, reset interval, publish period).</div></details>
+      <details><summary><span class="q">Q8</span>What are PHASE's acknowledged limitations?<span class="chev">▾</span></summary><div class="a">The emulated MMIO-trap approach for "snooping" introduces timing artifacts that active overhead subtraction only partially corrects (host cache/TLB pollution remains). Results are also preliminary and reported for one hardware tracker family (M5-style top-k with MEMTIS-inspired aging) — the paper positions itself as a platform for further exploration, not a final verdict on all hardware/software combinations.</div></details>
+    </div>
+  </div>
+</section>
+
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results, and provenance</h2>
+      <p class="sub">Every term, the headline numbers, and what's paper vs. framing.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>PHASE</b><span>QEMU-based platform combining hardware hot-page tracking with software tiering policies (TPP/Nomad) for joint evaluation.</span></div>
+      <div class="term-def"><b>M5 / top-k tracker</b><span>CXL-controller-resident hardware that snoops every DRAM access and maintains an exact top-k list of hottest pages via CM-Sketch + CAM.</span></div>
+      <div class="term-def"><b>PPMA</b><span>Promotions Per 1 Million Accesses — PHASE's proxy for migration/thrashing cost at steady state.</span></div>
+      <div class="term-def"><b>Zero-Copy Communication Bridge</b><span>A lock-free ring buffer (built on u-dma-buf) that asynchronously carries hot PFNs from the emulated tracker to the guest kernel.</span></div>
+      <div class="term-def"><b>In-Kernel Promotion Engine</b><span>A background thread converting tracked PFNs into batched page migrations via migrate_pages(), with 512-page batching to reduce lock contention.</span></div>
+      <div class="term-def"><b>TPP</b><span>Transparent Page Placement — software tiering using LRU-filtered hint faults; synchronous promotion, asynchronous demotion.</span></div>
+      <div class="term-def"><b>Nomad</b><span>Software tiering adding asynchronous transactional promotion and shadow paging (page shadowing) so demotions are near-free.</span></div>
+      <div class="term-def"><b>ANB</b><span>AutoNUMA Balancing — recency-based, no proactive demotion; the noisiest, weakest baseline.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>WSS</b><span>Working Set Size — Small/Medium/Large synthetic YCSB-Zipfian workloads used to vary memory pressure.</span></div>
+      <div class="term-def"><b>CM-Sketch</b><span>Count-Min Sketch: hashed, fixed-size structure estimating per-item frequency in a stream without one counter per item.</span></div>
+      <div class="term-def"><b>Hint page fault</b><span>A soft fault triggered by unmapping a page, used by ANB/TPP/Nomad to detect an access without hardware support.</span></div>
+      <div class="term-def"><b>kvmclock</b><span>Paravirtual clock device PHASE manipulates to subtract emulated-tracker time from the guest's reported execution time.</span></div>
+      <div class="term-def"><b>Aging shift / reset interval / publish period</b><span>The tracker's three tuned hyperparameters controlling decay aggressiveness, decay frequency, and OS-interrupt batching.</span></div>
+      <div class="term-def"><b>K (tracking granularity)</b><span>Number of top hot-page candidates reported per epoch; higher K raises locality but can reduce bandwidth (sketch collisions, more migration).</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What the hardware tracker buys (Large WSS unless noted)</div>
+      <div class="viz-kicker">vs. software baselines · bars are illustrative scale, exact values labeled</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Bandwidth gain<small>vs. Nomad, same strategy</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="22"><span>up to +5.6×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Latency reduction<small>Nomad → N-top-64</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="20"><span>2,719 → 504 ns (5.4×)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">PPMA reduction<small>TPP → N-top-64</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="25"><span>224,195 → 3.4 (~65,940×)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">System CPU cut<small>TPP → N-top-5</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="25"><span>45.24% → 0.26%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Locality<small>Nomad vs. N-top-64</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="8"><span>74% vs. 71% — nearly tied</span></div></div></div>
+      </div>
+      <figcaption>Similar locality (last row) but wildly different bandwidth/latency (top rows) is the paper's central point: locality is not a performance proxy once thrashing enters the picture. (Paper §4.2–4.3.)</figcaption>
+    </figure>
+
+    <div class="callout note reveal"><span class="ic">🗂️</span><div><b>Source notes.</b> <b>From the paper:</b> all WSS/Table 1–3 figures, PPMA/locality/latency/CPU numbers, K-sensitivity results (§4.4), Redis/PageRank results (§4.5), and the abstract's "5.6×/6×" and "up to 23%"-style claims. <b>My framing:</b> the analogies, the "locality/latency paradox" framing and its bar chart, the pipeline SVG layout, and connections to the reader's own tiering-comparison vocabulary (TPP/Nomad here play the role that TPP/HeMem/Memtis/Pond typically play in DRAM–NVM/CXL tiering comparisons) — these are my synthesis, not the authors' wording.</div></div>
+
+    <div class="subhead">Related work (from the paper's references)</div>
+    <div class="read-item reveal"><h4>TPP: Transparent Page Placement <span class="diff med">medium</span></h4><div class="meta">Maruf et al. · ASPLOS'23</div><p>PHASE's weaker software baseline; synchronous promotion is its main bottleneck once memory pressure rises.</p></div>
+    <div class="read-item reveal"><h4>Nomad: Non-Exclusive Memory Tiering <span class="diff med">medium</span></h4><div class="meta">Xiang et al. · OSDI'24</div><p>PHASE's stronger software baseline; its shadow-paging idea is the one optimization hardware tracking doesn't fully subsume.</p></div>
+    <div class="read-item reveal"><h4>M5: Mastering Page Migration for CXL Tiered Memory <span class="diff hard">hard</span></h4><div class="meta">Sun et al. · ASPLOS'25</div><p>Source of the top-k CM-Sketch/CAM hardware design PHASE emulates and evaluates in combination with software policies.</p></div>
+    <div class="read-item reveal"><h4>MEMTIS: Dynamic Page Classification <span class="diff hard">hard</span></h4><div class="meta">Lee et al. · SOSP'23</div><p>Source of the epoch-based cooling/aging idea PHASE's tracker borrows; excluded from direct evaluation on relevance grounds.</p></div>
+    <div class="read-item reveal"><h4>Pond: CXL-based Memory Pooling <span class="diff med">medium</span></h4><div class="meta">Li et al. · ASPLOS'23</div><p>Cloud-scale CXL pooling context for why precise, low-overhead hot-page tracking matters at datacenter scale.</p></div>
+    <div class="read-item reveal"><h4>HeMem: Scalable Tiered Memory Management <span class="diff med">medium</span></h4><div class="meta">Raybuck et al. · SOSP'21</div><p>An alternative sampling-based (PEBS) software tracker, contrasted with PHASE's zero-host-CPU hardware approach.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Tzafrir, Patel, Nider &amp; Fedorova, "PHASE: A Platform for Hardware and Software Evaluation of Memory Tiering" (DIMES'26)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'"></div>'; }
+    strip.innerHTML = html;
+  }
+  var range = document.getElementById('partRange');
+  function setPart(v){
+    if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+  }
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
