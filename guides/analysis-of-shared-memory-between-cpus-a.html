@@ -1,7 +1,7 @@
 <!DOCTYPE html>
-<!-- DGX Spark field guide — Analysis of shared memory between CPUs and GPUs (Alcaraz et al., DIMES'26).
-     Semantic colors: honey(orange) = cudaMalloc / GPU-only, isolated but fast · dram(teal) = cudaHostAlloc, the CPU-accessible sweet spot ·
-     ltram(purple) = DGX Spark's unified-memory machinery (NVLink-C2C, cudaMallocManaged, Valk) · optane(rust) = malloc / explicit-copy, the slow baseline. -->
+<!-- DGX Spark field guide — Analysis of Shared Memory Between CPUs and GPUs (Alcaraz, Hepkema, Mageirakos, Dann, Alonso; DIMES'26).
+     Semantic colors: teal = unified/coherent path (DGX Spark, the fix) · honey = discrete GPU-only path (cudaMalloc, needs a copy) ·
+     indigo = measurement/tooling (Valk) · terracotta = PCIe-bound baseline (the bottleneck). -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -10,7 +10,7 @@
   document.documentElement.setAttribute('data-theme', t);
 })();</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>The GPU With No Memory of Its Own — a DGX Spark Field Guide</title>
+<title>One Pool, No Copy — CPU–GPU Shared Memory on the DGX Spark, a Field Guide</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -19,10 +19,10 @@
   --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
   --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
   --line:#E7DBC6; --line-strong:#D8C8AC;
-  --honey:#D9782F; --honey-deep:#B85A16; --honey-soft:#F5DEC4;
-  --dram:#1F7A8C; --dram-soft:#D7ECEF;
-  --ltram:#6B4FA0; --ltram-soft:#EBE3F5;
-  --optane:#B33F3F; --optane-soft:#F5DCDC;
+  --honey:#D9932E; --honey-deep:#AD6E0C; --honey-soft:#F8E4BE;
+  --dram:#1F8A82; --dram-soft:#D7EDE8;
+  --ltram:#5C56B0; --ltram-soft:#E7E4F5;
+  --optane:#BB5133; --optane-soft:#F6DCD1;
   --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
   --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
   --shadow-lg:0 10px 40px rgba(90,66,28,.14);
@@ -35,9 +35,9 @@
 html{scroll-behavior:smooth}
 body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
   background-image:
-    radial-gradient(circle at 12% 8%, rgba(31,122,140,.05), transparent 40%),
-    radial-gradient(circle at 88% 22%, rgba(107,79,160,.05), transparent 42%),
-    radial-gradient(circle at 50% 120%, rgba(217,120,47,.06), transparent 55%);
+    radial-gradient(circle at 12% 8%, rgba(31,138,130,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(92,86,176,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,147,46,.06), transparent 55%);
   -webkit-font-smoothing:antialiased;}
 h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
 p{margin:0 0 1em}
@@ -46,14 +46,15 @@ a:hover{border-color:var(--honey)}
 strong{font-weight:700;color:#231d16}
 em{color:var(--ink-soft)}
 .wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
 .hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
 .hero::before{content:"";position:absolute;inset:0;pointer-events:none;
-  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(107,79,160,.05) 31px,rgba(107,79,160,.05) 32px);
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(92,86,176,.05) 31px,rgba(92,86,176,.05) 32px);
   -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
 .hero .wrap{position:relative}
 .eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #ECC99C;margin-bottom:22px;}
-.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,120,47,.2)}
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #EFDBAE;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,147,46,.2)}
 .hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
 .hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
 .hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
@@ -67,6 +68,7 @@ em{color:var(--ink-soft)}
 .rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
 .rule-plaque .ro{color:var(--dram);font-weight:600}
 .rule-plaque .wo{color:var(--optane);font-weight:600}
+
 .tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
 .tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
 .tabbar::-webkit-scrollbar{display:none}
@@ -76,6 +78,7 @@ em{color:var(--ink-soft)}
 .tab-btn:hover{color:var(--ink);background:var(--paper-2)}
 .tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
 .tab-btn.active .n{opacity:.7;color:var(--honey)}
+
 .tab-panel{display:none;animation:fade .4s ease}
 .tab-panel.active{display:block}
 @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -83,6 +86,7 @@ em{color:var(--ink-soft)}
 .panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
 .panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
 .panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
 .prose{max-width:74ch}
 .prose p{font-size:1.03rem}
 .prose h3{font-size:1.5rem;margin-top:30px}
@@ -91,8 +95,9 @@ em{color:var(--ink-soft)}
 .seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
 .seq li{position:relative;padding:0 0 18px 52px;margin:0}
 .seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
-  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #ECC99C;border-radius:8px;width:34px;height:30px;
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
   display:flex;align-items:center;justify-content:center;}
+
 .primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
 .primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
 .primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
@@ -104,8 +109,9 @@ em{color:var(--ink-soft)}
 .primer[open] summary .chev{transform:rotate(180deg)}
 .primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
 .primer .body p:last-child{margin-bottom:0}
-.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#0f4a54;font-size:.96rem}
-.primer .ready b{color:#0c3a42}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#123f39;font-size:.96rem}
+.primer .ready b{color:#0c332e}
+
 .analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
 .analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
 .analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
@@ -116,18 +122,21 @@ em{color:var(--ink-soft)}
 .analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
 .analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
 .analogy .breaks b{color:var(--optane)}
+
 .mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
-.chip-hi{background:var(--dram-soft);color:#0f4a54}
-.chip-sat{background:var(--honey-soft);color:#7a4310}
-.chip-ucp{background:var(--ltram-soft);color:#453368}
-.chip-lru{background:var(--optane-soft);color:#7a2020}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
 .callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
 .callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
-.callout.takeaway{background:var(--honey-soft);border:1px solid #ECC99C;color:#7a4310}
-.callout.why{background:var(--dram-soft);border:1px solid #B8DEE3;color:#0f4a54}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
 .callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
-.callout.warn{background:var(--optane-soft);border:1px solid #E3B8B0;color:#7a2020}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
 .callout b{color:inherit}
+
 figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
 figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
 .viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
@@ -136,6 +145,7 @@ figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);bor
 .legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
 .legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
 figure.viz svg.full{width:100%;height:auto;display:block}
+
 .flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
 .node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
 .node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
@@ -145,6 +155,7 @@ figure.viz svg.full{width:100%;height:auto;display:block}
 .node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
 .node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
 .flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
 .tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
 .tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
 .tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
@@ -152,18 +163,20 @@ figure.viz svg.full{width:100%;height:auto;display:block}
 .tbl tr:hover td{background:var(--paper-2)}
 .tbl .best td{background:var(--ltram-soft)}
 .tbl .best:hover td{background:#dcdef3}
+
 .bars{margin:8px 0}
-.bar-row{display:grid;grid-template-columns:168px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
 .bar-label{text-align:right;font-weight:700;font-size:.92rem}
 .bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
 .bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
 .bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
 .bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
 .bars.shown .bar-fill span{opacity:1}
-.bf-ucp{background:linear-gradient(90deg,#7d94a3,#1F7A8C)}
-.bf-hi{background:linear-gradient(90deg,#e0964f,#D9782F)}
-.bf-lru{background:linear-gradient(90deg,#c76a6a,#B33F3F)}
+.bf-ucp{background:linear-gradient(90deg,#726ccb,#5C56B0)}
+.bf-hi{background:linear-gradient(90deg,#289e94,#1F8A82)}
+.bf-lru{background:linear-gradient(90deg,#cf6650,#BB5133)}
 .bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
 .part-viz{display:grid;grid-template-columns:1fr;gap:18px}
 .ways-strip{display:flex;gap:4px;margin:6px 0}
 .way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
@@ -174,11 +187,13 @@ figure.viz svg.full{width:100%;height:auto;display:block}
 .pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
 .pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
 .pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
-.pverdict.opt{background:var(--dram-soft);color:#0c3a42;border:1px solid #A9D6DA}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
 .pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
 .preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
 .tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+.tbtn.on{border-color:var(--ltram);background:var(--ltram-soft);color:#3a409a}
+
 .faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
 .faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
 .faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
@@ -187,11 +202,12 @@ figure.viz svg.full{width:100%;height:auto;display:block}
 .faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
 .faq details[open] summary .chev{transform:rotate(180deg)}
 .faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
 .prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
 .prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
-.ptag.easy{background:var(--dram-soft);color:#0f4a54}
-.ptag.medium{background:var(--honey-soft);color:#7a4310}
-.ptag.hard{background:var(--optane-soft);color:#7a2020}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
 .prob .qtext{font-weight:600;margin-bottom:8px}
 .prob details{margin-top:6px}
 .prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
@@ -200,8 +216,10 @@ figure.viz svg.full{width:100%;height:auto;display:block}
 .prob details[open] summary::before{content:"▾ "}
 .prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
 .prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
 pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
-pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#a08fd0}
+pre.sketch .kw{color:#d9932e} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8a84d8}
+
 .gloss{columns:2;column-gap:26px}
 .gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
 .gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
@@ -212,16 +230,19 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 .read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
 .read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
 .diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
-.diff.easy{background:var(--dram-soft);color:#0f4a54}
-.diff.med{background:var(--honey-soft);color:#7a4310}
-.diff.hard{background:var(--optane-soft);color:#7a2020}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
 .foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
 .foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
 .foot b{color:var(--ink)}
+
 .reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
 .reveal.in{opacity:1;transform:none}
 @media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
 :root[data-theme="dark"]{
   --paper:#17140F; --paper-2:#201C16; --card:#221E17;
   --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
@@ -232,9 +253,9 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 }
 :root[data-theme="dark"] body{
   background-image:
-    radial-gradient(circle at 12% 8%, rgba(31,122,140,.07), transparent 40%),
-    radial-gradient(circle at 88% 22%, rgba(107,79,160,.07), transparent 42%),
-    radial-gradient(circle at 50% 120%, rgba(217,120,47,.05), transparent 55%);
+    radial-gradient(circle at 12% 8%, rgba(31,138,130,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(92,86,176,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,147,46,.05), transparent 55%);
 }
 :root[data-theme="dark"] strong{color:var(--ink)}
 :root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
@@ -247,6 +268,8 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 :root[data-theme="dark"] .viz-title{color:#332C24}
 :root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
 :root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
 :root[data-theme="dark"] .node .nt,
 :root[data-theme="dark"] .node .nd,
 :root[data-theme="dark"] .pstat,
@@ -256,6 +279,7 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 :root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
 :root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
 :root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
 .theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
   width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
   cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
@@ -277,16 +301,16 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 <header class="hero">
   <div class="wrap">
     <span class="eyebrow"><span class="dot"></span>DIMES 2026 · A Field Guide</span>
-    <h1>The GPU with <span class="swash">no memory</span> of its own</h1>
-    <p class="lede">NVIDIA's DGX Spark gives its GPU zero local memory and lets it reach into the CPU's DRAM directly, coherently. This is the plain-English tour of what that trade actually buys — and costs.</p>
+    <h1>One <span class="swash">memory pool</span>, not a CPU pool and a <span class="swash" style="color:var(--optane)">GPU pool</span></h1>
+    <p class="lede">A GPU with no memory of its own, sharing 128 GB of ordinary DDR with a 20-core CPU over one coherent link. Here's what the DGX Spark's unified memory actually buys you — and where its one narrow doorway bites.</p>
     <div class="hero-meta">
       <span>📄 "Analysis of shared memory between CPUs and GPUs" · Alcaraz, Hepkema, Mageirakos, Dann, Alonso</span>
-      <span>🎓 Assumes you already know memory hierarchies — no cache-101 here</span>
-      <span>⏱ ~18 min read</span>
+      <span>🎓 Some CUDA/GPU-DB basics assumed — the primers cover them</span>
+      <span>⏱ ~25 min read</span>
     </div>
     <div class="rule-plaque">
-      <div class="glyph">🔗</div>
-      <p>Don't move the data to the GPU — give the GPU a <span class="ro">coherent path</span> to where the data already lives, and accept the <span class="wo">shared bandwidth ceiling</span> that comes with it.</p>
+      <div class="glyph">🖇️</div>
+      <p>Removing the <span class="ro">copy step</span> doesn't remove the <span class="wo">bandwidth ceiling</span> — it just moves the bottleneck from PCIe to whatever path the CPU and GPU now share.<br><em style="font-size:.9rem">Unified memory is a different trade, not a free one.</em></p>
     </div>
   </div>
 </header>
@@ -311,65 +335,91 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
   <div class="wrap">
     <div class="panel-head">
       <div class="kicker">Before you begin</div>
-      <h2>Quick glossary + what's DGX-Spark-specific</h2>
-      <p class="sub">You already know caches, DRAM/NVM tiering, and coherence protocols. The primers below skip that and focus on what's specific to this platform and CUDA's memory APIs.</p>
+      <h2>Quick glossary, then the concepts this demo assumes</h2>
+      <p class="sub">Acronyms first, so nothing below reads as alphabet soup — then eight short primers, collapsed by default. Skim past whatever you already know.</p>
     </div>
 
-    <div class="card" style="background:var(--paper-2)">
-      <h3>Quick glossary</h3>
-      <div class="gloss">
-        <div class="term-def"><b>GB10</b><span>The "Grace Blackwell Superchip": 20 Arm CPU cores (10 Cortex-X925 + 10 Cortex-A725) + a Blackwell GPU on one package.</span></div>
-        <div class="term-def"><b>LPDDR5X</b><span>The 128 GB of conventional mobile-class DRAM on the CPU socket — the *only* memory in the system, shared by CPU and GPU.</span></div>
-        <div class="term-def"><b>NVLink-C2C</b><span>The coherent chip-to-chip interconnect linking Grace's CPU cores to the Blackwell GPU inside the package — faster than PCIe, but not a separate memory pool.</span></div>
-        <div class="term-def"><b>HBM / VRAM</b><span>High-bandwidth memory local to a discrete GPU. DGX Spark's GPU has none — this is the whole point of the paper.</span></div>
-        <div class="term-def"><b>HMM / ATS</b><span>Heterogeneous Memory Management / Address Translation Services — OS+hardware mechanisms letting a GPU walk host page tables directly, avoiding explicit staging.</span></div>
-        <div class="term-def"><b>UM</b><span>CUDA "Unified Memory" (<code>cudaMallocManaged</code>) — a single virtual address migrated between pools on demand. On DGX Spark there's only one physical pool to migrate within.</span></div>
-        <div class="term-def"><b>TPC-H</b><span>The standard decision-support SQL benchmark used here to evaluate end-to-end query performance under each allocator.</span></div>
-        <div class="term-def"><b>Valk</b><span>The paper's own GPU meta-profiler: merges hardware counters, execution traces, and query plans into one queryable, visual performance dataset.</span></div>
-      </div>
+    <div class="subhead">Quick glossary — the acronyms you'll see everywhere</div>
+    <div class="gloss">
+      <div class="term-def"><b>PCIe</b><span>Peripheral Component Interconnect Express — the standard, comparatively low-bandwidth bus connecting a discrete GPU to the host.</span></div>
+      <div class="term-def"><b>NVLink-C2C</b><span>Chip-to-chip coherent interconnect linking a Grace CPU and a Hopper/Blackwell GPU; faster and coherent, unlike PCIe.</span></div>
+      <div class="term-def"><b>HBM</b><span>High-Bandwidth Memory — the fast, GPU-local memory a discrete GPU normally has. The DGX Spark's GPU has none.</span></div>
+      <div class="term-def"><b>LPDDR5X</b><span>Low-power DDR5X — ordinary mobile-class DRAM. On the DGX Spark, 128 GB of it is the <i>only</i> memory in the system, shared by CPU and GPU.</span></div>
+      <div class="term-def"><b>HMM / ATS</b><span>Heterogeneous Memory Management / Address Translation Services — OS/hardware mechanisms letting a GPU kernel dereference ordinary host virtual addresses without an explicit copy.</span></div>
+      <div class="term-def"><b>TPC-H</b><span>A standard decision-support (analytical query) benchmark, used here to test end-to-end query performance under different memory strategies.</span></div>
+      <div class="term-def"><b>RDMA / GPUDirect RDMA</b><span>Remote Direct Memory Access — lets a device read/write memory directly; GPUDirect RDMA is NVIDIA's variant, referenced when explaining why cudaMalloc memory isn't CPU-reachable on this platform.</span></div>
+      <div class="term-def"><b>CXL</b><span>Compute Express Link — the coherent interconnect standard for memory expansion/disaggregation that the paper explicitly says this architecture's lessons apply to.</span></div>
     </div>
 
-    <div class="legend" style="margin-top:18px">
-      <span><i style="background:var(--dram)"></i> cudaHostAlloc — CPU-accessible sweet spot</span>
-      <span><i style="background:var(--honey)"></i> cudaMalloc — GPU-only, isolated</span>
-      <span><i style="background:var(--ltram)"></i> DGX Spark machinery (NVLink-C2C, UM, Valk)</span>
-      <span><i style="background:var(--optane)"></i> malloc / explicit copy — the slow baseline</span>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> unified/coherent path (DGX Spark) — the fix</span>
+      <span><i style="background:var(--honey-deep)"></i> discrete GPU-only path (cudaMalloc) — fast but needs a copy</span>
+      <span><i style="background:var(--ltram)"></i> measurement / tooling (Valk)</span>
+      <span><i style="background:var(--optane)"></i> PCIe-bound baseline — the bottleneck</span>
     </div>
 
     <div class="primer-grid">
       <details class="primer">
-        <summary><span class="pnum">1</span>Why DGX Spark isn't "just a small Grace Hopper"<span class="chev">▾</span></summary>
+        <summary><span class="pnum">1</span>Why discrete GPUs have their own separate memory<span class="chev">▾</span></summary>
         <div class="body">
-          <p>Grace Hopper still gives the GPU its own local HBM, coherently linked to the CPU's LPDDR5X — two pools, one address space. DGX Spark deletes one of the pools entirely: the GPU has zero local memory. Every byte it touches lives on the CPU socket.</p>
-          <div class="ready"><b>Now you're ready:</b> this is a more extreme, an order-of-magnitude cheaper point in the same design space — good for reasoning about what you give up when you remove the GPU's local tier altogether.</div>
+          <p>A conventional GPU card carries its own fast local memory (HBM/GDDR) because that memory has to keep up with thousands of GPU threads. The CPU has its own separate DRAM. The two are physically distinct pools connected by an I/O bus (usually PCIe), so anything the GPU needs that started life in CPU memory must be explicitly copied over.</p>
+          <p>That copy is not free: PCIe's bandwidth is far below either side's local memory bandwidth, and every copy adds latency.</p>
+          <div class="ready"><b>Now you're ready:</b> the whole paper is about a machine (DGX Spark) that removes this split entirely — there is no separate GPU memory pool to copy into.</div>
         </div>
       </details>
       <details class="primer">
-        <summary><span class="pnum">2</span>Five CUDA allocators, one physical pool<span class="chev">▾</span></summary>
+        <summary><span class="pnum">2</span>Why the CPU↔GPU transfer step matters so much for databases<span class="chev">▾</span></summary>
         <div class="body">
-          <p><code>malloc</code>, <code>cudaHostAlloc</code>, <code>cudaMallocManaged</code>, <code>malloc+cudaHostRegister</code>, and <code>cudaMalloc</code> all ultimately land in the same 128 GB of LPDDR5X on DGX Spark — they differ only in CPU-accessibility, GPU-side bandwidth, and allocation/deallocation cost, not in *where* the bytes physically go.</p>
-          <div class="ready"><b>Now you're ready:</b> the paper's Table 1 is a Pareto comparison across exactly these five knobs, not a comparison of memory locations.</div>
+          <p>GPU-accelerated query engines are fast at compute, but a query first has to get its data onto the GPU. For relational (SQL-style) workloads, that transfer isn't a rounding error — the paper cites measurements where it eats <b>67–98%</b> of total query runtime on PCIe-based systems.</p>
+          <p>So a huge amount of GPU-database research is really about the transfer step, not the compute kernels.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's five known mitigation strategies (filter, compress, cache, overlap, faster link) are all attacking that 67–98%. DGX Spark proposes a sixth: don't transfer at all.</div>
         </div>
       </details>
       <details class="primer">
-        <summary><span class="pnum">3</span>Why cudaMalloc still needs a copy here<span class="chev">▾</span></summary>
+        <summary><span class="pnum">3</span>Coherent interconnects: NVLink-C2C vs. PCIe<span class="chev">▾</span></summary>
         <div class="body">
-          <p>Counterintuitively, <code>cudaMalloc</code> buffers are *not* directly writable from the CPU on DGX Spark, even though the underlying memory is the same LPDDR5X the CPU could otherwise touch directly. If your data originates on the CPU, a <code>cudaMalloc</code> destination forces an explicit <code>cudaMemcpy</code>.</p>
-          <div class="ready"><b>Now you're ready:</b> "unified physical memory" doesn't automatically mean "any allocator can be written from either side" — the driver still gates access per allocation type.</div>
+          <p>PCIe is not <b>cache-coherent</b> in the way on-chip interconnects are — the CPU and GPU must explicitly manage which copy of data is current. NVLink-C2C, used in NVIDIA's Grace-based superchips, is a coherent chip-to-chip link: CPU and GPU can both reference the same memory addresses with hardware keeping them consistent, at higher bandwidth than PCIe.</p>
+          <p>Grace Hopper pairs this coherent link with <i>two</i> physical memory pools (CPU LPDDR5X + GPU HBM) — coherence removes explicit copies, but the pools still exist.</p>
+          <div class="ready"><b>Now you're ready:</b> DGX Spark uses the same family of interconnect, but goes one step further by removing the second pool altogether.</div>
         </div>
       </details>
       <details class="primer">
-        <summary><span class="pnum">4</span>The transfer-bottleneck literature in one line<span class="chev">▾</span></summary>
+        <summary><span class="pnum">4</span>HMM and ATS — letting a GPU dereference host pointers<span class="chev">▾</span></summary>
         <div class="body">
-          <p>On PCIe-attached GPUs, moving query data across the link accounts for 67–98% of total TPC-H-style query runtime. The field's five standard fixes: transfer less (filter first), transfer fewer bytes (compress), transfer once (cache), hide the transfer (overlap with compute), or use a faster link (Grace Hopper).</p>
-          <div class="ready"><b>Now you're ready:</b> DGX Spark's pitch is a sixth option — skip the transfer step entirely, at the cost of a shared, lower bandwidth ceiling. Section 3 in "How It Works" walks through why that's structurally different, not just "fix #5 again."</div>
+          <p>Early GPU programming required the developer to explicitly allocate device memory and copy data across with dedicated APIs. Heterogeneous Memory Management (HMM) and Address Translation Services (ATS) are hardware/software mechanisms that instead let a GPU kernel walk ordinary host virtual-address page tables, so it can touch host-managed data without a separate allocation step.</p>
+          <p>This is what makes "unified virtual addressing" possible even when the physical memories are still separate.</p>
+          <div class="ready"><b>Now you're ready:</b> DGX Spark takes this idea to its logical extreme — there's only one physical pool, so there's nothing left to translate <i>between</i>, only within.</div>
         </div>
       </details>
       <details class="primer">
-        <summary><span class="pnum">5</span>Why Valk can't see "device memory traffic" here<span class="chev">▾</span></summary>
+        <summary><span class="pnum">5</span>CUDA's menu of memory-allocation calls<span class="chev">▾</span></summary>
         <div class="body">
-          <p>Standard GPU profilers meter traffic crossing into the GPU's own VRAM. DGX Spark's GPU has no VRAM boundary to meter, and NVIDIA's profilers don't expose CPU-side LPDDR5X bandwidth either — so Valk's timeline has a genuine, acknowledged blind spot on this platform.</p>
-          <div class="ready"><b>Now you're ready:</b> an observability gap worth flagging if you're used to CXL/tiering telemetry (e.g. PEBS-based access counting) — the tooling here hasn't caught up to the architecture.</div>
+          <p>CUDA gives programmers several different ways to get memory that a GPU can touch: <code>malloc</code> (plain host memory), <code>cudaMalloc</code> (GPU-device memory), <code>cudaMallocManaged</code> (a single pointer valid on both sides, managed automatically), <code>cudaHostAlloc</code> (pinned host memory), and <code>cudaHostRegister</code> (pin an existing <code>malloc</code> region after the fact).</p>
+          <p>Each trades off differently between GPU-side bandwidth and the cost of setting the allocation up and tearing it down — that trade-off is exactly what this paper measures on DGX Spark.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's Table 1, covered in "How It Works," is a report card on these five (plus one) allocation paths.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>GPU-accelerated databases, briefly<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Systems like SiriusDB, Theseus, HeavyDB, BOSS, and Maximus run SQL-style analytical queries partly or entirely on the GPU, exploiting its parallelism for scans, joins, and aggregations. TPC-H is the standard benchmark suite used to exercise such engines with realistic decision-support queries.</p>
+          <p>For all of them, the question "how does data get from CPU-resident tables onto the GPU" is a first-order performance question, not an afterthought.</p>
+          <div class="ready"><b>Now you're ready:</b> the demo runs all TPC-H queries under different memory strategies specifically to make this transfer question visible.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>The roofline model, briefly<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A roofline plot places a kernel's performance against two ceilings: a memory-bandwidth roof and a compute roof. Kernels below the bandwidth roof are memory-bound; kernels bumping the compute roof are compute-bound. It's a fast visual way to tell which resource is actually limiting a given kernel.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's profiling tool, Valk, includes a roofline graph precisely to classify whether a TPC-H kernel is bound by the GPU's compute or by the shared LPDDR5X path.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Why this matters beyond one NVIDIA box<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>DGX Spark is a concrete, shipping instance of a broader idea: a coherent link letting an accelerator use conventional DRAM instead of its own specialized memory. That's structurally close to CXL-based memory expansion and disaggregated-memory designs, where a compute device (CPU, GPU, or accelerator) reaches across a coherent fabric into memory it doesn't own.</p>
+          <p>The paper says this directly — the DGX Spark's lessons are meant to generalize to CXL and disaggregation work, not stay confined to one GPU platform.</p>
+          <div class="ready"><b>Now you're ready:</b> read the rest of this guide as a case study in "what happens when you put an accelerator on the far side of a coherent, bandwidth-limited link" — the same question your tiering and CXL work asks about DRAM/NVM and hosts.</div>
         </div>
       </details>
     </div>
@@ -382,56 +432,75 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="panel-head">
       <div class="kicker">The whole story in one place</div>
       <h2>DGX Spark in a nutshell</h2>
-      <p class="sub">What's traded away, what's gained, and where the five CPU-accessible CUDA allocators actually sit.</p>
+      <p class="sub">What's different about the machine, why it matters for GPU databases, and what the paper actually measured.</p>
     </div>
     <div class="prose">
-      <p>Discrete CPU–GPU systems keep two physical memories and move data across PCIe, a link slow enough that transferring query data costs 67–98% of runtime in relational workloads. Grace Hopper narrows this by giving the GPU its own HBM behind a fast coherent link, but at high cost. The <strong>NVIDIA DGX Spark</strong> takes the trade further: its GB10 Grace Blackwell Superchip gives the GPU <em>no local memory at all</em>. All 128 GB of LPDDR5X lives on the 20-core Grace CPU socket, and the Blackwell GPU reaches it entirely through the coherent <span class="mem-chip chip-ucp">NVLink-C2C</span> link — every GPU byte is read from, and written to, CPU memory.</p>
-      <p>This is the paper's "sixth approach" to the transfer bottleneck: instead of filtering, compressing, caching, overlapping, or speeding up a transfer, DGX Spark removes the transfer step by construction — the GPU dereferences the same addresses the CPU already produced its data in. The price is a shared, nominal <strong>273 GB/s</strong> bandwidth ceiling that CPU and GPU compete for, in a package that costs roughly one order of magnitude less than large discrete-GPU systems.</p>
-      <p>Underneath, five CUDA allocators (<code>malloc</code>, <code>cudaHostAlloc</code>, <code>cudaMallocManaged</code>, <code>malloc+cudaHostRegister</code>, <code>cudaMalloc</code>) all write into that one pool, but differ sharply in GPU-side bandwidth and allocation overhead — and the authors measure exactly that trade-off with microbenchmarks, then with real TPC-H queries using their own profiler, <span class="mem-chip chip-ucp">Valk</span>.</p>
+      <p>Conventional CPU–GPU systems keep two separate memory pools — host DRAM and GPU-local HBM/VRAM — connected by PCIe. Even NVIDIA's high-end <b>Grace Hopper</b> superchip, which uses a fast coherent link (<b>NVLink-C2C</b>) between a Grace CPU and Hopper GPU, still keeps two physical pools: CPU-attached LPDDR5X and GPU-attached HBM. It's fast, but expensive, and mostly built for AI workloads.</p>
+      <p>The <strong>NVIDIA DGX Spark</strong> is a different point in the design space: its GB10 Grace Blackwell Superchip provides <b>128 GB</b> of coherent, unified <b>LPDDR5X</b> system memory — full stop. There is no separate GPU memory pool at all. The Blackwell GPU reads and writes CPU-attached DRAM directly over NVLink-C2C, at a nominal bandwidth of <b>273 GB/s</b>. The CPU side is 20 cores split <b>10 Cortex-X925 (performance) + 10 Cortex-A725 (efficiency)</b>. Because it's a single low-power DDR pool rather than exotic HBM, the price point is roughly <b>one order of magnitude less</b> than large GPU systems.</p>
+      <p>For GPU-accelerated databases, this matters because data-movement transfers dominate runtime on conventional PCIe systems — the paper cites <b>67–98%</b> of total query time. Five known strategies chip away at that cost (filter less data onto the GPU, compress it, cache it, overlap transfers with compute, or use a faster link). DGX Spark's unified memory opens a <b>sixth</b>: place the data in one CPU–GPU-shared pool and never explicitly transfer it at all.</p>
+      <p>The paper's contribution is not a new algorithm — it's a careful <b>characterization</b>: microbenchmarks of six CUDA memory-allocation paths (bandwidth vs. allocation/deallocation overhead vs. whether a copy is still required), plus a demo of a new profiling tool, <b>Valk</b>, running the full TPC-H benchmark on DGX Spark under each allocation strategy.</p>
     </div>
 
-    <div class="card" style="background:var(--honey-soft);border-color:#ECC99C">
-      <h3 style="color:#7a4310">🔶 Key takeaways</h3>
-      <ul style="margin:0;padding-left:20px;color:#7a4310">
-        <li>DGX Spark's GPU has <b>zero local memory</b> — everything is CPU-attached LPDDR5X, reached via coherent NVLink-C2C.</li>
-        <li>Nominal bandwidth is <b>273 GB/s</b>, shared between CPU and GPU — a ceiling, not a per-processor allowance.</li>
-        <li><code>cudaHostAlloc</code> is the CPU-accessible sweet spot: high GPU bandwidth, low alloc/dealloc overhead.</li>
-        <li><code>cudaMalloc</code> is fastest for the GPU but isn't CPU-writable here — it still needs an explicit copy.</li>
-        <li>The pitch is a <b>sixth</b> fix for the PCIe transfer bottleneck (67–98% of query runtime elsewhere): eliminate the transfer, don't just shrink or hide it.</li>
-        <li>Price point is roughly <b>one order of magnitude</b> below large discrete-GPU systems.</li>
-        <li>Their profiler <b>Valk</b> exposes a real gap: no device-memory-traffic counters exist for a GPU with no device memory.</li>
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🖇️ Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>DGX Spark's GPU has <b>no memory of its own</b> — all 128 GB is CPU-attached LPDDR5X, reached over coherent NVLink-C2C.</li>
+        <li>Nominal bandwidth is <b>273 GB/s</b> — a spec, not a measured number; effective bandwidth depends heavily on <i>which CUDA allocation API</i> you use.</li>
+        <li>Six memory paths were characterized: <code>cudaMalloc</code>, <code>cudaHostAlloc</code>, <code>cudaMallocManaged</code>, <code>malloc</code>, <code>malloc</code>+<code>cudaHostRegister</code>, and an explicit-copy path — each trading GPU bandwidth against allocation overhead against whether a copy is even needed.</li>
+        <li><code>cudaMalloc</code> memory is <b>not CPU-accessible</b> on DGX Spark — the fastest raw path forces the very copy the platform is meant to avoid.</li>
+        <li>PCIe systems spend <b>67–98%</b> of query runtime moving data; unified memory offers a sixth strategy: don't move it at all.</li>
+        <li><b>Valk</b>, a new meta-profiler, merges hardware counters, system polling, execution traces, and query plans into one timeline+table view to make these trade-offs visible on real TPC-H queries.</li>
+        <li>The authors explicitly connect the lessons here to <b>CXL-based memory expansion and disaggregated-memory</b> designs.</li>
       </ul>
     </div>
 
     <figure class="viz reveal">
-      <div class="viz-title">Table 1, plotted: bandwidth vs. allocation overhead</div>
-      <div class="viz-kicker">qualitative +/- symbols from the paper, placed on two axes</div>
+      <div class="viz-title">Three ways to connect a CPU and a GPU</div>
+      <div class="viz-kicker">discrete PCIe → coherent superchip → fully unified pool</div>
       <div class="legend">
-        <span><i style="background:var(--dram)"></i> cudaHostAlloc</span>
-        <span><i style="background:var(--ltram)"></i> cudaMallocManaged</span>
-        <span><i style="background:var(--optane)"></i> malloc / +cudaHostRegister</span>
-        <span><i style="background:var(--honey)"></i> cudaMalloc / explicit copy</span>
+        <span><i style="background:var(--optane)"></i> PCIe — separate pools, explicit copy</span>
+        <span><i style="background:var(--honey-deep)"></i> NVLink-C2C — coherent, still two pools</span>
+        <span><i style="background:var(--dram)"></i> DGX Spark — one pool, no GPU memory</span>
       </div>
-      <svg class="full" viewBox="0 0 700 340" role="img" aria-label="scatter of GPU bandwidth vs allocation overhead for five CUDA allocators">
-        <line x1="70" y1="30" x2="70" y2="310" stroke="#D8C8AC" stroke-width="1.4"/>
-        <line x1="70" y1="310" x2="640" y2="310" stroke="#D8C8AC" stroke-width="1.4"/>
-        <text x="355" y="330" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456">GPU access bandwidth →</text>
-        <text x="30" y="170" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456" transform="rotate(-90 30,170)">alloc/dealloc overhead (lower = better) ↓</text>
-        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle">
-          <text x="140" y="326">+</text><text x="355" y="326">++</text><text x="560" y="326">+++</text>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="Three CPU-GPU memory architectures compared">
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">
+          <text x="118" y="22" text-anchor="middle">DISCRETE / PCIe</text>
+          <text x="380" y="22" text-anchor="middle">GRACE HOPPER / NVLINK-C2C</text>
+          <text x="642" y="22" text-anchor="middle">DGX SPARK / NVLINK-C2C</text>
         </g>
-        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end">
-          <text x="62" y="104">-</text><text x="62" y="204">--</text><text x="62" y="304">---</text>
-        </g>
-        <line x1="140" y1="104" x2="355" y2="104" stroke="#1F7A8C" stroke-width="1.4" stroke-dasharray="4 3" opacity="0.5"/>
-        <circle cx="140" cy="104" r="9" fill="#B33F3F"/><text x="140" y="80" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#7a2020">malloc+hostRegister</text>
-        <circle cx="140" cy="204" r="9" fill="#B33F3F"/><text x="140" y="228" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#7a2020">malloc</text>
-        <circle cx="355" cy="104" r="12" fill="#1F7A8C" stroke="#0c3a42" stroke-width="2"/><text x="355" y="128" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="700" fill="#0c3a42">cudaHostAlloc</text>
-        <circle cx="355" cy="304" r="9" fill="#6B4FA0"/><text x="355" y="286" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#453368">cudaMallocManaged</text>
-        <circle cx="560" cy="204" r="9" fill="#D9782F"/><text x="560" y="180" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#7a4310">cudaMalloc (GPU-only)</text>
-        <rect x="551" y="234" width="18" height="18" fill="none" stroke="#B85A16" stroke-width="2" stroke-dasharray="3 2"/><text x="560" y="270" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#B85A16">explicit copy (no CPU write)</text>
+        <rect x="30" y="40" width="76" height="56" rx="8" fill="#F6DCD1" stroke="#BB5133" stroke-width="2"/>
+        <text x="68" y="64" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#8a3220">CPU</text>
+        <text x="68" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#8a3220">DRAM</text>
+        <rect x="132" y="40" width="76" height="56" rx="8" fill="#F6DCD1" stroke="#BB5133" stroke-width="2"/>
+        <text x="170" y="64" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#8a3220">GPU</text>
+        <text x="170" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#8a3220">HBM</text>
+        <line x1="106" y1="68" x2="132" y2="68" stroke="#BB5133" stroke-width="2" stroke-dasharray="4 3"/>
+        <text x="118" y="110" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#8a3220">explicit copy</text>
+
+        <rect x="292" y="40" width="76" height="56" rx="8" fill="#F8E4BE" stroke="#AD6E0C" stroke-width="2"/>
+        <text x="330" y="64" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#6e4a09">CPU</text>
+        <text x="330" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6e4a09">LPDDR5X</text>
+        <rect x="394" y="40" width="76" height="56" rx="8" fill="#F8E4BE" stroke="#AD6E0C" stroke-width="2"/>
+        <text x="432" y="64" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#6e4a09">GPU</text>
+        <text x="432" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6e4a09">HBM</text>
+        <line x1="368" y1="68" x2="394" y2="68" stroke="#AD6E0C" stroke-width="3"/>
+        <text x="380" y="110" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6e4a09">coherent, no copy — still 2 pools</text>
+
+        <rect x="560" y="40" width="164" height="56" rx="8" fill="#D7EDE8" stroke="#1F8A82" stroke-width="2.5"/>
+        <text x="642" y="60" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#12554e">128 GB LPDDR5X</text>
+        <text x="642" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#12554e">shared by CPU + GPU</text>
+        <path d="M600 40 v-14 h-10" fill="none" stroke="#1F8A82" stroke-width="2"/>
+        <path d="M684 40 v-14 h10" fill="none" stroke="#1F8A82" stroke-width="2"/>
+        <text x="590" y="22" text-anchor="end" font-family="JetBrains Mono" font-size="9" fill="#12554e">CPU (20 cores)</text>
+        <text x="694" y="22" text-anchor="start" font-family="JetBrains Mono" font-size="9" fill="#12554e">GPU (no memory)</text>
+
+        <line x1="30" y1="150" x2="730" y2="150" stroke="#E7DBC6" stroke-dasharray="3 4"/>
+        <text x="380" y="176" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#332C24">Same question every step: does the GPU's access have to cross a narrow, shared doorway?</text>
+        <text x="118" y="200" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">yes — and it's the slowest doorway (PCIe)</text>
+        <text x="380" y="200" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">no — coherence removes the copy, not the 2nd pool</text>
+        <text x="642" y="200" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#12554e">no 2nd pool to reach — but the one doorway is now shared, capped at 273 GB/s</text>
       </svg>
-      <figcaption><b>Read it as a Pareto chart:</b> <code>cudaHostAlloc</code> dominates <code>malloc+cudaHostRegister</code> — same low overhead, more bandwidth. <code>cudaMallocManaged</code> matches its bandwidth but costs the most to allocate/deallocate. The two fastest points, top-right, aren't directly CPU-writable — they need an explicit copy, defeating the "no transfer" pitch. (Paper, Table 1)</figcaption>
+      <figcaption><b>Read left to right:</b> PCIe keeps two pools and pays for an explicit copy; Grace Hopper keeps two pools but makes the link coherent; DGX Spark removes the second pool entirely — the GPU has nothing of its own to copy into. (Paper §2)</figcaption>
     </figure>
   </div>
 </section>
@@ -440,71 +509,91 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 <section class="tab-panel" id="tab-analogies">
   <div class="wrap">
     <div class="panel-head">
-      <div class="kicker">Five everyday pictures</div>
-      <h2>How to think about it</h2>
-      <p class="sub">Each stands alone. Every card ends with where the picture stops being true.</p>
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about DGX Spark's memory</h2>
+      <p class="sub">Each stands alone. Every card ends with an honest note about where the picture stops being true.</p>
     </div>
     <div class="analogy-grid">
 
       <div class="analogy reveal">
         <div class="ill"><svg viewBox="0 0 140 96" fill="none">
-          <rect x="30" y="24" width="80" height="56" rx="4" fill="#EBE3F5" stroke="#6B4FA0" stroke-width="2.5"/>
-          <line x1="70" y1="24" x2="70" y2="80" stroke="#6B4FA0" stroke-width="1.5" stroke-dasharray="3 3"/>
-          <circle cx="48" cy="52" r="6" fill="#1F7A8C"/><circle cx="92" cy="52" r="6" fill="#D9782F"/>
+          <rect x="22" y="30" width="96" height="50" rx="6" fill="#D7EDE8" stroke="#1F8A82" stroke-width="2.5"/>
+          <circle cx="50" cy="55" r="9" fill="#1F8A82"/><circle cx="90" cy="55" r="9" fill="#AD6E0C"/>
+          <path d="M50 46 v-14 M90 46 v-14" stroke="#332C24" stroke-width="2"/>
         </svg></div>
         <span class="term">The core idea · Unified memory</span>
-        <h3>A studio apartment, not two rooms</h3>
-        <p>A studio has one shared floor space instead of a bedroom-and-office wall to carry boxes across. DGX Spark's CPU and GPU work in one physical LPDDR5X pool — nothing to pack, ship, or unpack between them.</p>
-        <div class="breaks"><b>Where it breaks:</b> a studio still has one front door. Both occupants share the same LPDDR5X bandwidth (273 GB/s nominal) — crowding is still possible, it just happens at the door, not in transit.</div>
+        <h3>One pantry, not two fridges</h3>
+        <p>A house with two separate fridges — one for each roommate — means constantly ferrying groceries between them whenever the other needs something. DGX Spark tears out the wall and gives both roommates one shared pantry: whatever the CPU puts on a shelf, the GPU can reach directly, no ferrying required.</p>
+        <div class="breaks"><b>Where it breaks:</b> there's still only one door into that pantry. Both roommates reaching for groceries at once still queue up at the same doorway — the 273 GB/s LPDDR5X path.</div>
       </div>
 
       <div class="analogy reveal">
         <div class="ill"><svg viewBox="0 0 140 96" fill="none">
-          <rect x="20" y="30" width="42" height="50" rx="4" fill="#D7ECEF" stroke="#1F7A8C" stroke-width="2.5"/>
-          <rect x="78" y="30" width="42" height="50" rx="4" fill="#F5DEC4" stroke="#D9782F" stroke-width="2.5"/>
-          <rect x="30" y="42" width="22" height="6" fill="#1F7A8C"/><rect x="30" y="54" width="22" height="6" fill="#1F7A8C"/>
-          <circle cx="99" cy="55" r="8" fill="#D9782F"/>
+          <rect x="16" y="34" width="44" height="42" rx="5" fill="#F8E4BE" stroke="#AD6E0C" stroke-width="2.5"/>
+          <rect x="80" y="34" width="44" height="42" rx="5" fill="#F8E4BE" stroke="#AD6E0C" stroke-width="2.5"/>
+          <path d="M60 55 h20" stroke="#AD6E0C" stroke-width="3"/>
+          <path d="M74 49 l6 6 l-6 6" fill="none" stroke="#AD6E0C" stroke-width="2.5"/>
         </svg></div>
-        <span class="term">Choosing an allocator · Table 1</span>
-        <h3>A shared drawer vs. a locked safe</h3>
-        <p><code>cudaHostAlloc</code> is a shared drawer both CPU and GPU can reach into quickly. <code>cudaMalloc</code> is a bank's private safe — the teller (GPU) gets in fast, but you (the CPU) need a courier (<code>cudaMemcpy</code>) to put anything in first.</p>
-        <div class="breaks"><b>Where it breaks:</b> the safe isn't actually more secure or physically separate — it's the same building (same LPDDR5X). The "lock" is a software policy, not a distance.</div>
+        <span class="term">Grace Hopper vs. Spark</span>
+        <h3>Two offices sharing one courier, not one pantry</h3>
+        <p>Grace Hopper is better pictured as two well-staffed offices connected by a fast, always-on courier (NVLink-C2C) instead of a slow van (PCIe). Each office still keeps its own well-stocked supply closet (LPDDR5X for the CPU, HBM for the GPU) — the courier just makes moving things between them cheap and automatic.</p>
+        <div class="breaks"><b>Where it breaks:</b> DGX Spark isn't two offices at all — it's one office with one closet. Applying the "two offices, fast courier" picture to DGX Spark overstates how separate its memory really is.</div>
       </div>
 
       <div class="analogy reveal">
         <div class="ill"><svg viewBox="0 0 140 96" fill="none">
-          <rect x="16" y="46" width="70" height="30" rx="4" fill="#F5DCDC" stroke="#B33F3F" stroke-width="2.5"/>
-          <circle cx="34" cy="78" r="7" fill="#332C24"/><circle cx="68" cy="78" r="7" fill="#332C24"/>
-          <rect x="86" y="52" width="22" height="18" fill="#F5DCDC" stroke="#B33F3F" stroke-width="2"/>
+          <rect x="30" y="20" width="80" height="16" rx="2" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <rect x="38" y="40" width="64" height="16" rx="2" fill="#E7E4F5" stroke="#5C56B0" stroke-width="2"/>
+          <rect x="46" y="60" width="48" height="16" rx="2" fill="#F6DCD1" stroke="#BB5133" stroke-width="2"/>
+          <text x="70" y="32" text-anchor="middle" font-family="monospace" font-size="8" fill="#332C24">fastest</text>
+          <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">middling</text>
+          <text x="70" y="72" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">slowest</text>
         </svg></div>
-        <span class="term">The alternative · Explicit copy path</span>
-        <h3>Renting a moving truck</h3>
-        <p><code>malloc</code> → <code>cudaMalloc</code> → <code>cudaMemcpy</code> is renting a truck: you get the fastest highway speed (GPU bandwidth) once loaded, but every trip costs packing and unpacking time, and nothing is usable mid-transit.</p>
-        <div class="breaks"><b>Where it breaks:</b> a truck trip is a one-time cost for a permanent move. A GPU kernel launch may repeat this "move" every time — the overhead doesn't amortize the way a house move does.</div>
+        <span class="term">CUDA allocation APIs</span>
+        <h3>Renting a tool vs. owning one</h3>
+        <p><code>cudaMallocManaged</code> is a tool-rental counter: quick to check out and return (lowest allocation/deallocation cost), decent performance while you have it. <code>cudaHostAlloc</code> is buying a specialized tool outright: slower and pricier to acquire, but the best performance among CPU-reachable options once you have it. Plain <code>malloc</code> is the tool already in your garage — free to grab, but the weakest for this particular job.</p>
+        <div class="breaks"><b>Where it breaks:</b> the "best" tool (<code>cudaMalloc</code>) isn't in this shop at all if you're the CPU — on DGX Spark it's locked in a room the CPU can't enter without going through an explicit copy first.</div>
       </div>
 
       <div class="analogy reveal">
         <div class="ill"><svg viewBox="0 0 140 96" fill="none">
-          <rect x="20" y="20" width="100" height="20" rx="4" fill="#fff" stroke="#332C24" stroke-width="2"/>
-          <rect x="20" y="46" width="70" height="16" rx="3" fill="#F5DEC4" stroke="#D9782F" stroke-width="2"/>
-          <rect x="20" y="66" width="40" height="16" rx="3" fill="#EBE3F5" stroke="#6B4FA0" stroke-width="2"/>
+          <rect x="20" y="40" width="100" height="20" rx="10" fill="#F6DCD1" stroke="#BB5133" stroke-width="2.5"/>
+          <rect x="20" y="40" width="34" height="20" rx="10" fill="#BB5133"/>
+          <text x="37" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#fff">27%</text>
+          <text x="90" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#8a3220">73% wasted waiting</text>
         </svg></div>
-        <span class="term">The framing · "Sixth approach"</span>
-        <h3>Not flying, instead of packing lighter</h3>
-        <p>Filtering, compressing, caching, overlapping, faster links — all are ways to deal with an airline's baggage limit. DGX Spark's move is different in kind: don't fly at all, keep everything at home. It doesn't beat the baggage-limit strategies; it removes the flight.</p>
-        <div class="breaks"><b>Where it breaks:</b> "staying home" has its own ceiling — you're bandwidth-limited by your own driveway (LPDDR5X, 273 GB/s), which can be slower than a fast enough flight (e.g. Grace Hopper's HBM path) for the biggest jobs.</div>
+        <span class="term">The 67–98% number</span>
+        <h3>A delivery truck idling at the loading dock</h3>
+        <p>Picture a warehouse where the truck (interconnect) spends most of its shift idling at the dock waiting to be loaded and unloaded (data transfer) rather than actually driving product to where it's needed (compute). For PCIe-based GPU databases, that idling can eat 67–98% of the whole shift — the paper's cited figure for relational workloads.</p>
+        <div class="breaks"><b>Where it breaks:</b> DGX Spark doesn't give the truck a bigger engine — it removes the loading dock. But the truck still has to drive on one shared road (LPDDR5X's 273 GB/s), so it can still get stuck in traffic if the CPU is also using that road at the same time.</div>
       </div>
 
       <div class="analogy reveal">
         <div class="ill"><svg viewBox="0 0 140 96" fill="none">
-          <circle cx="70" cy="48" r="30" fill="none" stroke="#6B4FA0" stroke-width="2.5"/>
-          <rect x="55" y="33" width="10" height="10" fill="#1F7A8C"/><rect x="70" y="33" width="10" height="10" fill="#D9782F"/>
-          <rect x="55" y="53" width="10" height="10" fill="#B33F3F"/><rect x="70" y="53" width="10" height="10" fill="#6B4FA0"/>
+          <rect x="20" y="20" width="100" height="56" rx="6" fill="#fff" stroke="#5C56B0" stroke-width="2"/>
+          <line x1="20" y1="40" x2="120" y2="40" stroke="#5C56B0" stroke-width="1.5"/>
+          <rect x="26" y="26" width="30" height="10" rx="2" fill="#E7E4F5"/>
+          <rect x="60" y="26" width="30" height="10" rx="2" fill="#F8E4BE"/>
+          <rect x="26" y="46" width="88" height="24" rx="3" fill="#D7EDE8" opacity="0.5"/>
+          <line x1="26" y1="58" x2="114" y2="58" stroke="#1F8A82" stroke-width="1" stroke-dasharray="2 2"/>
         </svg></div>
         <span class="term">The profiler · Valk</span>
-        <h3>One flight recorder for four instruments</h3>
-        <p>Valk merges hardware counters, system polling, execution traces, and query plans the way a flight-data recorder merges altimeter, engine, and control-surface logs into one timeline you can actually correlate.</p>
-        <div class="breaks"><b>Where it breaks:</b> a real flight recorder has a sensor for every quantity that matters. Valk's "device memory traffic" track is empty on DGX Spark — there's no instrument for a quantity (device-local memory bandwidth) that doesn't exist on this airframe.</div>
+        <h3>A flight recorder with one microphone unplugged</h3>
+        <p>A flight recorder normally merges every instrument — altitude, engine sensors, cockpit audio — into one synchronized timeline so investigators can see cause and effect together. Valk does the same for GPU queries: hardware counters, kernel traces, and query plans, all lined up on one timeline and one queryable table.</p>
+        <div class="breaks"><b>Where it breaks:</b> one channel is genuinely missing. Device-memory-traffic overlay is blank on DGX Spark, because there's no dedicated GPU memory bus to instrument, and NVIDIA's profilers don't expose CPU memory bandwidth either — a real measurement gap, not an analogy stretch.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M30 70 l30 -40 l30 40 z" fill="#F8E4BE" stroke="#AD6E0C" stroke-width="2"/>
+          <path d="M70 70 l16 -22 l16 22 z" fill="#D7EDE8" stroke="#1F8A82" stroke-width="2"/>
+          <text x="60" y="82" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">$$$$</text>
+          <text x="90" y="82" text-anchor="middle" font-family="monospace" font-size="8" fill="#12554e">$</text>
+        </svg></div>
+        <span class="term">Cost trade-off</span>
+        <h3>A city car vs. a delivery fleet</h3>
+        <p>A high-end superchip like Grace Hopper is a purpose-built delivery fleet: expensive, tuned for heavy AI freight. DGX Spark is roughly an order of magnitude cheaper — closer to a city car. It won't out-haul the fleet on raw capability, but it's affordable enough that a network of several can substitute for one big truck when you need more capacity.</p>
+        <div class="breaks"><b>Where it breaks:</b> the paper reports this as a qualitative "order of magnitude," not a specific price comparison table — treat it as a rough positioning statement, not a quoted dollar figure.</div>
       </div>
 
     </div>
@@ -517,70 +606,95 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="panel-head">
       <div class="kicker">The full explanation</div>
       <h2>How it actually works</h2>
-      <p class="sub">Topology, the five allocators, the "sixth approach," and where the profiler has to give up.</p>
+      <p class="sub">From the architecture, to the six memory paths measured, to the profiler used to see the difference.</p>
     </div>
 
     <div class="prose">
-      <h3>1 · Topology — one memory, reached two ways</h3>
-      <p>Unlike a discrete GPU (separate VRAM behind PCIe) or Grace Hopper (separate HBM behind a fast coherent link), DGX Spark's GB10 superchip puts the <em>only</em> memory — 128 GB LPDDR5X — on the CPU socket. The GPU has no memory pool of its own; every access, read or write, travels the coherent NVLink-C2C link to the same DRAM the CPU uses.</p>
+      <h3>1 · The architecture — why DGX Spark is an extreme point</h3>
+      <p>Conventional discrete GPUs and even coherent superchips like Grace Hopper keep <b>two</b> physical memory pools. DGX Spark's GB10 Grace Blackwell Superchip has <b>one</b>: 128 GB of coherent LPDDR5X, physically attached to the CPU socket, reachable by the GPU only through NVLink-C2C. The GPU has zero local memory of its own — every byte it touches lives on the CPU side of that link, at a nominal <b>273 GB/s</b>.</p>
+      <div class="callout note"><span class="ic">💡</span><div><b>Why this is unusual:</b> "unified memory" elsewhere (e.g. CUDA managed memory on a discrete GPU) is a software illusion built on top of two real pools plus page migration. On DGX Spark it's the literal hardware truth — there is nowhere else for GPU data to be.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Five ways to fight the transfer bottleneck — plus a sixth</h3>
+      <p>On PCIe-bound systems, the paper identifies five established strategies for reducing the cost of getting data onto a GPU. DGX Spark's design opens a sixth.</p>
+    </div>
+    <div class="flow-row">
+      <div class="node n-lru"><div class="nt">1 · Transfer less</div><div class="nd">Filter on the CPU first, send only what survives</div></div>
+      <div class="node n-lru"><div class="nt">2 · Transfer fewer bytes</div><div class="nd">Compress on CPU, decompress on GPU</div></div>
+      <div class="node n-lru"><div class="nt">3 · Reuse transfers</div><div class="nd">Cache hot data in GPU memory across queries</div></div>
+    </div>
+    <div style="text-align:center;margin:10px 0;color:var(--ink-faint);font-family:var(--mono)">+</div>
+    <div class="flow-row">
+      <div class="node n-lru"><div class="nt">4 · Overlap</div><div class="nd">Transfer while computing, keep the link busy</div></div>
+      <div class="node n-lru"><div class="nt">5 · Faster link</div><div class="nd">PCIe → NVLink; shifts bound from link to GPU</div></div>
+      <div class="node n-hi"><div class="nt">6 · Don't transfer (new)</div><div class="nd">Unified memory: data lives in one CPU–GPU pool</div></div>
+    </div>
+    <div class="callout why" style="margin-top:22px"><span class="ic">💡</span><div>Strategies 1–5 apply broadly across discrete-GPU and coherent-superchip systems alike. Strategy 6 is specific to unified-memory architectures like DGX Spark — and it doesn't retire the others: filtering and compression still reduce how many bytes cross the shared LPDDR5X path, even with no explicit "transfer" step to skip.</div></div>
+
+    <div class="prose">
+      <h3>3 · Characterizing CUDA memory strategies</h3>
+      <p>A 273 GB/s spec doesn't say what any particular program will actually see — it "does not reveal the effective bandwidth observed by CPU and GPU accesses or the impact of different memory-management mechanisms." So the paper built microbenchmarks over six paths, measuring bandwidth and allocation/deallocation overhead for large (32 GiB) sequential-read buffers.</p>
+      <table class="tbl">
+        <thead><tr><th>Path</th><th>API</th><th>GPU bandwidth</th><th>Alloc/dealloc cost</th><th>No copy needed?</th></tr></thead>
+        <tbody>
+          <tr class="best"><td>GPU-only</td><td class="mono">cudaMalloc</td><td>+++ (best)</td><td>-- </td><td>✓*</td></tr>
+          <tr><td>CPU write → GPU read</td><td class="mono">cudaHostAlloc</td><td>++ (best CPU-reachable)</td><td>-</td><td>✓</td></tr>
+          <tr><td>CPU write → GPU read</td><td class="mono">cudaMallocManaged</td><td>++</td><td>--- (best)</td><td>✓</td></tr>
+          <tr><td>CPU write → GPU read</td><td class="mono">malloc</td><td>+ (weakest)</td><td>--</td><td>✓</td></tr>
+          <tr><td>CPU write → GPU read</td><td class="mono">malloc + cudaHostRegister</td><td>+</td><td>-</td><td>✓</td></tr>
+          <tr><td>Explicit copy</td><td class="mono">malloc→cudaMalloc→cudaMemcpy</td><td>+++</td><td>--</td><td>✗</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:.86rem;color:var(--ink-faint)">More "+" = higher bandwidth (better). More "-" = lower allocation/deallocation time (better). *cudaMalloc needs no copy only if the data originates on the GPU — CPU-produced data still needs the explicit-copy path below it.</p>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>The catch:</b> <code>cudaMalloc</code> memory is <b>not directly accessible from the CPU</b> on DGX Spark. So for a CPU-write → GPU-read pipeline, the fastest raw bandwidth path is unusable without falling back to an explicit copy — reintroducing the transfer cost unified memory is supposed to remove.</div></div>
     </div>
 
     <figure class="viz reveal">
-      <div class="viz-title">Where the bytes actually live</div>
-      <div class="viz-kicker">GB10 Grace Blackwell Superchip</div>
-      <svg class="full" viewBox="0 0 700 200" role="img" aria-label="topology diagram: LPDDR5X attached to Grace CPU, reached by Blackwell GPU via NVLink-C2C">
-        <rect x="30" y="70" width="180" height="60" rx="10" fill="#D7ECEF" stroke="#1F7A8C" stroke-width="2"/>
-        <text x="120" y="95" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#0f4a54">LPDDR5X</text>
-        <text x="120" y="114" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#0f4a54">128 GB · on CPU socket</text>
-        <rect x="260" y="70" width="180" height="60" rx="10" fill="#EBE3F5" stroke="#6B4FA0" stroke-width="2"/>
-        <text x="350" y="95" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#453368">Grace CPU</text>
-        <text x="350" y="114" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#453368">10 X925 + 10 A725</text>
-        <rect x="490" y="70" width="180" height="60" rx="10" fill="#F5DEC4" stroke="#D9782F" stroke-width="2"/>
-        <text x="580" y="95" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#7a4310">Blackwell GPU</text>
-        <text x="580" y="114" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#7a4310">0 local memory</text>
-        <line x1="210" y1="100" x2="260" y2="100" stroke="#332C24" stroke-width="2"/>
-        <text x="235" y="90" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">on-package</text>
-        <line x1="440" y1="100" x2="490" y2="100" stroke="#332C24" stroke-width="2.5"/>
-        <text x="465" y="90" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">NVLink-C2C</text>
-        <text x="350" y="160" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">coherent · 273 GB/s nominal · shared by both processors</text>
-      </svg>
-      <figcaption><b>One pool, two consumers.</b> There is no separate GPU-local hop — the GPU's only path to any data is through this same link and the same DRAM channel the CPU uses. (Paper §2, §4)</figcaption>
+      <div class="viz-title">Try it: pick a memory path, see the trade-off</div>
+      <div class="viz-kicker">Table 1's six allocation strategies, qualitative bars</div>
+      <div class="part-viz">
+        <div class="preset-row" id="pathButtons"></div>
+        <div class="part-readout">
+          <div class="pstat">GPU bandwidth<b id="polBw">—</b></div>
+          <div class="pstat">Alloc/dealloc speed<b id="polOh">—</b></div>
+          <div class="pstat">No copy needed?<b id="polCopy">—</b></div>
+        </div>
+        <div class="bars" id="polBars">
+          <div class="bar-row"><div class="bar-label">Bandwidth<small>higher = better</small></div><div class="bar-track"><div class="bar-fill bf-hi" id="polBwFill"><span id="polBwLabel"></span></div></div></div>
+          <div class="bar-row"><div class="bar-label">Alloc speed<small>higher = better</small></div><div class="bar-track"><div class="bar-fill bf-ucp" id="polOhFill"><span id="polOhLabel"></span></div></div></div>
+        </div>
+        <div class="pverdict sub" id="polVerdict">Pick a path above…</div>
+      </div>
+      <figcaption>Bars are the qualitative tiers from Table 1 (1–3 pluses/dashes), not measured GB/s — the paper reports relative levels, not absolute numbers. (Paper §4, Table 1)</figcaption>
     </figure>
 
     <div class="prose">
-      <h3>2 · The five CUDA allocators, measured</h3>
-      <p>Table 1 (32 GiB sequential-read microbenchmark) ranks them on GPU bandwidth, allocation/deallocation cost, and whether a data copy is needed:</p>
-      <table class="tbl">
-        <thead><tr><th>Allocator</th><th>Path</th><th>GPU bandwidth</th><th>Alloc/dealloc cost</th><th>No copy?</th></tr></thead>
-        <tbody>
-          <tr class="best"><td class="mono">cudaHostAlloc</td><td>CPU→GPU</td><td>++</td><td>-</td><td>✓</td></tr>
-          <tr><td class="mono">cudaMallocManaged</td><td>CPU→GPU</td><td>++</td><td>---</td><td>✓</td></tr>
-          <tr><td class="mono">malloc</td><td>CPU→GPU</td><td>+</td><td>--</td><td>✓</td></tr>
-          <tr><td class="mono">malloc+cudaHostRegister</td><td>CPU→GPU</td><td>+</td><td>-</td><td>✓</td></tr>
-          <tr><td class="mono">cudaMalloc</td><td>GPU-only</td><td>+++</td><td>--</td><td>✓ (but not CPU-writable)</td></tr>
-          <tr><td class="mono">malloc→cudaMalloc→cudaMemcpy</td><td>explicit copy</td><td>+++</td><td>--</td><td>✗</td></tr>
-        </tbody>
-      </table>
-      <div class="callout takeaway"><span class="ic">🔶</span><div><code>cudaHostAlloc</code> is the highest-bandwidth option that's still directly CPU-writable and cheap to allocate — the paper calls it the default mode for a CPU-write→GPU-read pipeline.</div></div>
+      <h3>4 · Valk — a meta-profiler for GPU query execution</h3>
+      <p>To see these trade-offs on real TPC-H queries, the authors built <b>Valk</b>: it merges hardware counters, system polling data, execution traces, and query plans into a single dataset, queryable directly or through a purpose-built visual interface.</p>
     </div>
-
-    <div class="prose">
-      <h3>3 · Why this is a "sixth approach," not a faster fifth one</h3>
-      <p>Approaches 1–5 in the literature (filter, compress, cache, overlap, faster link) all keep a transfer step and try to shrink, hide, or speed it up. DGX Spark instead places CPU-produced data directly in the memory the GPU already coherently sees — there is no staging buffer, no <code>cudaMemcpy</code>, no explicit device-copy call in the common path.</p>
-    </div>
-    <div class="flow-row">
-      <div class="node n-lru"><div class="nt">Approaches 1–5</div><div class="nd">Filter · compress · cache · overlap · faster link — all still assume a transfer happens</div></div>
-      <div class="flow-arrow">≠</div>
-      <div class="node n-rule"><div class="nt">DGX Spark's approach</div><div class="nd">Data is placed in memory both processors already coherently share — no transfer step exists</div></div>
-      <div class="flow-arrow">→</div>
-      <div class="node n-hi"><div class="nt">Trade-off</div><div class="nd">Both processors now share one 273 GB/s ceiling instead of each having local bandwidth</div></div>
-    </div>
-
-    <div class="prose">
-      <h3>4 · Evaluating it: TPC-H through Valk</h3>
-      <p>The authors run the full TPC-H suite under each allocation policy and inspect results in <b>Valk</b>, which merges hardware counters, system polling, execution traces, and query plans into one queryable profile. Its UI overlays a timeline (operators, kernels) with core utilization and instruction throughput, plus a roofline view and a SQL-queryable counter table — but its "device memory traffic" track is empty here: DGX Spark has no device-local memory boundary to meter, and NVIDIA's profilers don't expose LPDDR5X bandwidth from the CPU side either.</p>
-      <div class="callout warn"><span class="ic">⚠</span><div><b>Observability gap:</b> the one metric you'd most want on a shared-memory system — realized bandwidth contention between CPU and GPU — is exactly the one the tooling can't currently show.</div></div>
-    </div>
+    <figure class="viz reveal">
+      <div class="viz-title">Valk's timeline + table layout</div>
+      <div class="viz-kicker">operators → kernels → memory/occupancy overlay → SQL-queryable counter table</div>
+      <svg class="full" viewBox="0 0 700 220" role="img" aria-label="Valk UI structure">
+        <rect x="20" y="20" width="660" height="26" rx="4" fill="#E7E4F5" stroke="#5C56B0" stroke-width="1.5"/>
+        <text x="30" y="37" font-family="JetBrains Mono" font-size="10" fill="#3a409a">operators (thin upper bar)</text>
+        <rect x="20" y="54" width="660" height="30" rx="4" fill="#D7EDE8" stroke="#1F8A82" stroke-width="1.5"/>
+        <text x="30" y="73" font-family="JetBrains Mono" font-size="10" fill="#12554e">kernels + device-memory-traffic overlay</text>
+        <rect x="480" y="54" width="200" height="30" fill="repeating-linear-gradient(45deg,#b0a08c,#b0a08c 6px,#a08d76 6px,#a08d76 12px)" opacity="0.6"/>
+        <text x="580" y="73" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">unavailable on DGX Spark</text>
+        <rect x="20" y="92" width="660" height="30" rx="4" fill="#F8E4BE" stroke="#AD6E0C" stroke-width="1.5"/>
+        <text x="30" y="111" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">kernels + core occupancy / instruction throughput</text>
+        <rect x="20" y="134" width="500" height="70" rx="6" fill="#fff" stroke="#D8C8AC" stroke-width="1.5"/>
+        <text x="30" y="152" font-family="JetBrains Mono" font-size="10" fill="#6E6456">table · all hardware counters per kernel, SQL-queryable</text>
+        <line x1="30" y1="162" x2="510" y2="162" stroke="#E7DBC6"/><line x1="30" y1="180" x2="510" y2="180" stroke="#E7DBC6"/>
+        <rect x="536" y="134" width="144" height="70" rx="6" fill="#fff" stroke="#D8C8AC" stroke-width="1.5"/>
+        <text x="546" y="152" font-family="JetBrains Mono" font-size="10" fill="#6E6456">sidebar</text>
+        <text x="546" y="168" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">roofline · stalls</text>
+        <text x="546" y="182" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">instr. types</text>
+      </svg>
+      <figcaption>The middle bar's device-memory-traffic overlay is genuinely empty on DGX Spark — there's no separate GPU memory bus to measure, and NVIDIA's profilers also don't expose CPU memory bandwidth. That gap is itself a finding, not a Valk limitation. (Paper §5)</figcaption>
+    </figure>
   </div>
 </section>
 
@@ -590,42 +704,53 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="panel-head">
       <div class="kicker">Follow the numbers</div>
       <h2>Worked examples</h2>
-      <p class="sub">Three short calculations, using the paper's actual figures.</p>
+      <p class="sub">Four calculations, built directly from the paper's own figures — no invented data.</p>
     </div>
 
     <div class="card reveal">
-      <h3>① Sizing the microbenchmark against the memory pool</h3>
-      <p style="color:var(--ink-soft)">Table 1's sequential-read test uses a 32 GiB buffer. How much of the machine's total memory is that?</p>
+      <h3>① Reading Table 1 for a CPU-write → GPU-read pipeline</h3>
+      <p style="color:var(--ink-soft)">You're writing data on the CPU and reading it on the GPU. Which of the six paths should you pick?</p>
       <ol class="seq">
-        <li><b>Total unified memory = 128 GB</b> (all of it LPDDR5X, on the CPU socket).</li>
-        <li><b>Buffer size = 32 GiB ≈ 34.4 GB.</b></li>
-        <li><b>Fraction: 34.4 / 128 ≈ 27%</b> of the entire machine's memory in one buffer.</li>
+        <li><b>Rule out cudaMalloc as-is:</b> +++ bandwidth, but on DGX Spark it's not CPU-accessible — using it for CPU-produced data means falling back to the explicit-copy row (also +++, but "no copy" = ✗).</li>
+        <li><b>Among the four CPU-accessible paths</b> (cudaHostAlloc, cudaMallocManaged, malloc, malloc+cudaHostRegister), <code>cudaHostAlloc</code> and <code>cudaMallocManaged</code> tie for best bandwidth at ++.</li>
+        <li><b>Break the tie on overhead:</b> cudaHostAlloc costs <code>-</code> (slow alloc/dealloc); cudaMallocManaged costs <code>---</code> (fastest alloc/dealloc) — for one-shot, long-lived buffers, cudaHostAlloc's extra one-time cost barely matters and it keeps ++ bandwidth throughout use.</li>
+        <li><b>Verdict:</b> for a long-lived streaming buffer, <code>cudaHostAlloc</code> — the paper's own conclusion: "cudaHostAlloc (default mode) provides the highest throughput among the CPU-accessible allocation methods."</li>
       </ol>
-      <div class="callout why"><span class="ic">💡</span><div>A quarter of the whole pool is a meaningfully large working set — big enough that allocator overheads and steady-state bandwidth dominate, not caching effects. That's why the microbenchmark is a fair stress test before moving to TPC-H.</div></div>
+      <div class="callout takeaway"><span class="ic">🖇️</span><div><b>Insight:</b> "highest bandwidth" and "no copy needed" are two separate columns. Picking a path means reading both, not just chasing the biggest plus sign.</div></div>
     </div>
 
     <div class="card reveal">
-      <h3>② Picking an allocator for a CPU-write → GPU-read pipeline</h3>
-      <p style="color:var(--ink-soft)">Given Table 1, which allocator should a data-processing pipeline that produces data on the CPU and consumes it on the GPU use?</p>
+      <h3>② How much would removing the transfer step help — in theory?</h3>
+      <p style="color:var(--ink-soft)">The paper cites 67–98% of query runtime spent on data transfer on PCIe-based systems. If that step vanished entirely and nothing else changed, what's the theoretical ceiling on speedup?</p>
       <ol class="seq">
-        <li><b>Rule out cudaMalloc and the explicit-copy path:</b> both need a copy for CPU-produced data — extra time and an extra buffer.</li>
-        <li><b>Compare the three CPU-accessible options</b> by bandwidth then overhead: <code>cudaHostAlloc</code> (++, -), <code>cudaMallocManaged</code> (++, ---), <code>malloc</code> (+, --), <code>malloc+cudaHostRegister</code> (+, -).</li>
-        <li><b>cudaHostAlloc ties for best bandwidth</b> among CPU-accessible allocators, and has the lowest overhead of the two "++" options.</li>
-        <li><b>Winner: cudaHostAlloc</b> — exactly the paper's stated default mode.</li>
+        <li><b>Low end:</b> transfer = 67% of runtime, so compute-only time = 33%. Removing transfer entirely: speedup ≤ 1 / 0.33 ≈ <b>3.0×</b>.</li>
+        <li><b>High end:</b> transfer = 98%, compute-only = 2%. Speedup ≤ 1 / 0.02 = <b>50×</b>.</li>
+        <li><b>So the theoretical ceiling spans roughly 3× to 50×</b> depending on the query — this is simple Amdahl's-law arithmetic on the paper's cited range, not a number the paper itself reports as a DGX Spark result.</li>
+        <li><b>The caveat that matters:</b> this ceiling assumes the freed-up path adds no new bottleneck. On DGX Spark, the "removed" transfer becomes ordinary LPDDR5X traffic sharing the same 273 GB/s the CPU also uses — so real speedups will land below this ceiling.</li>
       </ol>
-      <div class="callout why"><span class="ic">💡</span><div>This is a Pareto elimination, by hand — the same reasoning behind the scatter figure in "The Big Idea."</div></div>
+      <div class="callout why"><span class="ic">💡</span><div>This is exactly the caution from Practice Problem 4: eliminating a bottleneck doesn't automatically deliver the full Amdahl's-law reward if a new one appears in its place.</div></div>
     </div>
 
     <div class="card reveal">
-      <h3>③ What "67–98% of runtime is transfer" implies (a back-of-envelope, not a paper claim)</h3>
-      <p style="color:var(--ink-soft)">The cited figure (for PCIe-based systems generally, not DGX Spark specifically) is that data movement is 67–98% of relational query runtime. If a platform removed that step entirely and everything else stayed fixed, what's the naive ceiling on speedup?</p>
+      <h3>③ Why a 32 GiB test buffer, out of 128 GB total?</h3>
+      <p style="color:var(--ink-soft)">The microbenchmarks use a 32 GiB sequential-read buffer on a system with 128 GB of unified memory. What does that fraction buy?</p>
       <ol class="seq">
-        <li><b>Take the low end: 67% of runtime is transfer.</b> Remaining compute-only time = 33%.</li>
-        <li><b>Naive ceiling if transfer time → 0:</b> speedup = 1 / 0.33 ≈ <b>3×</b>.</li>
-        <li><b>Take the high end: 98% is transfer.</b> Remaining time = 2%. Naive ceiling = 1 / 0.02 = <b>50×</b>.</li>
-        <li><b>But this is an upper bound only</b> — it assumes the compute-only portion doesn't itself become bandwidth-bound once GPU and CPU share one 273 GB/s LPDDR5X channel instead of the GPU using dedicated HBM.</li>
+        <li><b>32 GiB ÷ 128 GB ≈ 25%</b> of the entire system's memory.</li>
+        <li><b>Large enough to be meaningful:</b> a buffer that size cannot be hidden in any on-chip cache, so the measurement reflects sustained DRAM-path bandwidth, not a cache-inflated number.</li>
+        <li><b>Small enough to leave headroom:</b> because there's no separate GPU memory to fall back on, the OS, CPU-resident structures, and the GPU's own working state all have to fit in the <i>same</i> 128 GB — a 32 GiB test buffer leaves the other 75% free for everything else running on the box.</li>
       </ol>
-      <div class="callout warn"><span class="ic">⚠</span><div><b>This is our extrapolation, not the paper's number.</b> The 67–98% figure comes from prior PCIe-system literature the paper cites for motivation; the paper itself reports qualitative Table 1 trade-offs and a TPC-H evaluation, not a measured end-to-end speedup from eliminating transfers on DGX Spark.</div></div>
+      <div class="callout note"><span class="ic">💡</span><div><b>For tiering work:</b> this is the same sizing logic you'd use benchmarking a DRAM/NVM tier — big enough to exceed cache effects and stress the real path, small enough not to starve the rest of the system under test.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ What 273 GB/s looks like shared 21 ways (illustrative only)</h3>
+      <p style="color:var(--ink-soft)">The CPU has 20 cores (10 Cortex-X925 + 10 Cortex-A725); the GPU is effectively one more client on the same LPDDR5X path. <em>The paper does not compute this division — it's a simple sanity-check arithmetic exercise on its two stated numbers.</em></p>
+      <ol class="seq">
+        <li><b>Total sharers, worst case:</b> 20 CPU cores + 1 GPU = <b>21</b> simultaneous clients on one memory path.</li>
+        <li><b>Naively even split:</b> 273 GB/s ÷ 21 ≈ <b>13 GB/s per client</b> if every core and the GPU demanded bandwidth at once.</li>
+        <li><b>Why this is only a sanity check, not a prediction:</b> real access patterns are bursty and unevenly distributed — a GPU kernel typically dominates the link while most CPU cores are idle or compute-bound, so this even-split number is a pessimistic floor, not a typical outcome.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why this matters for CXL/tiering intuition:</b> this is the same "how many initiators share one link" question that governs contention on a CXL memory-expansion device — a single coherent path, however wide, still has to be divided among everyone who reaches for it at once.</div></div>
     </div>
   </div>
 </section>
@@ -636,31 +761,49 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="panel-head">
       <div class="kicker">Test yourself</div>
       <h2>Practice problems</h2>
-      <p class="sub">Try each before opening the answer.</p>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
     </div>
 
     <div class="prob reveal">
       <span class="ptag easy">Problem 1 · easy</span>
-      <div class="qtext">You need to write a buffer from the CPU and then read it repeatedly from the GPU. Why not just use <code>cudaMalloc</code>, which has the highest GPU bandwidth in Table 1?</div>
-      <details><summary>Show answer</summary><div class="ans"><code>cudaMalloc</code> buffers aren't directly CPU-writable on DGX Spark — writing CPU-produced data into one requires an explicit <code>cudaMemcpy</code>, adding a copy the "unified memory" pitch was supposed to avoid. <code>cudaHostAlloc</code> gives up one "+" of raw GPU bandwidth but stays directly writable with low allocation overhead.<span class="mis">Misconception: that highest raw bandwidth is always the right axis to optimize. On this platform, CPU-accessibility is a hard constraint for a CPU-write pipeline, not a secondary consideration.</span></div></details>
+      <div class="qtext">Does the Blackwell GPU inside a DGX Spark have its own HBM, like a typical high-end NVIDIA GPU?</div>
+      <details><summary>Show answer</summary><div class="ans">No. The GB10 Grace Blackwell Superchip provides 128 GB of coherent unified LPDDR5X system memory instead of separate CPU memory and GPU-local HBM/VRAM. The GPU has no dedicated memory pool at all — every access goes to CPU-attached DRAM over NVLink-C2C.<span class="mis">Misconception: assuming "NVIDIA GPU" implies onboard HBM. DGX Spark is specifically built without it.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag medium">Problem 2 · medium</span>
-      <div class="qtext">Why is DGX Spark's 273 GB/s nominal bandwidth a *shared* number rather than "273 GB/s for the CPU and 273 GB/s for the GPU separately"?</div>
-      <details><summary>Show answer</summary><div class="ans">Because there's only one physical memory — LPDDR5X on the CPU socket — and no GPU-local memory pool. Every GPU access travels the same DRAM channel the CPU uses, so the 273 GB/s figure describes one shared resource both processors draw from concurrently, unlike Grace Hopper where the GPU's HBM bandwidth is additive to the CPU's LPDDR5X bandwidth.<span class="mis">Misconception: assuming "128 GB, 273 GB/s" describes two independent memory systems the way a CPU+discrete-GPU pair would.</span></div></details>
+      <div class="qtext"><code>cudaMalloc</code> has the best GPU bandwidth rating (+++) in Table 1. Is it the right choice for a pipeline where the CPU produces data the GPU will read?</div>
+      <details><summary>Show answer</summary><div class="ans">No — on DGX Spark, <code>cudaMalloc</code> memory is not directly accessible from the CPU. Using it for CPU-produced data requires an explicit copy (malloc→cudaMalloc→cudaMemcpy), which reintroduces the transfer overhead unified memory exists to avoid. The best CPU-reachable choice is <code>cudaHostAlloc</code>.<span class="mis">Misconception: that the top bandwidth number alone determines the best path — the "no data copy" column matters just as much.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag medium">Problem 3 · medium</span>
-      <div class="qtext">The paper frames DGX Spark as a "sixth approach" to the CPU–GPU transfer bottleneck. What makes it different in kind from approach 5 (use a faster interconnect), rather than just a faster version of it?</div>
-      <details><summary>Show answer</summary><div class="ans">Approach 5 (e.g. Grace Hopper's NVLink-C2C to local HBM) still moves data — it just moves it faster. DGX Spark's approach removes the move: CPU-produced data sits in memory the GPU already coherently addresses, so there is no staging/copy step in the common path at all, only a link to traverse per access. It's the absence of a transfer, not the speed of one.<span class="mis">Misconception: treating "coherent interconnect" as automatically meaning "faster transfer" rather than "no transfer."</span></div></details>
+      <div class="qtext">DGX Spark's spec sheet lists 273 GB/s of memory bandwidth. Does every allocation strategy achieve close to that number in practice?</div>
+      <details><summary>Show answer</summary><div class="ans">No — 273 GB/s is a nominal/peak specification. The paper explicitly built microbenchmarks because that number "does not reveal the effective bandwidth observed by CPU and GPU accesses or the impact of different memory-management mechanisms." Table 1 shows a spread — from +++ (cudaMalloc, cudaMemcpy-copied data) down to + (malloc, malloc+cudaHostRegister) — all sitting below that ceiling by different amounts.<span class="mis">Misconception: treating a nominal spec as a measured, achievable-by-default number.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag hard">Problem 4 · hard</span>
-      <div class="qtext">Valk overlays kernel activity with "device memory traffic" in its UI, but the paper says this is unavailable on DGX Spark. Why, specifically?</div>
-      <details><summary>Show answer</summary><div class="ans">"Device memory traffic" counters exist on discrete GPUs because there's a physical boundary — traffic into/out of VRAM — to instrument. DGX Spark's GPU has no VRAM, so there's no such boundary to meter, and NVIDIA's profiling stack also doesn't expose the CPU-side LPDDR5X bandwidth as a substitute. The result is a genuine gap in observability, not a missing feature Valk could just add.<span class="mis">Misconception: assuming any GPU performance counter is portable across memory architectures. Counters are built around the assumption of separate GPU memory, which doesn't hold here.</span></div></details>
+      <div class="qtext">If data transfer eats 80% of a PCIe-based query's runtime, and you move that query to a unified-memory system that eliminates the transfer step entirely, does the query run 5× faster?</div>
+      <details><summary>Show answer</summary><div class="ans">Not necessarily. 1/(1−0.8) = 5× is the theoretical ceiling <i>if</i> the remaining 20% (compute) is completely unaffected and the "removed" transfer creates no new bottleneck. In practice, on a unified-memory system the eliminated transfer becomes ordinary access on the shared LPDDR5X path — the bottleneck can shift from "PCIe-bound" to "shared-memory-bandwidth-bound" rather than disappearing outright.<span class="mis">Misconception: that removing a bottleneck always delivers the full Amdahl's-law speedup — it only does so if nothing else becomes the new limiter.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext"><code>cudaMallocManaged</code> has the lowest allocation/deallocation overhead (---) in Table 1. Does that make it strictly the best all-around choice?</div>
+      <details><summary>Show answer</summary><div class="ans">No — it only ties for second-best bandwidth (++), behind cudaHostAlloc's effectively equal bandwidth with worse setup cost but better sustained throughput characteristics per the paper's text. Lowest overhead favors workloads with many short-lived buffers; for long-lived, heavily-streamed buffers, the one-time setup cost of a slower-to-allocate path barely matters compared to sustained bandwidth.<span class="mis">Misconception: that a single "best" allocation strategy exists independent of the access pattern.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">In Valk's UI, the device-memory-traffic overlay on the DGX Spark timeline is empty. Is this a bug in Valk?</div>
+      <details><summary>Show answer</summary><div class="ans">No — it's a genuine data-source gap. DGX Spark has no dedicated GPU memory bus to instrument (there's no separate device memory), and NVIDIA's profilers additionally don't expose CPU memory bandwidth counters. Valk simply has nothing to overlay for that channel on this platform.<span class="mis">Misconception: assuming every visualization gap in a profiling tool reflects a tooling limitation rather than a genuine measurement gap in the underlying hardware/driver stack.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">DGX Spark's unified memory offers a "sixth approach" — don't transfer data at all. Does this make the other five approaches (filter, compress, cache, overlap, faster interconnect) obsolete on this platform?</div>
+      <details><summary>Show answer</summary><div class="ans">No. Those five apply broadly across PCIe- and NVLink-based discrete architectures and remain relevant there. Even on DGX Spark, filtering and compression still reduce the number of bytes that must cross the shared LPDDR5X path — there's no separate "transfer" step to skip, but every byte the GPU touches still consumes bandwidth on that one shared path, so reducing byte counts still helps.<span class="mis">Misconception: that eliminating an explicit transfer step eliminates the value of reducing data volume — the two are independent levers.</span></div></details>
     </div>
   </div>
 </section>
@@ -671,16 +814,21 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="panel-head">
       <div class="kicker">Quick answers</div>
       <h2>Frequently asked questions</h2>
-      <p class="sub">Seven questions newcomers ask most.</p>
+      <p class="sub">Tap any to expand.</p>
     </div>
     <div class="faq">
-      <details><summary><span class="q">Q1</span>Is DGX Spark's "unified memory" the same as CUDA Unified Memory (UM)?<span class="chev">▾</span></summary><div class="a">No — CUDA UM (<code>cudaMallocManaged</code>) is a software abstraction that migrates pages between two physical pools on demand. DGX Spark has only one physical pool (LPDDR5X on the CPU socket), so there's nothing to migrate; the GPU reaches it directly via hardware-coherent NVLink-C2C. UM still works here, but it's solving a problem (multiple pools) that doesn't actually exist on this platform.</div></details>
-      <details><summary><span class="q">Q2</span>How does this differ from Grace Hopper?<span class="chev">▾</span></summary><div class="a">Grace Hopper keeps a GPU-local HBM pool behind the coherent link — two memories, one address space. DGX Spark removes the GPU-local pool entirely: zero local memory, one shared LPDDR5X pool, and a correspondingly lower price point.</div></details>
-      <details><summary><span class="q">Q3</span>If the GPU can reach CPU memory directly, why not always use cudaMallocManaged?<span class="chev">▾</span></summary><div class="a">It has the worst allocation/deallocation overhead of the CPU-accessible options (Table 1: "---"), for the same GPU bandwidth <code>cudaHostAlloc</code> achieves with much lower overhead ("-"). It's dominated, not wrong — just not the default choice.</div></details>
-      <details><summary><span class="q">Q4</span>Does eliminating the transfer step guarantee better performance than a discrete GPU?<span class="chev">▾</span></summary><div class="a">No. The paper is explicit that this trades a transfer bottleneck for a permanently shared, lower bandwidth ceiling (273 GB/s nominal, shared) versus a discrete GPU's own dedicated HBM. Whether that's a net win depends on the workload's transfer-to-compute ratio, which is exactly what the TPC-H evaluation probes.</div></details>
-      <details><summary><span class="q">Q5</span>What is Valk, concretely?<span class="chev">▾</span></summary><div class="a">A GPU meta-profiler: it merges hardware counters, system polling data, execution traces, and query plans into one dataset, queryable via custom scripts/SQL and viewable through a purpose-built TPC-H-oriented UI (timeline, roofline, stall/instruction breakdowns).</div></details>
-      <details><summary><span class="q">Q6</span>What benchmark do they run on it?<span class="chev">▾</span></summary><div class="a">The full TPC-H query suite, executed under each of the CUDA memory allocation policies, comparing end-to-end query performance and inspecting where time goes via Valk's timeline.</div></details>
-      <details><summary><span class="q">Q7</span>How does this relate to CXL-based memory tiering?<span class="chev">▾</span></summary><div class="a"><b>Our framing, not the paper's:</b> the paper only draws this parallel briefly. Conceptually, DGX Spark's GPU is in a position similar to a CXL Type-2/3 accelerator pulling from host-attached capacity — no local tier, coherent but bandwidth/latency-bound relative to a processor's own local memory. The key difference: NVLink-C2C is a fixed, vendor-specific link inside one package, not a general CXL.mem fabric with its own switching and multi-device topology — so lessons here (allocator choice, shared-bandwidth contention) transfer conceptually to CXL tiering work, but the mechanism doesn't.</div></details>
+      <details><summary><span class="q">Q1</span>What exactly is different about DGX Spark vs. Grace Hopper?<span class="chev">▾</span></summary><div class="a">Grace Hopper couples a Grace CPU and Hopper GPU with the coherent NVLink-C2C link, but keeps two physical memory pools: CPU-attached LPDDR5X and GPU-attached HBM. DGX Spark's GB10 Grace Blackwell Superchip has only one pool — 128 GB of coherent LPDDR5X — with no GPU-local memory at all, at roughly one order of magnitude lower price.</div></details>
+      <details><summary><span class="q">Q2</span>Does "unified memory" mean the GPU has unlimited effective bandwidth?<span class="chev">▾</span></summary><div class="a">No. All GPU accesses still travel over NVLink-C2C to CPU-attached LPDDR5X at a nominal 273 GB/s, and that path is shared with the CPU's own 20 cores. Unified memory removes the explicit-copy step, not the underlying bandwidth ceiling.</div></details>
+      <details><summary><span class="q">Q3</span>Why can't the CPU write directly into cudaMalloc'd memory on DGX Spark?<span class="chev">▾</span></summary><div class="a">cudaMalloc allocates GPU-device memory, which on DGX Spark is not directly CPU-accessible (per NVIDIA's own porting guidance). Getting CPU-produced data into it requires an explicit copy — the malloc→cudaMalloc→cudaMemcpy path in Table 1.</div></details>
+      <details><summary><span class="q">Q4</span>What is Valk, and why not just use existing NVIDIA profiling tools?<span class="chev">▾</span></summary><div class="a">Valk is a meta-profiler that merges hardware counters, system polling data, execution traces, and query plans into one dataset, with a purpose-built timeline+table UI for comparing memory-allocation strategies on real TPC-H queries — a combination not offered as one integrated view by general-purpose profilers.</div></details>
+      <details><summary><span class="q">Q5</span>What are the five known strategies for reducing CPU-GPU transfer cost?<span class="chev">▾</span></summary><div class="a">(1) Transfer less data by filtering on the CPU first, (2) transfer fewer bytes via compression, (3) reuse transferred data by caching it on the GPU, (4) overlap transfers with compute, and (5) use a higher-bandwidth interconnect. DGX Spark's unified memory adds a sixth: skip the explicit transfer altogether.</div></details>
+      <details><summary><span class="q">Q6</span>Is DGX Spark meant to replace high-end superchips like Grace Hopper?<span class="chev">▾</span></summary><div class="a">No — the paper frames it as a lower-cost alternative (roughly one order of magnitude cheaper) that trades some capability for accessibility, with small clusters over a fast network as an option for added capacity, rather than a drop-in replacement for AI-focused, high-end systems.</div></details>
+      <details><summary><span class="q">Q7</span>What's the difference between HMM/ATS and explicit device allocation?<span class="chev">▾</span></summary><div class="a">Explicit allocation (cudaMalloc + cudaMemcpy) requires the developer to manage separate device memory and transfers by hand. HMM and ATS let GPU kernels dereference ordinary host virtual addresses directly, reducing or eliminating that explicit staging — a software/hardware mechanism, distinct from DGX Spark simply not having a second physical pool to manage.</div></details>
+      <details><summary><span class="q">Q8</span>Why test six memory paths instead of just using the fastest one?<span class="chev">▾</span></summary><div class="a">Because "fastest" depends on the metric: cudaMalloc/explicit-copy wins raw bandwidth but requires a copy and costs allocation/deallocation overhead; cudaMallocManaged wins on setup cost; cudaHostAlloc wins among CPU-accessible, no-copy paths. There's no single dominant choice — the right one depends on the access pattern.</div></details>
+      <details><summary><span class="q">Q9</span>What does the 67–98% transfer-time figure actually describe?<span class="chev">▾</span></summary><div class="a">It's a cited range (from prior work) describing what fraction of total query runtime is spent on host-device data transfer for relational workloads on PCIe-based GPU systems — the motivating pain point that both the five known mitigations and DGX Spark's unified memory both target.</div></details>
+      <details><summary><span class="q">Q10</span>Does the paper report end-to-end TPC-H speedup numbers for DGX Spark?<span class="chev">▾</span></summary><div class="a">This is a demonstration paper describing the platform, the microbenchmark characterization (Table 1), and the Valk tool — it does not report a headline end-to-end TPC-H speedup figure; that live comparison is what the demo itself shows using Valk.</div></details>
+      <details><summary><span class="q">Q11</span>What future/open questions does the paper leave?<span class="chev">▾</span></summary><div class="a">The demo focuses on characterizing memory management and visualizing it via Valk; it explicitly frames itself as groundwork for broader lessons about CXL-based and disaggregated-memory systems, rather than closing the book on DGX Spark's performance characteristics.</div></details>
+      <details><summary><span class="q">Q12</span>How does this connect to CXL and disaggregated memory research?<span class="chev">▾</span></summary><div class="a">The paper states directly that "lessons learned from this architecture can provide important insights for, e.g., CXL-based systems and disaggregated memory designs." Structurally, DGX Spark is a working example of a compute device (the GPU) reaching across a coherent link into memory it does not own — the same fundamental setup as a CXL-attached accelerator reaching into expanded or pooled memory.</div></details>
     </div>
   </div>
 </section>
@@ -691,53 +839,62 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="panel-head">
       <div class="kicker">Look it up</div>
       <h2>Glossary &amp; further reading</h2>
-      <p class="sub">Every term in one place, then a path to go deeper.</p>
+      <p class="sub">Every term in one place, then a path to go deeper, then what's the paper's and what's this guide's own framing.</p>
     </div>
 
     <div class="subhead">Core terms</div>
     <div class="gloss">
-      <div class="term-def"><b>GB10</b><span>Grace Blackwell Superchip: 20 Arm cores (10 Cortex-X925 + 10 Cortex-A725) plus a Blackwell GPU, sharing 128 GB LPDDR5X.</span></div>
-      <div class="term-def"><b>NVLink-C2C</b><span>The coherent chip-to-chip interconnect between Grace's CPU and the Blackwell GPU; faster than PCIe but limited to LPDDR5X's bandwidth.</span></div>
-      <div class="term-def"><b>Unified memory (DGX Spark)</b><span>One physical LPDDR5X pool on the CPU socket, directly and coherently accessible from the GPU — not a two-pool migration scheme.</span></div>
-      <div class="term-def"><b>cudaHostAlloc / cudaMalloc / cudaMallocManaged / cudaHostRegister</b><span>CUDA allocation APIs differing in CPU-accessibility, GPU bandwidth, and allocation cost — all landing in the same physical memory on this platform.</span></div>
-      <div class="term-def"><b>Valk</b><span>The paper's GPU meta-profiler, merging hardware counters, traces, polling data, and query plans into one queryable, visualized performance profile.</span></div>
+      <div class="term-def"><b>DGX Spark</b><span>NVIDIA's desktop platform built on the GB10 Grace Blackwell Superchip: 128 GB coherent unified LPDDR5X, no separate GPU memory.</span></div>
+      <div class="term-def"><b>Unified memory architecture</b><span>A design where CPU and GPU share one physical memory pool rather than each having its own, accessed here via NVLink-C2C.</span></div>
+      <div class="term-def"><b>NVLink-C2C</b><span>Coherent chip-to-chip interconnect linking Grace-family CPUs to NVIDIA GPUs; higher bandwidth and coherent, unlike PCIe.</span></div>
+      <div class="term-def"><b>cudaMalloc / cudaMallocManaged / cudaHostAlloc / cudaHostRegister</b><span>CUDA's family of memory-allocation calls, each with different GPU-bandwidth vs. allocation-overhead vs. CPU-accessibility trade-offs (Table 1).</span></div>
+      <div class="term-def"><b>Valk</b><span>A meta-profiler merging hardware counters, system polling data, execution traces, and query plans into one dataset and visual timeline for GPU query analysis.</span></div>
+      <div class="term-def"><b>Roofline model</b><span>A visualization plotting achieved performance against memory-bandwidth and compute ceilings, used in Valk's sidebar to classify kernels as memory- or compute-bound.</span></div>
     </div>
 
     <div class="subhead">Supporting terms</div>
     <div class="gloss">
-      <div class="term-def"><b>HBM / VRAM</b><span>GPU-local high-bandwidth memory — present on discrete GPUs and Grace Hopper, absent on DGX Spark.</span></div>
-      <div class="term-def"><b>HMM / ATS</b><span>Heterogeneous Memory Management / Address Translation Services — hardware+OS support letting a GPU walk host page tables.</span></div>
-      <div class="term-def"><b>Roofline model</b><span>A performance visualization plotting achieved throughput against arithmetic intensity, bounded by peak compute and peak bandwidth — one of Valk's side-panel views.</span></div>
-      <div class="term-def"><b>TPC-H</b><span>Standard decision-support SQL benchmark used for the end-to-end query evaluation.</span></div>
+      <div class="term-def"><b>PCIe</b><span>The conventional, comparatively low-bandwidth bus connecting a discrete GPU to its host, and the main bottleneck this paper contrasts against.</span></div>
+      <div class="term-def"><b>HBM</b><span>High-Bandwidth Memory, the fast local memory typical discrete GPUs carry — absent entirely on DGX Spark's GPU.</span></div>
+      <div class="term-def"><b>LPDDR5X</b><span>Low-power DDR5X DRAM; the sole memory technology in the DGX Spark, shared by CPU and GPU.</span></div>
+      <div class="term-def"><b>HMM / ATS</b><span>Heterogeneous Memory Management / Address Translation Services — mechanisms letting GPU kernels use ordinary host virtual addresses without explicit device allocation.</span></div>
+      <div class="term-def"><b>TPC-H</b><span>Standard decision-support (analytical SQL) benchmark used to evaluate end-to-end query performance under different memory strategies.</span></div>
+      <div class="term-def"><b>GPUDirect RDMA</b><span>NVIDIA's mechanism for direct device memory access, referenced in explaining cudaMalloc's inaccessibility from the CPU on this platform.</span></div>
+      <div class="term-def"><b>CXL</b><span>Compute Express Link — the coherent-interconnect standard for memory expansion/disaggregation the authors explicitly connect these findings to.</span></div>
     </div>
 
-    <div class="subhead">Table 1 at a glance</div>
+    <div class="subhead">Results at a glance</div>
     <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
-      <div class="viz-title">Relative GPU-access bandwidth rank</div>
-      <div class="viz-kicker">illustrative — the paper reports qualitative +/- symbols only, not measured GB/s</div>
+      <div class="viz-title">What the numbers say</div>
+      <div class="viz-kicker">the paper's own cited/measured figures</div>
       <div class="bars" id="resultsBars">
-        <div class="bar-row"><div class="bar-label">cudaMalloc (GPU-only)<small>+++</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="25"><span>highest — not CPU-writable</span></div></div></div>
-        <div class="bar-row"><div class="bar-label">explicit copy path<small>+++</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="25"><span>highest — needs a copy</span></div></div></div>
-        <div class="bar-row"><div class="bar-label">cudaHostAlloc<small>++</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="17"><span>best CPU-accessible pick</span></div></div></div>
-        <div class="bar-row"><div class="bar-label">cudaMallocManaged<small>++</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="17"><span>same BW, worst overhead</span></div></div></div>
-        <div class="bar-row"><div class="bar-label">malloc / +hostRegister<small>+</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="8"><span>lowest bandwidth</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Transfer share<small>PCIe, low end</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="67"><span>67% of runtime</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Transfer share<small>PCIe, high end</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="98"><span>98% of runtime</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Test buffer<small>of 128 GB total</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="25"><span>32 GiB ≈ 25%</span></div></div></div>
       </div>
-      <figcaption><b>The two fastest rows aren't directly usable</b> for a CPU-write pipeline without an extra copy — which is why <code>cudaHostAlloc</code>, not the top-bandwidth option, is the paper's recommended default. (Paper, Table 1)</figcaption>
+      <div class="part-readout" style="margin-top:14px">
+        <div class="pstat">Nominal bandwidth<b>273 GB/s</b></div>
+        <div class="pstat">Unified memory<b>128 GB</b></div>
+        <div class="pstat">CPU cores<b>10+10</b></div>
+        <div class="pstat">Cost vs. superchip<b>~10×</b></div>
+      </div>
+      <figcaption>Transfer-share figures are the paper's cited range for PCIe-based relational workloads; the 32 GiB/128 GB fraction and core split are the paper's own microbenchmark and hardware specs. Nominal bandwidth is explicitly flagged in the paper as not equal to effective, measured bandwidth. (Paper §1, §3, §4)</figcaption>
     </figure>
 
-    <div class="subhead">Source notes</div>
-    <div class="card">
-      <h3>Paper facts</h3>
-      <p style="color:var(--ink-soft);margin-bottom:10px">GB10 specs (20 cores: 10 X925 + 10 A725, 128 GB LPDDR5X, Blackwell GPU), 273 GB/s nominal bandwidth, Table 1's qualitative allocator comparison (32 GiB sequential-read benchmark), the 67–98% transfer-runtime citation for PCIe systems (from cited prior work, not measured on DGX Spark), the five known transfer-bottleneck mitigations and their sources, Valk's architecture and its documented device-memory-traffic blind spot, and the TPC-H evaluation setup — all drawn directly from the paper text.</p>
-      <h3>Our framing</h3>
-      <p style="color:var(--ink-soft);margin:0">The bandwidth-vs-overhead scatter plot (Big Idea), the "studio apartment / drawer vs. safe / moving truck / not flying / flight recorder" analogies, the CXL/tiering comparison (FAQ Q7), and the back-of-envelope speedup-ceiling calculation (Worked Example 3) are our additions to connect the paper to memory-tiering and CXL research — clearly flagged inline where used, not claims made by the paper itself.</p>
-    </div>
+    <div class="subhead">Source notes — what's the paper's, what's this guide's</div>
+    <div class="callout note"><span class="ic">📌</span><div><b>From the paper:</b> all architecture facts (128 GB LPDDR5X, 20 cores as 10 Cortex-X925 + 10 Cortex-A725, 273 GB/s nominal bandwidth, 32 GiB test buffer, Table 1's six paths and their qualitative ratings, the 67–98% transfer-time citation, the five-plus-one mitigation strategies, Valk's described features, and the explicit CXL/disaggregation connection) come directly from the source text.<br><br><b>This guide's framing:</b> all analogies, the SVG architecture-comparison diagram, the interactive Table 1 explorer, the Amdahl's-law arithmetic in Worked Example ②, the illustrative 273 GB/s ÷ 21-sharers division in Worked Example ④ (explicitly marked as a sanity check, not a paper result), and every connection drawn to CXL/memory-tiering research are original additions for this study aid, not claims made by the authors.</div></div>
 
-    <div class="subhead">Related reading</div>
-    <div class="read-item reveal"><h4>To GPU or Not to GPU: Vector Search in Relational Engines <span class="diff med">medium</span></h4><div class="meta">Mageirakos et al. · arXiv 2026</div><p>Same research group; a concrete example of the CPU-vs-GPU execution trade-off driven by data-movement cost that motivates this paper.</p></div>
-    <div class="read-item reveal"><h4>Powerful GPUs or Fast Interconnects: Analyzing Relational Workloads on Modern GPUs <span class="diff med">medium</span></h4><div class="meta">Kabić, Wu, Dann, Alonso · VLDB 2025</div><p>Source of the finding that transfer cost dominates PCIe-based relational GPU queries, and the Grace-Hopper comparison point.</p></div>
-    <div class="read-item reveal"><h4>Over the Memory Wall, Into the Instruction Wall <span class="diff hard">hard</span></h4><div class="meta">Hepkema, Wu, Kozyrakis, Chronis, Alonso · arXiv 2026</div><p>The Valk profiler's own paper — full detail on its counter-merging design and the instrumentation used here.</p></div>
-    <div class="read-item reveal"><h4>Roofline: An Insightful Visual Performance Model <span class="diff easy">easy</span></h4><div class="meta">Williams, Waterman, Patterson · CACM 2009</div><p>Background for Valk's roofline panel, used to distinguish compute-bound from bandwidth-bound kernels.</p></div>
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>PCIe vs. NVLink bandwidth basics <span class="diff easy">easy</span></h4><div class="meta">explainer · 20–30 min</div><p>Why PCIe is the conventional bottleneck this paper contrasts against, and what "coherent" adds on top of raw bandwidth.</p></div>
+    <div class="read-item reveal"><h4>The roofline model <span class="diff med">medium</span></h4><div class="meta">Williams, Waterman, Patterson · CACM · 2009</div><p>The visual performance model behind Valk's sidebar roofline graph — see Reference [24] below.</p></div>
+
+    <div class="subhead">Related papers (from the reference list)</div>
+    <div class="read-item reveal"><h4>Powerful GPUs or Fast Interconnects: Analyzing Relational Workloads on Modern GPUs <span class="diff med">medium</span></h4><div class="meta">Kabić, Wu, Dann, Alonso · PVLDB · 2025</div><p>Source of the cited 67–98% transfer-time figure for relational workloads on PCIe-based systems.</p></div>
+    <div class="read-item reveal"><h4>Over the Memory Wall, Into the Instruction Wall: The New Bottleneck in GPU Data Processing <span class="diff med">medium</span></h4><div class="meta">Hepkema, Wu, Kozyrakis, Chronis, Alonso · arXiv · 2026</div><p>Introduces Valk, the profiling tool this demo showcases.</p></div>
+    <div class="read-item reveal"><h4>Scaling GPU-Accelerated Databases Beyond GPU Memory Size <span class="diff med">medium</span></h4><div class="meta">Li et al. · PVLDB · 2025</div><p>On the memory-capacity side of the same problem this paper's unified-memory approach addresses differently.</p></div>
+    <div class="read-item reveal"><h4>9.3 NVLink-C2C: A Coherent Off-Package Chip-to-Chip Interconnect <span class="diff hard">hard</span></h4><div class="meta">Wei et al. · ISSCC · 2023</div><p>The circuit-level description of the interconnect underlying both Grace Hopper and DGX Spark.</p></div>
+    <div class="read-item reveal"><h4>Roofline: An Insightful Visual Performance Model for Multicore Architectures <span class="diff med">medium</span></h4><div class="meta">Williams, Waterman, Patterson · CACM · 2009</div><p>The classic model behind Valk's roofline sidebar view.</p></div>
+    <div class="read-item reveal"><h4>Rethinking Analytical Processing in the GPU Era <span class="diff med">medium</span></h4><div class="meta">Yogatama et al. · CIDR · 2026</div><p>Broader context on GPU-native analytical database design, cited among the GPU-DB systems this paper lists.</p></div>
   </div>
 </section>
 
@@ -745,8 +902,7 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 
 <footer class="foot">
   <div class="wrap">
-    <span><b>Paper:</b> Alcaraz, Hepkema, Mageirakos, Dann, Alonso, "Analysis of shared memory between CPUs and GPUs" (DIMES '26)</span>
-    <span><b>Platform:</b> NVIDIA DGX Spark / GB10 Grace Blackwell Superchip</span>
+    <span><b>Paper:</b> Alcaraz, Hepkema, Mageirakos, Dann &amp; Alonso, "Analysis of shared memory between CPUs and GPUs" (DIMES '26)</span>
     <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
   </div>
 </footer>
@@ -761,6 +917,7 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     var target = nav.getBoundingClientRect().top + window.pageYOffset;
     window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
   }
+
   var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
   var panels = {};
   document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
@@ -785,7 +942,7 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     });
   }
 
-  var barsDone = false, MAXP = 25;
+  var barsDone = false, MAXP = 100;
   function maybeAnimateBars(){
     var fig = document.getElementById('resultsFig');
     if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
@@ -797,33 +954,42 @@ pre.sketch .kw{color:#D9782F} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     barsDone = true;
   }
 
-  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
-  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
-  var optV = 1, optTot = Infinity;
-  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
-  var strip = document.getElementById('waysStrip');
-  function buildStrip(v){
-    if(!strip) return;
-    var html = '';
-    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'"></div>'; }
-    strip.innerHTML = html;
+  /* ---- MEMORY-PATH EXPLORER (Table 1) ---- */
+  var paths = [
+    {id:'gpu',      name:'cudaMalloc (GPU-only)',                 bw:3, oh:2, copy:'✓ (GPU-origin data only)', verdict:'Best raw GPU bandwidth — but on DGX Spark this memory is not CPU-accessible. Feeding it CPU-produced data means falling back to an explicit copy.'},
+    {id:'hostalloc',name:'cudaHostAlloc (pinned, default)',       bw:2, oh:1, copy:'✓', verdict:"The paper's pick for CPU-write → GPU-read pipelines: highest throughput among CPU-accessible paths, at the cost of slower allocation/deallocation."},
+    {id:'managed',  name:'cudaMallocManaged',                     bw:2, oh:3, copy:'✓', verdict:'Cheapest to allocate and free of any CPU-accessible path, with the same bandwidth tier as cudaHostAlloc — good for frequently created/destroyed buffers.'},
+    {id:'malloc',   name:'malloc (plain host memory)',            bw:1, oh:2, copy:'✓', verdict:'Cheap and simple, but the weakest GPU-access bandwidth of any CPU-accessible path in the table.'},
+    {id:'register', name:'malloc + cudaHostRegister',             bw:1, oh:1, copy:'✓', verdict:'Same bandwidth tier as plain malloc, but registration adds allocation overhead — useful mainly when you must keep an existing malloc region and still pin it.'},
+    {id:'explicit', name:'Explicit copy (malloc→cudaMalloc→cudaMemcpy)', bw:3, oh:2, copy:'✗ (copy required)', verdict:'Reaches the top bandwidth tier by physically copying into cudaMalloc memory — the transfer step unified memory exists to avoid.'}
+  ];
+  var pbtnWrap = document.getElementById('pathButtons');
+  if(pbtnWrap){
+    paths.forEach(function(p){
+      var b = document.createElement('button');
+      b.className = 'tbtn'; b.textContent = p.name; b.dataset.id = p.id;
+      b.addEventListener('click', function(){ selectPath(p.id); });
+      pbtnWrap.appendChild(b);
+    });
   }
-  var range = document.getElementById('partRange');
-  function setPart(v){
-    if(!range) return;
-    v = Math.max(1, Math.min(15, v));
-    range.value = v;
-    var vv=document.getElementById('partRangeVal'); if(vv) vv.textContent = v;
-    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
-    var a=document.getElementById('pVpr'), b=document.getElementById('pEq'), c=document.getElementById('pTot');
-    if(a) a.textContent = vm.toFixed(2); if(b) b.textContent = em.toFixed(2); if(c) c.textContent = tot.toFixed(2);
-    buildStrip(v);
+  function selectPath(id){
+    var p = paths.filter(function(x){ return x.id === id; })[0];
+    if(!p) return;
+    document.querySelectorAll('#pathButtons .tbtn').forEach(function(b){ b.classList.toggle('on', b.dataset.id === id); });
+    document.getElementById('polBw').textContent = '+'.repeat(p.bw) + ' '.repeat(0);
+    document.getElementById('polOh').textContent = '-'.repeat(p.oh);
+    document.getElementById('polCopy').textContent = p.copy;
+    var bwFill = document.getElementById('polBwFill'), ohFill = document.getElementById('polOhFill');
+    bwFill.style.width = (p.bw/3*100) + '%';
+    ohFill.style.width = (p.oh/3*100) + '%';
+    document.getElementById('polBwLabel').textContent = '+'.repeat(p.bw);
+    document.getElementById('polOhLabel').textContent = '-'.repeat(p.oh);
+    document.getElementById('polBars').classList.add('shown');
+    var verd = document.getElementById('polVerdict');
+    verd.className = 'pverdict ' + (p.bw === 3 && p.copy.indexOf('✗') === -1 ? 'opt' : 'sub');
+    verd.textContent = p.verdict;
   }
-  if(range){
-    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
-    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
-    setPart(9);
-  }
+  if(pbtnWrap) selectPath('hostalloc');
 
   runReveals(); maybeAnimateBars();
   window.addEventListener('scroll', runReveals, {passive:true});
