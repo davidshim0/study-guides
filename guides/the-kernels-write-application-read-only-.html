@@ -267,7 +267,7 @@ pre.sketch .kw{color:#d98a3d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     </div>
     <div class="rule-plaque">
       <div class="glyph">🔒</div>
-      <p>Applications only <span class="ro">READ</span> LtRAM. Only the <span class="wo">KERNEL WRITES</span> it — and only while migrating a page back to DRAM.<br><em style="font-size:.9rem">Enforced by copy-on-write, not by a translation-layer ASIC.</em></p>
+      <p>Applications only <span class="ro">READ</span> LtRAM. Only the <span class="wo">KERNEL WRITES</span> it — and only while migrating a page into LtRAM from DRAM.<br><em style="font-size:.9rem">Enforced by copy-on-write, not by a translation-layer ASIC.</em></p>
     </div>
   </div>
 </header>
@@ -335,7 +335,7 @@ pre.sketch .kw{color:#d98a3d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
       <details class="primer">
         <summary><span class="pnum">5</span>LtRAM zone as a Linux mm concept<span class="chev">▾</span></summary>
         <div class="body"><p>Linux already partitions physical memory into zones (DMA, Normal, Movable) with per-zone free lists. AROM adds an LtRAM zone at the top of the allocator's fallback order, so LtRAM is never used unless explicitly requested or migrated into — reusing existing mm plumbing rather than a bolt-on tiering daemon.</p>
-        <div class="ready"><b>Now you're ready:</b> this is a much lighter mechanism than TPP/Memtis-style promotion/demotion daemons — no separate hotness tracker, just a write-protect + fault path.</div></div>
+        <div class="ready"><b>Now you're ready:</b> this is lighter than TPP/Memtis-style promotion/demotion daemons in one direction — migrating a page <i>out</i> of LtRAM is just a write-protect + fault, no separate tracker needed. Placing pages <i>into</i> LtRAM still relies on periodic dirty-bit/PTE scanning to classify read-mostly candidates, and the paper flags migration-policy accuracy as an open question (§7).</div></div>
       </details>
       <details class="primer">
         <summary><span class="pnum">6</span>Token-bucket rate limiting, applied to endurance<span class="chev">▾</span></summary>
@@ -361,8 +361,8 @@ pre.sketch .kw{color:#d98a3d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     </div>
     <div class="prose">
       <p>DRAM now costs over half of server budgets, and its cost-per-bit scaling has slowed for a decade — a structural problem the 2025–26 AI demand spike only made more visible. <span class="mem-chip chip-ucp">LtRAM</span> technologies (RRAM, PCM, FeFET, MRAM) offer a denser, cheaper complement with DRAM-competitive read latency, at the cost of slow/coarse writes and limited endurance.</p>
-      <p><span class="mem-chip chip-lru">Intel Optane</span>, the one commercial LtRAM DIMM, tried to hide those write quirks by copying the SSD translation-layer pattern into an on-DIMM controller (XPController): wear-leveling, an Address Indirection Table (AIT), and read/write buffers. The paper's measurements show each mechanism taxing latency directly — RMW on sub-256B writes, an AIT lookup on every read, 160× tail spikes from opaque migrations, and bandwidth collapse under mixed workloads.</p>
-      <p>The proposed fix is <strong>Application Read-Only Memory (AROM)</strong>: applications may only <i>read</i> LtRAM; only the kernel writes it, and only while migrating a page back to <span class="mem-chip chip-hi">DRAM</span>. AROM is enforced with copy-on-write — a store to an LtRAM page faults, the kernel copies it to DRAM, then the store applies. Because the invariant guarantees the device only ever sees whole-page writes from one trusted writer, the on-DIMM controller can drop wear-leveling and the AIT entirely, and the OS instead uses machinery it already has: dirty bits for read-mostly classification, and a token bucket for endurance.</p>
+      <p><span class="mem-chip chip-lru">Intel Optane</span>, the one commercial LtRAM DIMM, tried to hide those write quirks by copying the SSD translation-layer pattern into an on-DIMM controller (XPController): wear-leveling, an Address Indirection Table (AIT), and read/write buffers. The paper's analysis of prior measurement studies shows each mechanism taxing latency directly — RMW on sub-256B writes, an AIT lookup on every read, 160× tail spikes from opaque migrations, and bandwidth collapse under mixed workloads.</p>
+      <p>The proposed fix is <strong>Application Read-Only Memory (AROM)</strong>: applications may only <i>read</i> LtRAM; only the kernel writes to LtRAM, and only while migrating a page into LtRAM from <span class="mem-chip chip-hi">DRAM</span>. AROM is enforced with copy-on-write — an application store to an LtRAM page faults, the kernel migrates the page back to DRAM, then the store applies. Because the invariant guarantees the device only ever sees whole-page writes from one trusted writer, the on-DIMM controller can drop wear-leveling and the AIT entirely, and the OS instead uses machinery it already has: dirty bits for read-mostly classification, and a token bucket for endurance.</p>
       <p><strong>The payoff:</strong> a prototype on Enzian with NOR flash validates the interface, and latency projections put candidate LtRAM technologies within <b>9% faster to 220% slower</b> than DRAM per access — a <b>26–79%</b> improvement over Optane — while retaining LtRAM's density and cost advantage.</p>
     </div>
     <div class="card" style="background:var(--honey-soft);border-color:#EAD3A0">
@@ -373,7 +373,7 @@ pre.sketch .kw{color:#d98a3d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         <li>Aligning writes to <b>4KB pages</b> (not 256B XPLines or 64B cache lines) structurally removes the read-modify-write path.</li>
         <li>Removing the AIT and hardware wear-leveling removes their latency taxes (~76–200ns/read, 160× tail spikes) at the cost of new OS responsibilities.</li>
         <li>Read-mostly classification reuses <b>dirty-bit scanning</b>; endurance is paced by a <b>token bucket</b>, not per-block erase counters.</li>
-        <li>Misplacement cost is asymmetric: a cold-but-wrong page just reads slower (like CXL tiering); a page that turns write-heavy pays a CoW migration <i>on the critical path</i>.</li>
+        <li>Misplacement cost is asymmetric: in classic CXL tiering, misplacement makes an access slower on the far tier; in AROM, misclassifying a page as read-mostly means its first write pays a synchronous CoW migration <i>on the critical path</i>.</li>
         <li>Projected per-access read latency: 9% faster to 220% slower than DRAM; 26–79% faster than Optane, for the three non-prototype candidates.</li>
       </ul>
     </div>
@@ -395,7 +395,7 @@ pre.sketch .kw{color:#d98a3d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 
         <line x1="20" y1="112" x2="720" y2="112" stroke="#D3C2A3" stroke-dasharray="3 4"/>
 
-        <text x="20" y="140" font-family="Fraunces" font-size="15" font-weight="600" fill="#17475c">AROM read: nothing extra</text>
+        <text x="20" y="140" font-family="Fraunces" font-size="15" font-weight="600" fill="#17475c">AROM read: no translation-layer tax</text>
         <g font-family="JetBrains Mono" font-size="11">
           <rect x="20" y="152" width="180" height="46" rx="8" fill="#D9E9F0" stroke="#2C7DA0" stroke-width="1.4"/><text x="110" y="179" text-anchor="middle" fill="#17475c">CPU cache-line load</text>
         </g>
@@ -415,7 +415,7 @@ pre.sketch .kw{color:#d98a3d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         <text x="355" y="266" font-family="JetBrains Mono" font-size="14" fill="#7a4a10">→</text>
         <text x="525" y="266" font-family="JetBrains Mono" font-size="14" fill="#7a4a10">→</text>
       </svg>
-      <figcaption>Optane pays translation-layer overhead on <i>every</i> access. AROM pays nothing extra on reads and moves the entire write cost (migration + erase) off the device controller and onto an OS fault path, paid once per write burst rather than once per access. (Paper §3.2, §4)</figcaption>
+      <figcaption>Optane pays translation-layer overhead on <i>every</i> access. AROM removes that translation-layer tax on reads — an LtRAM read still pays ordinary media/controller/interconnect latency, just no AIT lookup or RMW — and moves the entire write cost (migration + erase) off the device controller and onto an OS fault path, paid once per write burst rather than once per access. (Paper §3.2, §4)</figcaption>
     </figure>
   </div>
 </section>
@@ -685,7 +685,7 @@ pre.sketch .kw{color:#d98a3d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
       <details><summary><span class="q">Q4</span>Doesn't removing hardware wear-leveling risk uneven wear?<span class="chev">▾</span></summary><div class="a">The token allocator bounds <i>total</i> wear to the rated budget by construction, since the OS is the only writer. It does not by itself guarantee <i>uniform</i> wear across physical blocks — pinned read-only pages (code, ML weights) can sit on the same blocks indefinitely while others absorb more churn. The paper flags achieving uniformity as open future work (§7).</div></details>
       <details><summary><span class="q">Q5</span>Why NOR flash for the prototype instead of real RRAM/MRAM?<span class="chev">▾</span></summary><div class="a">Availability and cost — NOR is an off-the-shelf part that drops onto the Enzian FPGA board, while MRAM/RRAM would require a research-specific tape-out. NOR shares the target shape (byte-addressable reads, coarse writes, bounded endurance) closely enough to validate the interface end-to-end, even though it isn't a canonical LtRAM candidate itself.</div></details>
       <details><summary><span class="q">Q6</span>What happens to a page if the workload suddenly becomes write-heavy?<span class="chev">▾</span></summary><div class="a">Fewer pages qualify as read-mostly under the dirty-bit scan, so migration into LtRAM slows and the system behaves increasingly like a conventional DRAM-only machine — swapping colder pages to storage to free DRAM when it's exhausted. Admission control and DRAM-occupancy watermarks provide back-pressure so a burst doesn't overwhelm the DRAM free list.</div></details>
-      <details><summary><span class="q">Q7</span>How exactly does 4KB write granularity remove Optane's RMW penalty?<span class="chev">▾</span></summary><div class="a">Optane's RMW happened because sub-256B (XPLine) writes forced a read-modify-write of the whole line. AROM's controller only ever accepts 4KB writes — a multiple of every candidate technology's native write/erase unit — so every write already spans a full underlying block; there's nothing to read-modify.</div></details>
+      <details><summary><span class="q">Q7</span>How exactly does 4KB write granularity remove Optane's RMW penalty?<span class="chev">▾</span></summary><div class="a">Optane's RMW happened because sub-256B (XPLine) writes forced a read-modify-write of the whole line. AROM's controller only ever accepts 4KB writes — a multiple of every candidate technology's native write granularity (Table 1). Not every technology has a flash-like erase block (STT-MRAM, for instance, writes at word granularity), but because 4KB is a multiple of whichever native unit each technology does have, no candidate ever needs a sub-line read-modify-write.</div></details>
       <details><summary><span class="q">Q8</span>Are the latency numbers from real workload benchmarks?<span class="chev">▾</span></summary><div class="a">No — Figure 4 is a per-access latency projection (interconnect + controller + media) in isolation, not an application-level benchmark. The paper notes cache, prefetching, and memory-level parallelism could let real workloads on read-mostly data approach DRAM more closely than the raw per-access numbers suggest; full benchmark evaluation is future work.</div></details>
       <details><summary><span class="q">Q9</span>Does an application need to change to use LtRAM?<span class="chev">▾</span></summary><div class="a">No — placement is transparent. An optional madvise-style hint can speed up initial classification, and the paper flags a richer, AIFM-style hint interface (letting e.g. database engines share access-pattern knowledge) as a possible future extension, not a requirement.</div></details>
       <details><summary><span class="q">Q10</span>What's left unresolved by the paper itself?<span class="chev">▾</span></summary><div class="a">Three things, explicitly (§7): wear-leveling for pinned/unmovable read-only pages, the huge-page vs. 4KB-CoW granularity conflict, and how much benefit a richer application hint interface would add beyond the transparent default.</div></details>
