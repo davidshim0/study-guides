@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<!-- Field guide — "Dissecting the Performance Impact of System Calls" (Kröning et al., PLOS'26).
+     Semantic colors: teal = Hermit/libOS function-call path (fast) · terracotta = traditional syscall mechanics ·
+     indigo = CPU vulnerability mitigations (the real cost) · honey = accent/emphasis. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Syscall Boundary Isn't the Problem — a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98C3D; --honey-deep:#B06A16; --honey-soft:#FAE7C6;
+  --dram:#2C7A8C; --dram-soft:#DCEDF1;      /* teal  = Hermit / libOS function calls */
+  --ltram:#6B4FA0; --ltram-soft:#EAE3F5;    /* indigo = CPU vulnerability mitigations */
+  --optane:#B23A2E; --optane-soft:#F5DCD7;  /* terracotta = traditional syscall mechanics */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,122,140,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,160,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,140,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(107,79,160,.05) 31px,rgba(107,79,160,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,140,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:20ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.14rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--ltram);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#173e47;font-size:.96rem}
+.primer .ready b{color:#102a30}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#173e47}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#453579}
+.chip-lru{background:var(--optane-soft);color:#7a281f}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9DCE3;color:#173e47}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b8ad;color:#7a281f}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#a9d3dc;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c9bce4;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b8ad;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#ddd4ef}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#8171bf,#6B4FA0)}
+.bf-hi{background:linear-gradient(90deg,#3a94a8,#2C7A8C)}
+.bf-lru{background:linear-gradient(90deg,#c1584a,#B23A2E)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#173e47}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#7a281f}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#d98c3d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#9d8ad6}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#173e47}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#7a281f}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,122,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,160,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,140,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>PLOS 2026 · A Field Guide</span>
+    <h1>The syscall boundary isn't the bottleneck — the <span class="swash">mitigations</span> guarding it are</h1>
+    <p class="lede">Unikernels replace system calls with function calls. This paper carefully rebuilds a traditional syscall, mechanism by mechanism, inside a libOS to find out exactly what that boundary costs — and what actually eats your latency instead.</p>
+    <div class="hero-meta">
+      <span>📄 Kröning, Feinendegen, Lankes, Simon, Klimt, Monti — RWTH Aachen</span>
+      <span>🎓 x86-64 privilege rings / TLB / VM basics assumed — primers cover them</span>
+      <span>⏱ ~20 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧮</div>
+      <p>An unmitigated traditional syscall costs <span class="ro">~37 ns</span> more than a libOS function call. CPU vulnerability mitigations alone add roughly <span class="wo">190–400+ ns</span> — 5–10× more.<br><em style="font-size:.9rem">Blame the mitigations, not the boundary.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then ten primers</h2>
+      <p class="sub">The acronyms first, then short accordions on the mechanisms the paper dissects. Skip anything you already know.</p>
+    </div>
+
+    <div class="card">
+      <h3>Quick glossary — the paper's acronyms</h3>
+      <div class="gloss">
+        <div class="term-def"><b>libOS</b><span>Library operating system: OS code linked directly into the application, replacing syscalls with function calls.</span></div>
+        <div class="term-def"><b>SASOS</b><span>Single-Address-Space OS — one process runs in kernel mode, so no inter-process isolation is needed internally.</span></div>
+        <div class="term-def"><b>PTI</b><span>Page Table Isolation — unmaps the kernel from user page tables to mitigate Meltdown; forces an address-space switch per syscall.</span></div>
+        <div class="term-def"><b>TSC</b><span>Time Stamp Counter — a cheap, high-resolution x86 cycle counter used to measure nanosecond-scale latencies.</span></div>
+        <div class="term-def"><b>TLB / PCID</b><span>Translation Lookaside Buffer (cached address translations) / Process-Context ID (tags TLB entries so a CR3 switch needn't flush them all).</span></div>
+        <div class="term-def"><b>COW</b><span>Copy-On-Write — pages shared between processes until one writes, then privately copied.</span></div>
+        <div class="term-def"><b>TSO</b><span>TCP Segmentation Offload — the NIC splits large sends into packets, saving CPU/guest work.</span></div>
+        <div class="term-def"><b>UKL</b><span>Unikernel Linux — links an application directly into the Linux kernel image, Linux's own answer to unikernels.</span></div>
+        <div class="term-def"><b>SRSO</b><span>Speculative Return Stack Overflow — an AMD speculative-execution vulnerability ("Inception"); its mitigation dominates this paper's Linux syscall latencies.</span></div>
+        <div class="term-def"><b>LPE</b><span>Local Privilege Escalation — a class of kernel bug motivating a move from containers to VM-strength isolation.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> Hermit / libOS function-call path</span>
+      <span><i style="background:var(--optane)"></i> traditional syscall mechanics</span>
+      <span><i style="background:var(--ltram)"></i> CPU vulnerability mitigations</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Rings, syscall, and swapgs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>x86-64 CPUs have privilege rings: ring 0 (kernel, full access) and ring 3 (user, restricted). The <code>syscall</code> instruction jumps from ring 3 to a fixed kernel entry point at ring 0. Because the kernel can't trust the user's stack pointer, it must switch onto its own stack first — done via <code>swapgs</code>, which swaps the GS base register with a saved kernel value so the kernel has a private scratch register to bootstrap from.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's H3–H7 steps are exactly these mechanisms, added one at a time.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Why unikernels can skip all of this<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A unikernel typically runs only one application process, statically linked to a libOS. With no other mutually-distrusting process inside the VM, there's no reason to run the application at a lower privilege than the "kernel" — everything can run in ring 0, and an OS "call" is just an ordinary function call. The VM boundary (not the ring boundary) provides the isolation.</p>
+          <div class="ready"><b>Now you're ready:</b> this paper measures exactly the cost of reintroducing the ring boundary the unikernel skipped.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Meltdown, Spectre, SRSO, and mitigations<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Meltdown let user code read kernel memory via speculative execution; PTI mitigates it by unmapping the kernel from user page tables (forcing an address-space switch per syscall). Spectre and SRSO ("Inception," an AMD return-stack-overflow bug) are related speculative-execution flaws with their own mitigations. These defenses run on <i>every</i> syscall, not just risky ones.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's central finding is that these mitigations, not the syscall mechanism itself, dominate the cost.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>CR3, address spaces, and TLB flushes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>CR3 is the x86 register pointing to the current page table. Reloading it switches address spaces — and, without process-context IDs (PCIDs), flushes the entire TLB, since old cached translations may now be wrong. Refilling the TLB from scratch afterward is slow. PTI-style mitigations reload CR3 on every kernel entry/exit.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's H8 "Synthetic CR3 Reload" approximates exactly this cost, deliberately without PCID optimizations — a pessimistic but instructive stand-in for PTI.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>What "incremental system calls" means<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Instead of comparing a finished unikernel to a finished Linux VM (which differs in a hundred ways), the authors start from Hermit's fast libOS-call path and add <i>one</i> traditional-syscall mechanism at a time — a lookup table, then the <code>syscall</code> instruction, then a stack switch, then <code>swapgs</code>, then the ring switch, then a simulated CR3 reload — measuring the latency delta after each step.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the paper's core methodological contribution — controlled, additive attribution of overhead.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Hermit, UKL, and Unikraft, briefly<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Hermit</b> is a Rust-based libOS used here as the experimental platform because its call path can be transformed incrementally. <b>UKL</b> (Unikernel Linux) links an application directly into the Linux kernel image — "Linux acting like a unikernel." <b>Unikraft</b> is an extremely specialized, minimal unikernel used only as an image-size/networking reference point.</p>
+          <div class="ready"><b>Now you're ready:</b> H-configs = Hermit's ladder; U-configs = UKL; L-configs = plain Linux; K1 = Unikraft.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>getpid() as a near-pure overhead probe<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><code>getpid()</code> does almost no kernel work — in Hermit it just returns a hardcoded value. That makes its latency an almost-clean measurement of <i>just</i> the call-path overhead, uncontaminated by the work a real syscall does.</p>
+          <div class="ready"><b>Now you're ready:</b> Figure 1a's getpid() numbers are what the whole overhead-attribution chain (Figure 4) is built from.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Why TCP/HTTP benchmarks, and why they're not apples-to-apples<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Microbenchmarks show raw per-call overhead; TCP/HTTP benchmarks ask whether that overhead is even visible once real application work and I/O dominate. But cross-kernel TCP/HTTP comparisons also mix in driver maturity and network-stack optimizations (e.g. TSO), so they can't isolate syscall cost alone across different kernels — only across Hermit's own H-configs, which share everything else.</p>
+          <div class="ready"><b>Now you're ready:</b> read the Hermit-internal comparison as clean; read the cross-kernel comparison as "does everything else outweigh the syscall boundary."</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>fork() and why H9 exists<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>H8's CR3 reload is a synthetic approximation — no real second address space exists yet. H9 adds real <code>fork()</code>/process-loading support to Hermit (via copy-on-write page duplication) so the ring-switch path (H7) can be validated against a genuine multi-process scenario, without the synthetic CR3 reload.</p>
+          <div class="ready"><b>Now you're ready:</b> H9's latency landing close to H7 and L5 is the paper's cross-check that H7's numbers are representative.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">10</span>Image size vs. runtime overhead — two different claims<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Unikernels are often sold on <i>small images and fast boot</i>, a claim about specialization, separate from the claim that <i>eliminating syscalls speeds up running code</i>. This paper's central move is separating those two: it can be true that unikernels stay small while also being true that syscall elimination alone doesn't win the runtime race against a well-tuned Linux VM.</p>
+          <div class="ready"><b>Now you're ready:</b> Table 1's image sizes and Figures 1–3's latencies are answering two different questions, not one.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>The idea in a nutshell</h2>
+      <p class="sub">What's actually expensive at the syscall boundary — and what isn't.</p>
+    </div>
+    <div class="prose">
+      <p>Unikernels argue that running one process in kernel mode lets them replace <span class="mem-chip chip-lru">traditional syscalls</span> with plain function calls, avoiding a costly privilege-level boundary crossing. This paper tests that argument directly: starting from Hermit's fast <span class="mem-chip chip-hi">libOS function-call</span> path (2.92 ns for a no-op call), the authors incrementally reintroduce every traditional mechanism — a dispatch table, the <code>syscall</code> instruction, a kernel-stack switch, <code>swapgs</code>, and a ring 3/0 switch — arriving at a full traditional syscall (40.2 ns) after adding roughly <b>37 ns</b> total.</p>
+      <p>Then they add one more step: a synthetic reload of CR3 (the page-table-base register) to approximate <span class="mem-chip chip-ucp">page-table isolation (PTI)</span>, a mitigation against Meltdown, deliberately without PCID optimizations. That single synthetic step adds <b>394.33 ns</b> — about ten times the entire unmitigated syscall overhead. Real Linux configurations point the same direction, though with smaller measured numbers: enabling default CPU vulnerability mitigations pushes <code>getpid()</code> latency from ~48 ns to ~237 ns (an added cost of roughly <b>189 ns</b>), and configurations that also carry the newer SRSO/"Inception" mitigation on AMD climb further still, into the <b>300–400+ ns</b> range — the same order of magnitude as Hermit's synthetic H8 estimate, even though H8 itself is not a direct measurement of any real Linux configuration.</p>
+      <p>Crucially, none of this unmitigated overhead is even visible in TCP or HTTP application benchmarks — Hermit's bandwidth and request latency stay essentially flat across all nine incremental configurations. When Hermit is compared against a minimal, distroless Linux VM, Linux's mature drivers and network stack (e.g. virtio-net TSO) outweigh any function-call advantage. The paper's conclusion is not that unikernels are pointless — extremely specialized images stay far smaller, and the authors suggest this might translate into shorter boot times, though that isn't directly measured here — but that <b>eliminating the syscall boundary alone should not be expected to produce measurable application speedups.</b></p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Unmitigated traditional syscall vs. libOS call: <b>~37 ns</b> of added overhead (H1 2.92 ns → H7 40.2 ns).</li>
+        <li>CPU vulnerability mitigations add roughly <b>190 ns</b> (Linux's real default-mitigation delta) up to <b>400+ ns</b> (heavier PTI/SRSO configurations, and Hermit's synthetic CR3-reload estimate) — 5–10× the unmitigated syscall cost.</li>
+        <li>The single biggest jump among Linux system-call latencies on this AMD machine comes from the <b>SRSO ("Inception")</b> mitigation, introduced in Linux 7.0.</li>
+        <li>The synthetic <b>CR3 reload</b> (approximating PTI, no PCID) alone costs <b>394.33 ns</b> — the largest single step in Hermit's own H1–H9 ladder.</li>
+        <li>None of the unmitigated syscall overhead is measurable in TCP or HTTP application benchmarks.</li>
+        <li>A minimal, distroless Linux VM outperforms function-call unikernels in these workloads — driver/network-stack maturity dominates.</li>
+        <li>Unikernels retain a real, measured advantage in image size — and, the authors suggest, potentially shorter boot times, though that isn't directly measured here — plus value as a research platform, but not an automatic runtime win.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">getpid() latency, ns · the ladder to a full syscall, then the mitigation cliff</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> libOS baseline</span>
+        <span><i style="background:var(--optane)"></i> syscall mechanics (H2→H7)</span>
+        <span><i style="background:var(--ltram)"></i> mitigation cost (H8 / default Linux)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 340" role="img" aria-label="Staircase of syscall overhead sources, then the much larger mitigation cost">
+        <line x1="60" y1="20" x2="60" y2="230" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="60" y1="230" x2="700" y2="230" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end">
+          <text x="52" y="233">0</text><text x="52" y="180">10</text><text x="52" y="130">20</text><text x="52" y="80">30</text><text x="52" y="30">40</text>
+        </g>
+        <text x="20" y="130" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 20,130)">ns (0–40 scale)</text>
+        <!-- staircase bars H1..H7 -->
+        <g font-family="JetBrains Mono" font-size="9" fill="#6E6456" text-anchor="middle">
+          <rect x="75" y="225" width="60" height="5" fill="#2C7A8C"/><text x="105" y="245">H1 2.9</text>
+          <rect x="150" y="225" width="60" height="5" fill="#2C7A8C"/><text x="180" y="245">H2 2.9</text>
+          <rect x="225" y="207" width="60" height="23" fill="#B23A2E"/><text x="255" y="245">H3 6.6</text>
+          <rect x="300" y="155" width="60" height="75" fill="#B23A2E"/><text x="330" y="245">H4 18.9</text>
+          <rect x="375" y="153" width="60" height="77" fill="#B23A2E"/><text x="405" y="245">H5 19.2</text>
+          <rect x="450" y="112" width="60" height="118" fill="#B23A2E"/><text x="480" y="245">H6 28.9</text>
+          <rect x="525" y="65" width="60" height="165" fill="#B23A2E"/><text x="555" y="245">H7 40.2</text>
+        </g>
+        <line x1="640" y1="20" x2="640" y2="230" stroke="#D8C8AC" stroke-dasharray="4 3"/>
+        <text x="620" y="14" font-family="JetBrains Mono" font-size="10" fill="#8A7F6C" text-anchor="end">break ↓ scale ×10</text>
+        <!-- mitigation cliff panel -->
+        <g transform="translate(0,0)">
+          <rect x="655" y="60" width="40" height="170" fill="#6B4FA0"/>
+          <text x="675" y="245" font-family="JetBrains Mono" font-size="9" fill="#6E6456" text-anchor="middle">H8 ≈434</text>
+        </g>
+        <text x="380" y="270" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#332C24">Each step adds a named syscall mechanism; the CR3-reload step (mitigation) dwarfs them all</text>
+        <text x="380" y="292" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">table +3.69 · syscall instr +12.31 · stack switch +0.31 · swapgs +9.69 · ring switch +11.23 · CR3 reload (synthetic) +394.33</text>
+        <text x="380" y="312" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">real Linux with default mitigations lands around 237 ns — same order of magnitude as the synthetic H8 cliff</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> H1→H7 is the entire cost of "being a traditional syscall instead of a function call" — about 37 ns, built up in six small, named steps. H8's single synthetic CR3-reload step then adds roughly ten times that much, approximating what page-table isolation costs. (Paper, Fig. 1a &amp; Fig. 4)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">claim → method → finding → implication</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Claim under test</div><div class="nd">Unikernels are fast because they skip the syscall boundary</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Method</div><div class="nd">Incrementally rebuild a traditional syscall inside Hermit (H1→H8, with H9 as a fork-based validation branch off H7), one mechanism at a time</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Finding</div><div class="nd">Boundary itself ≈37 ns; CPU mitigations ≈190–400+ ns — mitigations dominate</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Cross-check</div><div class="nd">TCP/HTTP workloads show no measurable slowdown from the unmitigated boundary</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-lru"><div class="nt">Cross-kernel test</div><div class="nd">Distroless Linux VM still beats function-call unikernels — drivers/network stack matter more</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Implication</div><div class="nd">Compatibility unikernels shouldn't expect speedups from syscall elimination alone</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Five everyday pictures</div>
+      <h2>How to think about this paper</h2>
+      <p class="sub">Each stands alone; each ends with where it breaks down.</p>
+    </div>
+    <div class="analogy-grid">
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="40" width="40" height="36" rx="4" fill="#DCEDF1" stroke="#2C7A8C" stroke-width="2.5"/>
+          <rect x="80" y="20" width="40" height="56" rx="4" fill="#F5DCD7" stroke="#B23A2E" stroke-width="2.5"/>
+          <path d="M60 58 h20" stroke="#332C24" stroke-width="2"/>
+        </svg></div>
+        <span class="term">The method · Incremental reconstruction</span>
+        <h3>Rebuilding a door, hinge by hinge</h3>
+        <p>Instead of comparing a screen door to a bank vault door (too many differences at once), the authors start with the screen door and bolt on one vault feature at a time — a lock, a deadbolt, reinforced hinges — timing how much each addition slows the swing. That's H1→H8: one mechanism added per step.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real vault door's features interact (a heavier door needs stronger hinges); the paper's steps are mostly additive, but H8's CR3 reload is explicitly a rough approximation, not a fully-optimized mechanism.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="22" fill="#DCEDF1" stroke="#2C7A8C" stroke-width="2.5"/>
+          <circle cx="95" cy="48" r="30" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2.5"/>
+          <text x="45" y="53" text-anchor="middle" font-family="monospace" font-size="9" fill="#173e47">door</text>
+          <text x="95" y="53" text-anchor="middle" font-family="monospace" font-size="9" fill="#453579">badge scan</text>
+        </svg></div>
+        <span class="term">Mitigations vs. mechanism</span>
+        <h3>The door vs. the security checkpoint</h3>
+        <p>Walking through an unlocked door costs almost nothing. Walking through an airport security checkpoint — ID check, bag scan, pat-down — costs real time, and that time has nothing to do with the door itself. The syscall <i>instruction</i> is the door; PTI/SRSO mitigations are the checkpoint bolted in front of it.</p>
+        <div class="breaks"><b>Where it breaks:</b> unlike a checkpoint, mitigations can't simply be skipped on a shared, potentially hostile Linux host — they exist because the threat (Meltdown/Spectre/SRSO) is real, not bureaucratic overhead.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="60" width="100" height="14" rx="3" fill="#F5DCD7" stroke="#B23A2E" stroke-width="2"/>
+          <rect x="20" y="40" width="30" height="14" rx="3" fill="#DCEDF1" stroke="#2C7A8C" stroke-width="2"/>
+          <text x="70" y="70" text-anchor="middle" font-family="monospace" font-size="8" fill="#7a281f">re-shelve everything</text>
+        </svg></div>
+        <span class="term">CR3 reload · TLB flush</span>
+        <h3>Re-shelving the whole library</h3>
+        <p>A translation lookaside buffer is like a librarian's memorized shelf locations — fast, until you switch libraries (address spaces) and every memorized location is now wrong. Without PCIDs to tag "which library" each memory applies to, the safest thing is to forget everything and relearn shelf locations from scratch. That's the CR3 reload's real cost: not the register write, but the TLB refills afterward.</p>
+        <div class="breaks"><b>Where it breaks:</b> real hardware often <i>does</i> have PCIDs to avoid full flushes; H8 deliberately models the unoptimized case to bound the worst-case mitigation cost, not the best case.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 q40 -50 100 0" fill="none" stroke="#2C7A8C" stroke-width="2.5"/>
+          <circle cx="20" cy="70" r="4" fill="#2C7A8C"/><circle cx="120" cy="70" r="4" fill="#2C7A8C"/>
+          <line x1="20" y1="82" x2="120" y2="82" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="3 3"/>
+        </svg></div>
+        <span class="term">Why bandwidth stayed flat</span>
+        <h3>A speed bump on an empty road vs. a traffic jam</h3>
+        <p>A 37-ns speed bump is irrelevant on a highway already crawling at rush hour — the bottleneck elsewhere swamps it. Hermit's TCP/HTTP benchmarks are the traffic jam: driver overhead, interrupt handling, and network-stack maturity dominate, so the syscall speed bump never shows up in the total travel time.</p>
+        <div class="breaks"><b>Where it breaks:</b> in a workload with vastly more, tinier syscalls (e.g. a hot loop issuing millions of tiny operations with no I/O wait), the speed bump could still add up — this paper's workloads simply aren't that.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="30" height="46" rx="3" fill="#DCEDF1" stroke="#2C7A8C" stroke-width="2"/>
+          <rect x="60" y="20" width="30" height="56" rx="3" fill="#F5DCD7" stroke="#B23A2E" stroke-width="2"/>
+          <rect x="100" y="34" width="30" height="42" rx="3" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Image size vs. speed</span>
+        <h3>A tiny suitcase that still takes the slow train</h3>
+        <p>Packing light (a small unikernel image) is genuinely valuable for boot time and storage — but it says nothing about how fast the train itself runs once you're aboard. Unikraft's featherweight 0.5 MiB image is real and useful; it doesn't imply Unikraft's HTTP server outruns a tuned Linux VM.</p>
+        <div class="breaks"><b>Where it breaks:</b> for boot-time-critical serverless workloads, the suitcase size genuinely is the dominant metric — the analogy only cautions against conflating it with steady-state runtime speed.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How the dissection actually works</h2>
+      <p class="sub">The Hermit ladder, the UKL/Linux comparison axis, and why the plots have broken y-axes.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The Hermit ladder — H1 to H9</h3>
+      <p>Starting from Hermit's default libOS-call path (H1), each configuration adds exactly one traditional-syscall mechanism, keeping everything else fixed: a separate application allocator (H2, isolates malloc() from the measurement), a centralized dispatch table entered via a normal call (H3), the same dispatch entered via the <code>syscall</code> instruction (H4), a switch to a dedicated kernel stack (H5), a <code>swapgs</code> to protect the GS-based stack-switch mechanism (H6), and a genuine ring 3→0→3 privilege switch via <code>sysretq</code> (H7). H8 layers a synthetic CR3 reload atop H7 to approximate PTI. H9 is a separate validation branch, not a further step in the same ladder: it branches off H7 to add real <code>fork()</code>-based multi-process support, deliberately without H8's synthetic CR3 reload, so H7's ring-switch numbers can be checked against a genuine multi-process scenario.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">One syscall's journey through the mechanisms</div>
+      <div class="viz-kicker">user mode → kernel mode → user mode, annotated with each H-step</div>
+      <svg class="full" viewBox="0 0 760 220" role="img" aria-label="Lane diagram of a syscall crossing from ring 3 to ring 0 and back">
+        <rect x="20" y="20" width="720" height="50" rx="8" fill="#DCEDF1" stroke="#2C7A8C" stroke-width="1.5"/>
+        <text x="30" y="50" font-family="JetBrains Mono" font-size="11" fill="#173e47">ring 3 (application, H7+)</text>
+        <rect x="20" y="150" width="720" height="50" rx="8" fill="#F5DCD7" stroke="#B23A2E" stroke-width="1.5"/>
+        <text x="30" y="180" font-family="JetBrains Mono" font-size="11" fill="#7a281f">ring 0 (kernel handler)</text>
+        <line x1="220" y1="70" x2="220" y2="150" stroke="#332C24" stroke-width="2"/>
+        <polygon points="220,150 214,138 226,138" fill="#332C24"/>
+        <text x="228" y="110" font-family="JetBrains Mono" font-size="10" fill="#332C24">syscall (H4)</text>
+        <rect x="300" y="90" width="100" height="26" rx="5" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="1.4"/>
+        <text x="350" y="107" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#453579">swapgs (H6)</text>
+        <rect x="420" y="90" width="110" height="26" rx="5" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="1.4"/>
+        <text x="475" y="107" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#453579">stack switch (H5)</text>
+        <rect x="550" y="90" width="150" height="26" rx="5" fill="#F5DCD7" stroke="#B23A2E" stroke-width="1.6"/>
+        <text x="625" y="107" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7a281f">optional: CR3 reload (H8)</text>
+        <line x1="220" y1="150" x2="220" y2="70" stroke="#332C24" stroke-width="2" transform="translate(300,0)"/>
+        <polygon points="520,70 514,82 526,82" fill="#332C24"/>
+        <text x="528" y="60" font-family="JetBrains Mono" font-size="10" fill="#332C24">sysretq (H7)</text>
+      </svg>
+      <figcaption><b>Order matters, not just count:</b> the app enters via <code>syscall</code>, the handler switches stacks and GS state, optionally reloads CR3, does its work, then returns to ring 3 via <code>sysretq</code>. Each labeled box is one H-step's named mechanism. (Paper §2.1, §3.1)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Why the plots have broken y-axes</h3>
+      <p>Figures 1–3 all group configurations into two separate y-axis ranges. This isn't cosmetic: it's the paper's finding made visible. Configurations without heavyweight mitigations (H1–H9, U1–U4, L1, L2, L5) cluster in a low range (tens of ns for latency); configurations with PTI-like or SRSO mitigations active (L3, L4, L6, L7, H8) jump into a range 5–10× higher. A single, non-broken axis would either crush the interesting low-range detail or need to be inconveniently tall.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Two populations, one plot</div>
+      <div class="viz-kicker">why Figures 1–3 split into a low-range and high-range axis</div>
+      <svg class="full" viewBox="0 0 700 180" role="img" aria-label="conceptual diagram of low-overhead vs high-overhead configuration clusters">
+        <rect x="20" y="30" width="300" height="110" rx="10" fill="#DCEDF1" stroke="#2C7A8C" stroke-width="1.5"/>
+        <text x="170" y="55" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#173e47">Low range (0–60 ns)</text>
+        <text x="170" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#173e47">H1–H9, U1–U4, L1, L2, L5</text>
+        <text x="170" y="100" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#173e47">no PTI / SRSO mitigation active</text>
+        <rect x="380" y="30" width="300" height="110" rx="10" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="1.5"/>
+        <text x="530" y="55" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#453579">High range (200–400+ ns)</text>
+        <text x="530" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#453579">L3, L4, L6, L7, H8</text>
+        <text x="530" y="100" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#453579">SRSO and/or PTI-style mitigation active</text>
+        <line x1="320" y1="85" x2="380" y2="85" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3"/>
+        <text x="350" y="75" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">≈10×</text>
+      </svg>
+      <figcaption><b>The gap between the two boxes is the paper's headline number.</b> L3 alone (just upgrading to Linux 7.0, which adds the SRSO mitigation) is enough to jump a configuration from the left box to the right. (Paper §3.3, §5.1, Figs. 1–3)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · From Hermit numbers to application impact</h3>
+      <p>The <code>getpid()</code> microbenchmark isolates pure overhead; a file-I/O microbenchmark (open+write+lseek+read+close) shows the same story at a larger absolute scale, since it involves more syscalls per operation. The TCP and HTTP benchmarks then ask the practical question: does any of this show up once the application does real work? Across Hermit's own H1–H9 configurations, TCP bandwidth and HTTP request duration stay essentially unchanged — the syscall-path overhead is too small relative to network I/O and driver costs to matter.</p>
+      <div class="callout note"><span class="ic">🖥️</span><div><b>Connect to tiered-memory work:</b> the CR3-reload/TLB-flush story here is structurally the same trade-off you see invalidating TLB entries after migrating a page between DRAM and NVM/CXL tiers — a "fast path" (stay resident) vs. a rare but expensive "boundary crossing" (flush + refill) whose cost is dominated by a global invalidation, not the instruction that triggers it.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the real numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Three traces using the paper's actual measurements.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Reconstructing H7's 40.2 ns from six increments</h3>
+      <p style="color:var(--ink-soft)">Figure 4 gives six overhead increments (ns): system-call table 3.69, syscall instruction 12.31, stack switch 0.31, swapgs 9.69, ring switch 11.23, synthetic CR3 reload 394.33. H1's baseline is 2.92 ns. Does the ladder actually add up?</p>
+      <ol class="seq">
+        <li><b>Start at H1/H2:</b> 2.92 ns (app-allocator swap doesn't touch the syscall path).</li>
+        <li><b>+ system-call table (H3):</b> 2.92 + 3.69 = <b>6.61 ns</b>.</li>
+        <li><b>+ syscall instruction (H4):</b> 6.61 + 12.31 = <b>18.92 ns</b>.</li>
+        <li><b>+ stack switch (H5):</b> 18.92 + 0.31 = <b>19.23 ns</b>.</li>
+        <li><b>+ swapgs (H6):</b> 19.23 + 9.69 = <b>28.92 ns</b>.</li>
+        <li><b>+ ring switch (H7):</b> 28.92 + 11.23 = <b>40.15 ns</b> — matches the paper's reported 40.2 ns almost exactly.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the six named increments aren't just illustrative — they sum to the independently measured H7 latency, which is the paper's evidence that its attribution is internally consistent, not just a post-hoc story.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② The CR3 reload alone costs ~10× the whole syscall boundary</h3>
+      <p style="color:var(--ink-soft)">Continue the ladder one more step, onto H8.</p>
+      <ol class="seq">
+        <li><b>H7 total (from above):</b> ≈ 40.15 ns.</li>
+        <li><b>+ synthetic CR3 reload:</b> 40.15 + 394.33 = <b>≈434.5 ns</b> for H8.</li>
+        <li><b>Compare the two additions:</b> the entire H1→H7 journey added 37.23 ns; the single H7→H8 step adds 394.33 ns — <b>≈10.6×</b> as much as every other mechanism combined.</li>
+        <li><b>Sanity-check against real Linux:</b> default-mitigation configurations (L4) land near 237 ns and PTI-heavy configurations (L6, L7) land in the 200–400 ns band shown in Figure 1a — the same order of magnitude as this synthetic estimate, though H8 is a Hermit-only synthetic figure, not a direct measurement of any of these Linux configurations.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>H8 is deliberately pessimistic (no PCIDs, full TLB flush), so it's an upper bound rather than a precise PTI model — but the order-of-magnitude gap versus the ~37 ns syscall boundary is the point, and it survives even generous adjustment.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Image size: where unikernels actually win</h3>
+      <p style="color:var(--ink-soft)">Using Table 1's uncompressed sizes: Ubuntu cloud image 598.8 MiB, Linux L4 kernel + initramfs 24.5 + 0.9 MiB, Hermit H1 unikernel 12.5 MiB, Unikraft K1 unikernel 0.5 MiB.</p>
+      <ol class="seq">
+        <li><b>Distroless Linux vs. the cloud image:</b> (24.5+0.9) / 598.8 ≈ <b>4.2%</b> of the size — most of the "unikernel is smaller" story is really "distroless is smaller."</li>
+        <li><b>Hermit vs. distroless Linux:</b> 12.5 MiB vs. 25.4 MiB — Hermit is <b>≈2×</b> smaller, a real but modest gap.</li>
+        <li><b>Unikraft vs. distroless Linux:</b> 25.4 / 0.5 ≈ <b>51×</b> smaller — this is where extreme specialization actually delivers a dramatic number.</li>
+        <li><b>Takeaway:</b> the size advantage scales with how specialized the unikernel is, not with whether it merely avoids syscalls — Hermit (compatibility-oriented) gains little over distroless Linux; Unikraft (extremely specialized) gains a lot.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this mirrors the paper's main message about latency — the benefit tracks the degree of specialization, not the mere presence or absence of a syscall boundary.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before revealing the answer.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A colleague claims "unikernels are fast because they skip system calls." Using this paper's numbers, what's the strongest one-sentence correction?</div>
+      <details><summary>Show answer</summary><div class="ans">Skipping the syscall <i>instruction path</i> saves only ~37 ns per call; the far larger cost (roughly 190–400+ ns) comes from CPU vulnerability mitigations layered onto that path, which a unikernel running untrusted multi-tenant code would still need in some form. Unikernels' one real, measured advantage in this paper is image size — the authors also suggest short boot times might be possible, though that isn't directly measured here — not per-call latency.<span class="mis">Misconception: conflating "no ring switch" with "no mitigation cost" — the mitigations, not the ring switch, are the expensive part.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Given the six Figure 4 increments (3.69, 12.31, 0.31, 9.69, 11.23, 394.33 ns), which single step should you optimize first if you must keep some form of address-space isolation, and which step is barely worth bothering with?</div>
+      <details><summary>Show answer</summary><div class="ans">Optimize the CR3-reload/PTI-equivalent step (394.33 ns) — e.g. via PCIDs to avoid full TLB flushes — since it dwarfs everything else combined (37.23 ns total for the other five). The stack switch (0.31 ns) is essentially free and not worth engineering effort.<span class="mis">Misconception: assuming all "syscall overhead" sources are comparable in size — they span three orders of magnitude, and effort should follow the numbers.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Hermit's TCP bandwidth is nearly identical across H1 through H9, even though their getpid() latencies alone range from 2.92 ns (H1) up past 400 ns (H8's synthetic mitigation step). Does this mean syscall overhead never matters for networked applications?</div>
+      <details><summary>Show answer</summary><div class="ans">No — it means it doesn't matter <i>for this workload</i>, where network I/O and driver/interrupt handling costs dwarf even a several-hundred-ns per-call difference. A workload issuing vastly more, smaller syscalls with little I/O wait (e.g. a tight compute loop making frequent OS calls) could still see the overhead show up; the paper is explicit that its TCP/HTTP benchmarks are chosen to make syscall overhead maximally visible, and even there it's invisible.<span class="mis">Misconception: generalizing a null result on two specific benchmarks to "syscall overhead is always negligible."</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">L2→L3 is just a kernel version bump (6.3-based config → Linux 7.0.11), yet it's enough to move a configuration from the low-latency axis to the high-latency axis in Figure 1a. Why, and what does this imply for benchmarking practice?</div>
+      <details><summary>Show answer</summary><div class="ans">Linux 7.0.11 introduces a mitigation against the SRSO ("Inception") vulnerability on AMD processors, which the paper identifies as having the biggest effect among Linux system-call latencies on their machine — added independent of any application or unikernel design choice. This implies that comparing kernel versions (or distros) without controlling for default mitigation policy can attribute a mitigation-driven latency jump to unrelated architectural differences.<span class="mis">Misconception: treating "same kernel family, newer version" as latency-neutral — a single CVE-driven mitigation can dominate an entire version bump's effect.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">UKL (U1–U4) runs were sometimes unstable, crashing with general protection faults under load. How did the authors handle this, and why does it matter for interpreting the UKL results?</div>
+      <details><summary>Show answer</summary><div class="ans">They treated any run that crashed before completion as failed and excluded its partial data, using only completed runs; as a result they present UKL results as contextual data points rather than a fully representative, stable baseline. Readers should weight UKL comparisons with more caution than the Hermit or Linux results, which didn't have this instability.<span class="mis">Misconception: treating all reported numbers in a paper as equally reliable — the authors themselves flag UKL's data as lower-confidence.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">Unikraft's HTTP server image is roughly 50× smaller than a distroless Linux kernel+initramfs. Does this paper's data support the claim that Unikraft is also 50× faster at serving HTTP requests?</div>
+      <details><summary>Show answer</summary><div class="ans">No — image size and runtime latency are measured separately in this paper and don't move together. The paper explicitly separates "specialization benefits" (image size, boot time) from "runtime speedup from syscall elimination," and argues the latter doesn't automatically follow from the former.<span class="mis">Misconception: assuming a dramatic win on one axis (size) implies a proportional win on an unrelated axis (speed).</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What's the single headline number from this paper?<span class="chev">▾</span></summary><div class="a">An unmitigated traditional syscall costs about 37 ns more than a libOS function call; CPU vulnerability mitigations alone add roughly 190–400+ ns depending on which mitigations are active — five to ten times more. The syscall boundary is a small cost; the mitigations bolted onto it are the big one.</div></details>
+      <details><summary><span class="q">Q2</span>Why not just compare a finished unikernel to a finished Linux VM directly?<span class="chev">▾</span></summary><div class="a">Because a finished unikernel and a finished Linux VM differ in dozens of ways (drivers, network stack, scheduler, allocator, syscall path) at once — any latency difference could be caused by any of them. The paper's incremental H1→H8 sequence changes exactly one mechanism at a time within the same libOS, isolating the syscall-boundary contribution specifically; H9 is a separate validation branch off H7 that adds real fork()/process-loading support — without H8's synthetic CR3 reload — to confirm H7's numbers hold up in a genuine multi-process setting.</div></details>
+      <details><summary><span class="q">Q3</span>What does the "synthetic CR3 reload" (H8) actually simulate?<span class="chev">▾</span></summary><div class="a">It approximates page-table isolation (PTI), the Meltdown mitigation that unmaps the kernel from user page tables and forces an address-space switch on every syscall. H8 reloads CR3 without process-context IDs, which flushes the entire TLB — a deliberately pessimistic, simplified stand-in for a real, optimized PTI implementation.</div></details>
+      <details><summary><span class="q">Q4</span>Why does upgrading from Linux 6.3 to 7.0 matter so much here?<span class="chev">▾</span></summary><div class="a">Linux 7.0.11 adds a mitigation for the SRSO ("Inception") speculative-execution vulnerability on AMD CPUs. On the paper's AMD EPYC test machine, this single mitigation has the largest measured effect among Linux system-call latencies specifically — though within Hermit's own H1–H9 ladder, H8's synthetic CR3-reload step is still the single largest jump of anything measured in the study.</div></details>
+      <details><summary><span class="q">Q5</span>Did system-call overhead measurably affect the TCP/HTTP benchmarks?<span class="chev">▾</span></summary><div class="a">No. Across Hermit's H1–H9 configurations — spanning pure function calls (H1) up through a full traditional syscall plus a synthetic mitigation-like CR3 reload (H8), and a real fork()/process-loading variant (H9) — TCP bandwidth and HTTP request duration stayed effectively flat. Application-level I/O and driver costs dominate long before syscall latency becomes visible.</div></details>
+      <details><summary><span class="q">Q6</span>Does a distroless Linux VM beat unikernels, then?<span class="chev">▾</span></summary><div class="a">In these workloads, yes: a single-process, distroless, VM-optimized Linux kernel outperformed the function-call-based unikernels, because Linux's mature drivers and network-stack optimizations (like virtio-net TSO) outweigh the syscall-elimination advantage. Unikernels still win on image size and potentially boot time.</div></details>
+      <details><summary><span class="q">Q7</span>Why was UKL treated as "contextual" rather than a stable baseline?<span class="chev">▾</span></summary><div class="a">Some UKL runs crashed with general protection faults under load before completing. The authors excluded incomplete runs and only plotted completed ones, but flag the overall UKL dataset as less reliable than Hermit's or Linux's — worth keeping in mind when comparing numbers.</div></details>
+      <details><summary><span class="q">Q8</span>What is fork() support (H9) for, if H8 already models the address-space switch?<span class="chev">▾</span></summary><div class="a">H8's CR3 reload is synthetic — there's no real second address space. H9 branches from H7 (not from H8) to add genuine fork()/process loading (via copy-on-write page duplication) so the ring-switch path from H7 can be validated in a real multi-process setting, deliberately without H8's synthetic reload. H9's latency landing close to H7's and to L5 (no mitigations) confirms H7 is representative.</div></details>
+      <details><summary><span class="q">Q9</span>So do unikernels have any value left, per this paper?<span class="chev">▾</span></summary><div class="a">Yes — extremely specialized unikernels (like Unikraft) can be an order of magnitude smaller in image size, which the authors suggest matters for boot time and cold-start-sensitive deployments (though boot time itself isn't directly measured here); language-specific libOSes also enable systems research (e.g. Rust async I/O at the syscall level) that's hard to do in C. The paper's caution is narrower: don't expect broad runtime speedups from syscall elimination alone in compatibility-oriented unikernels.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then source provenance.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>libOS call</b><span>A function call into a library operating system, replacing a traditional syscall; the fast path this paper measures against.</span></div>
+      <div class="term-def"><b>Traditional syscall</b><span>A privilege-level (ring) crossing via the syscall instruction, involving a stack switch, swapgs, and a ring switch.</span></div>
+      <div class="term-def"><b>PTI (Page Table Isolation)</b><span>Unmaps the kernel from user page tables to mitigate Meltdown; forces an address-space (CR3) switch on every syscall.</span></div>
+      <div class="term-def"><b>SRSO / "Inception"</b><span>Speculative Return Stack Overflow — an AMD speculative-execution vulnerability; its mitigation dominates this paper's Linux latency results.</span></div>
+      <div class="term-def"><b>UMON-style dissection</b><span>Not from this paper — but analogous method: this paper's incremental H1–H9 ladder is the same "attribute overhead to one mechanism at a time" idea.</span></div>
+      <div class="term-def"><b>Hermit</b><span>A Rust-based libOS used as the experimental platform because its call path could be incrementally transformed into a traditional syscall path.</span></div>
+      <div class="term-def"><b>UKL (Unikernel Linux)</b><span>Links an application directly into the Linux kernel image; Linux's own unikernel-style approach, tested here with optimizations enabled incrementally (U1–U4).</span></div>
+      <div class="term-def"><b>Unikraft</b><span>An extremely specialized, minimal unikernel used only as an image-size and networking reference point (K1).</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>TSC</b><span>Time Stamp Counter — the low-overhead x86 cycle counter used for all latency measurements.</span></div>
+      <div class="term-def"><b>swapgs</b><span>Instruction swapping the GS base register with a saved kernel value, letting the kernel bootstrap a stack switch without trusting user state.</span></div>
+      <div class="term-def"><b>CR3 / TLB / PCID</b><span>CR3 points to the current page table; the TLB caches translations; PCIDs let the TLB avoid a full flush across address-space switches.</span></div>
+      <div class="term-def"><b>COW (copy-on-write)</b><span>Pages shared between processes until written, used in this paper's fork() implementation.</span></div>
+      <div class="term-def"><b>virtio-net / TSO</b><span>The paper's paravirtualized NIC and TCP segmentation offload, which reduce guest-side networking CPU work — a major source of cross-kernel performance differences unrelated to syscalls.</span></div>
+      <div class="term-def"><b>SASOS</b><span>Single-Address-Space OS — the structural property (one process in kernel mode) that lets unikernels replace syscalls with function calls.</span></div>
+      <div class="term-def"><b>k6</b><span>Grafana's load-testing tool, used to drive and measure the HTTP server benchmark from the host.</span></div>
+      <div class="term-def"><b>LPE</b><span>Local Privilege Escalation — kernel vulnerabilities motivating the shift from process isolation to VM-strength isolation in the first place.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">Where the nanoseconds go (getpid() latency)</div>
+      <div class="viz-kicker">approximate values from Fig. 1a &amp; Fig. 4 · lower is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Hermit H1<small>libOS call</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="2.92"><span>2.92 ns</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Hermit H7<small>full syscall</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="40.2"><span>40.2 ns</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Linux L5<small>no mitigations</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="48"><span>≈48 ns</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Linux L4<small>default mitigations</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="237"><span>≈237 ns</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Hermit H8<small>+synthetic CR3</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="434"><span>≈434 ns</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 450 ns</p>
+      <figcaption><b>The mitigation step is the whole story:</b> going from a libOS call to a full unmitigated syscall (H1→H7) costs 37 ns; adding mitigation-equivalent cost (→H8's synthetic estimate, or real Linux L4) costs hundreds more. (Paper Figs. 1a, 4, §5.1)</figcaption>
+    </figure>
+
+    <div class="subhead">Related work (paper §6)</div>
+    <div class="read-item reveal"><h4>An analysis of performance evolution of Linux's core operations <span class="diff med">medium</span></h4><div class="meta">Ren, Rodrigues, Chen, Vega, Stumm, Yuan · SOSP 2019</div><p>Shows Linux's growing mitigation set has substantially hurt performance over time; this paper extends that finding by dissecting <i>which specific mechanisms</i> cost what, outside the mitigation question.</p></div>
+    <div class="read-item reveal"><h4>FlexSC: Flexible System Call Scheduling with Exception-Less System Calls <span class="diff hard">hard</span></h4><div class="meta">Soares, Stumm · OSDI 2010</div><p>Proposes batched, exception-less syscalls for highly threaded servers on multiple CPUs; this paper instead focuses on synchronous syscalls on a single vCPU.</p></div>
+    <div class="read-item reveal"><h4>Userspace Bypass: Accelerating Syscall-intensive Applications <span class="diff med">medium</span></h4><div class="meta">Zhou, Bi, Wan, Zhou, Li · OSDI 2023</div><p>Moves user-space instructions transparently into kernel space to avoid the syscall boundary — a different strategy for the same underlying cost this paper measures.</p></div>
+    <div class="read-item reveal"><h4>Unikernel Linux (UKL) <span class="diff med">medium</span></h4><div class="meta">Raza et al. · EuroSys 2023</div><p>The Linux-based unikernel this paper uses as one of its comparison points (U1–U4), taking the opposite path: making Linux itself more libOS-like.</p></div>
+    <div class="read-item reveal"><h4>Unikraft: fast, specialized unikernels the easy way <span class="diff med">medium</span></h4><div class="meta">Kuenzer et al. · EuroSys 2021</div><p>Source of the K1 configuration used here purely as an image-size and networking reference point.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card">
+      <p style="margin-bottom:.6em"><b>From the paper (facts, figures, quotes):</b> all H1–H9, U1–U4, L1–L7, K1 configuration definitions; the getpid() latency figures (2.92 ns, 40.2 ns, ~48 ns, ~237 ns); the six overhead increments in Figure 4 (3.69 / 12.31 / 0.31 / 9.69 / 11.23 / 394.33 ns); the "~37 ns total" conclusion; Table 1's image sizes; the UKL-instability and SRSO/L3 observations; and all methodology (TSC measurement, black-box macro, NUMA isolation, QEMU/virtio-net setup).</p>
+      <p style="margin:0"><b>My framing (not in the paper verbatim):</b> the staircase/cliff arithmetic in Worked Examples §1–2 (summing Figure 4's increments to reconstruct H7 and H8's totals); the image-size ratio calculations in Worked Examples §3; all analogies; the "connect to tiered-memory work" callout linking CR3/TLB-flush costs to page-migration invalidation in DRAM/NVM/CXL tiering systems; and the broken-axis conceptual diagram, which restates the paper's plotting convention rather than reproducing an actual figure.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+  var barsDone = false, MAXP = 450;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
