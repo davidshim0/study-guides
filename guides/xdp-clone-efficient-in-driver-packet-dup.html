@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<!-- XDP_CLONE field guide — in-driver packet duplication for eBPF/XDP (Mazzella et al., eBPF'26).
+     Semantic colors: teal = XDP_CLONE fast path · terracotta = TC / bpf_clone_redirect (the baseline) · indigo = driver machinery (clone actions, page pool) · honey = key measured numbers. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cloning Packets Before the Kernel Wakes Up — XDP_CLONE, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98A3D; --honey-deep:#B56A15; --honey-soft:#FBE6C8;
+  --dram:#1F8A72; --dram-soft:#D9F0E7;      /* teal  = XDP_CLONE fast path (in-driver)  */
+  --ltram:#4A5FB0; --ltram-soft:#E3E6F7;    /* indigo = driver machinery / clone actions */
+  --optane:#C1503A; --optane-soft:#F6E0D6;  /* terracotta = TC / bpf_clone_redirect (baseline) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,138,114,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(74,95,176,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,138,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(74,95,176,.05) 31px,rgba(74,95,176,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,138,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>eBPF '26 · A Field Guide</span>
+    <h1>Cloning packets in the <span class="swash">driver</span>, not after the kernel's <span class="swash" style="color:var(--optane)">slow lane</span></h1>
+    <p class="lede">XDP can fan a packet out to many interfaces — but it can't hand you an independently-editable copy. This is the plain-English story of <strong>XDP_CLONE</strong>, two new XDP actions that duplicate packets before the kernel ever allocates a socket buffer.</p>
+    <div class="hero-meta">
+      <span>📄 "XDP_CLONE: Efficient In-Driver Packet Duplication" · Mazzella et al.</span>
+      <span>🎓 Some eBPF/XDP basics assumed — the primers cover them</span>
+      <span>⏱ ~20 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧬</div>
+      <p>Duplicate packets as <span class="ro">in-driver pages, before any sk_buff exists</span> — not as <span class="wo">sk_buffs cloned after TC already paid the allocation tax</span>.<br><em style="font-size:.9rem">Pay the fixed cost once, keep the per-copy cost tiny.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary + eight ideas the paper assumes</h2>
+      <p class="sub">First, the acronyms you'll see everywhere. Then the concepts, as collapsible cards — open whatever's unfamiliar.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="font-size:1.1rem">Quick glossary — key acronyms up front</h3>
+      <div class="gloss">
+        <div class="term-def"><b>eBPF</b><span>Verified bytecode the kernel runs safely at defined hook points, without a kernel module.</span></div>
+        <div class="term-def"><b>XDP</b><span>eXpress Data Path — an eBPF hook in the NIC driver, run before the kernel allocates any packet metadata.</span></div>
+        <div class="term-def"><b>TC</b><span>Traffic Control — an eBPF hook further down the stack, after an sk_buff already exists.</span></div>
+        <div class="term-def"><b>sk_buff</b><span>The kernel's general-purpose packet descriptor; allocating one is one of the costliest steps in the RX path.</span></div>
+        <div class="term-def"><b>DUT</b><span>Device under test — the machine running the program being benchmarked.</span></div>
+        <div class="term-def"><b>Mpps</b><span>Millions of packets per second — the throughput unit used throughout.</span></div>
+        <div class="term-def"><b>RTT</b><span>Round-trip time — how long a packet (and its replicas) take to return to the generator.</span></div>
+        <div class="term-def"><b>MPI</b><span>Message Passing Interface — the standard HPC communication API; its broadcast collective is what XuDP reproduces.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> XDP_CLONE (in-driver, fast)</span>
+      <span><i style="background:var(--optane)"></i> TC / bpf_clone_redirect() (baseline)</span>
+      <span><i style="background:var(--ltram)"></i> driver machinery</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Where XDP runs, and why that matters<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>XDP code runs inside the NIC driver's receive routine, before the kernel builds any per-packet structures. That's what makes it fast: a program can inspect, rewrite, drop, or transmit a packet using only the raw page the NIC DMA'd the data into.</p>
+          <div class="ready"><b>Now you're ready:</b> XDP_CLONE adds two new things a driver can do at this exact point — duplicate the page before anything heavier gets built.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>The sk_buff, and why allocating one is expensive<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Once a packet needs to travel further into the kernel stack (routing, sockets, TC), it gets wrapped in an <b>sk_buff</b> — a large, general bookkeeping structure. Building one is one of the most expensive steps in the whole RX path.</p>
+          <div class="ready"><b>Now you're ready:</b> every duplicate produced via TC needs its own sk_buff. That per-copy allocation is the paper's main target.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>The TC hook and bpf_clone_redirect()<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>TC is a second eBPF attachment point, deeper in the stack, that runs <i>after</i> the sk_buff already exists. Its <code>bpf_clone_redirect()</code> helper is the only kernel-native way to replicate a packet with per-copy edits — but each call allocates a fresh sk_buff.</p>
+          <div class="ready"><b>Now you're ready:</b> TC is the paper's baseline. Its cost has two parts — the fixed cost of reaching TC at all, and a per-clone sk_buff cost — both of which XDP_CLONE targets.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>XDP's return codes (actions)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An XDP program ends by returning one action: <code>XDP_DROP</code>, <code>XDP_PASS</code> (to the kernel stack), <code>XDP_TX</code> (retransmit out the same NIC), <code>XDP_REDIRECT</code>, or <code>XDP_ABORTED</code>. Exactly one packet results — none of these actions multiply the packet.</p>
+          <div class="ready"><b>Now you're ready:</b> XDP_CLONE adds two new actions to this list, <code>XDP_CLONE_PASS</code> and <code>XDP_CLONE_TX</code>, the first XDP verdicts that produce more than one outgoing packet.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>The RX page pool<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Modern NIC drivers recycle a small pool of memory pages for incoming packets (<code>page_pool_dev_alloc_pages()</code>) instead of hitting the general kernel allocator every time — much faster, but finite.</p>
+          <div class="ready"><b>Now you're ready:</b> each XDP_CLONE copy needs one fresh page from this pool. Once demand for copies outruns the recycled cache, allocation falls back to the slow path — the paper's "page-pool cliff."</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>One-to-many patterns: broadcast and pub-sub<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Two common networking patterns need to turn one incoming packet into several outgoing ones: an MPI-style <b>broadcast</b> (one sender, many HPC ranks) and a <b>publish-subscribe</b> broker (one publish message, one copy per topic subscriber).</p>
+          <div class="ready"><b>Now you're ready:</b> these are exactly the two applications the paper builds on XDP_CLONE to demonstrate real-world gains.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Throughput and latency, the two scorecards<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Throughput</b> (Mpps) is how many packets per second a pinned core can push without drops. <b>Latency</b> (µs/ms) is how long one packet — and, here, all its replicas — take to return. The paper's loss-free criterion is stricter than it sounds: for K input packets and n requested copies each, a run only counts if all K(n+1) packets — including every original — come back.</p>
+          <div class="ready"><b>Now you're ready:</b> every chart in this guide plots one of these two against the number of clones requested.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Re-injection: running a program more than once per packet<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Normally an XDP program runs exactly once per received packet. XDP_CLONE's core trick is to let the <i>driver</i> call <code>bpf_prog_run_xdp()</code> again — once per requested copy — feeding the same program a fresh, page-backed clone each time.</p>
+          <div class="ready"><b>Now you're ready:</b> this re-injection loop, with a numbered tag in the packet's metadata, is the entire mechanism — covered in depth in "How It Works."</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>XDP_CLONE in a nutshell</h2>
+      <p class="sub">The problem, the fix, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>XDP can broadcast a packet to many interfaces via <code>bpf_redirect_map()</code> with <code>BPF_F_BROADCAST</code> — but every replica is byte-identical, and the original can't simultaneously be delivered locally <i>and</i> duplicated. Anything requiring per-copy edits or "keep one, send the rest" logic has always had to fall back to <span class="mem-chip chip-lru">TC</span>, where <code>bpf_clone_redirect()</code> replicates packets — at the cost of one <code>sk_buff</code> allocation per clone, on top of the one the kernel already built to reach TC at all.</p>
+      <p><strong>XDP_CLONE</strong> adds two new XDP actions — <code>XDP_CLONE_PASS</code> and <code>XDP_CLONE_TX</code> — that ask the <span class="mem-chip chip-ucp">driver</span> itself to produce <code>n</code> in-driver copies, created as page-backed <code>xdp_buff</code>s without any sk_buff allocation at creation time (a clone whose re-run verdict is <code>XDP_PASS</code> will still pick up an sk_buff further up the stack, like any packet reaching that point). Each copy is tagged with its index in the packet's metadata and fed back through the <i>same</i> XDP program, which decides its fate independently with an ordinary XDP verdict. The original then follows its usual path (PASS or TX) — though the program is free to rewrite it first, as the pub-sub broker does before calling <code>XDP_CLONE_TX(N-1)</code> to address it to the first subscriber.</p>
+      <p><strong>The payoff:</strong> XDP_CLONE sustains <b>2.6×</b> the throughput of TC even at 64 copies, cuts end-to-end latency by up to <b>~40%</b>, and — on two real applications (an MPI-like broadcast and a pub-sub broker) — reaches up to <b>2.3×</b> the throughput of TC-based replication, for <b>189 lines</b> of driver code and no eBPF verifier changes.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>TC's cost has a <b>fixed</b> part (reaching TC, one sk_buff already built) and a <b>per-copy</b> part (one sk_buff per clone, ~700 ns each).</li>
+        <li>XDP_CLONE removes the fixed part entirely and replaces the per-copy sk_buff with a page-pool <code>memcpy</code>.</li>
+        <li>Past 4 clones, the RX page pool's recycled cache runs out and allocation falls back to the slow path — a visible cliff in throughput.</li>
+        <li>No eBPF verifier changes needed — XDP already treats the return code as an opaque 32-bit scalar; safety (no nested cloning) is enforced in the driver.</li>
+        <li><code>XDP_CLONE_PASS</code> = keep the original locally + clone; <code>XDP_CLONE_TX</code> = retransmit the original + clone, entirely in-driver.</li>
+        <li>Demonstrated on XuDP (MPI-like broadcast) and a pub-sub broker, both beating TC by up to ~2×–3.6× depending on workload.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">throughput (Mpps) vs number of clones requested · single core</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> XDP_CLONE — fast, then a page-pool cliff after 4 copies</span>
+        <span><i style="background:var(--optane)"></i> TC — flat and low throughout</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="Throughput vs number of clones for XDP_CLONE and TC">
+        <line x1="70" y1="20" x2="70" y2="250" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="250" x2="700" y2="250" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end"><text x="62" y="253">0</text><text x="62" y="165">5</text><text x="62" y="81">10</text></g>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle">
+          <text x="90" y="266">0</text><text x="170" y="266">1</text><text x="250" y="266">2</text><text x="330" y="266">4</text>
+          <text x="410" y="266">8</text><text x="490" y="266">16</text><text x="570" y="266">32</text><text x="650" y="266">64</text>
+        </g>
+        <text x="385" y="284" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">clones requested (n)</text>
+        <line x1="330" y1="20" x2="330" y2="250" stroke="#4A5FB0" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.5"/>
+        <text x="336" y="32" font-family="JetBrains Mono" font-size="10" fill="#4A5FB0">page-pool cliff starts</text>
+        <polyline fill="none" stroke="#1F8A72" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" points="90,80.8 170,46.9 250,46.9 330,63.8 410,165.4 490,172.2 570,178.9 650,182.3"/>
+        <polyline fill="none" stroke="#C1503A" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" points="90,216.2 170,207.7 250,207.7 330,207.7 410,212.8 490,216.2 570,219.5 650,224.6"/>
+        <text x="650" y="196" text-anchor="end" font-family="Fraunces" font-size="13" font-weight="600" fill="#1F8A72">XDP_CLONE</text>
+        <text x="650" y="238" text-anchor="end" font-family="Fraunces" font-size="13" font-weight="600" fill="#C1503A">TC</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> the paper's reported anchors are n=0 (10 vs 2 Mpps), n=4→8 for XDP_CLONE (roughly 11→5 Mpps), and n=64 (4.0 vs 1.5 Mpps); every other point, including TC's values at 4 and 8, is smoothly interpolated to show the shape the paper describes rather than an exact reading. The dashed line marks where the page pool's recycled cache runs out and the allocator becomes the bottleneck. (Paper, §2, Fig. 1a)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → mechanism → enforcement → applications</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">XDP can't duplicate + edit packets; TC can, but pays one sk_buff per clone plus a fixed TC-entry cost</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Mechanism</div><div class="nd">Driver allocates n pages, memcpy's the packet, tags each with an index, re-runs the XDP program</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">No sk_buff built at clone-creation time — fixed TC cost gone, per-copy cost shrinks to a page copy</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Decide</div><div class="nd">Each re-injected clone returns a normal XDP verdict (TX/PASS/DROP/REDIRECT), independently</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Enforce</div><div class="nd">Driver rejects nested cloning as XDP_ABORTED — no verifier changes needed</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Apply</div><div class="nd">XuDP broadcast (XDP_CLONE_PASS) and a pub-sub broker (XDP_CLONE_TX), each beating TC substantially</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Five everyday pictures</div>
+      <h2>How to think about XDP_CLONE</h2>
+      <p class="sub">Each stands alone. Every card ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="20" width="36" height="46" rx="3" fill="#F6E0D6" stroke="#C1503A" stroke-width="2.5"/>
+          <path d="M20 66 l-6 16 h48 l-6 -16" stroke="#C1503A" stroke-width="2" fill="none"/>
+          <rect x="88" y="34" width="36" height="32" rx="3" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2.5"/>
+          <path d="M92 66 l-4 10 h40 l-4 -10" stroke="#1F8A72" stroke-width="2" fill="none"/>
+        </svg></div>
+        <span class="term">The core idea · Fixed vs per-copy cost</span>
+        <h3>The print shop across town</h3>
+        <p>TC is a print shop on the other side of the city: every job pays a trip there (the fixed cost of reaching TC, sk_buff already built) plus a fee per copy. XDP_CLONE is a copier in the room right next to you — no trip, and each extra page costs far less than TC's per-copy sk_buff fee.</p>
+        <div class="breaks"><b>Where it breaks:</b> the office copier still runs out of paper, and paper isn't free even before then. Past 4 copies the page pool empties too — RTT climbs to 59 µs at 64 copies — and XDP_CLONE has to send someone to the supply closet (the slow allocator).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="80" height="20" rx="4" fill="#E3E6F7" stroke="#4A5FB0" stroke-width="2"/>
+          <rect x="30" y="56" width="28" height="18" rx="3" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2"/>
+          <rect x="62" y="56" width="28" height="18" rx="3" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2"/>
+          <text x="44" y="68" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">#1</text>
+          <text x="76" y="68" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">#2</text>
+        </svg></div>
+        <span class="term">Metadata tagging · num_copy</span>
+        <h3>Numbered raffle tickets</h3>
+        <p>Before re-running the program on each clone, the driver staples a numbered ticket to it — 1, 2, …, n — in the packet's metadata region. The program reads the number and knows exactly which copy it's holding, so it can address copy #1 to subscriber A, #2 to subscriber B, without any shared state between them.</p>
+        <div class="breaks"><b>Where it breaks:</b> the original packet carries no ticket at all (no metadata present) — the program must check for that explicitly to tell "original" from "clone."</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="40" cy="48" r="22" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2.5"/>
+          <circle cx="100" cy="48" r="22" fill="none" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3"/>
+          <path d="M100 30 v10 M92 40 l8 8 l8 -8" stroke="#C1503A" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg></div>
+        <span class="term">Page pool exhaustion · the cliff</span>
+        <h3>The valet with four free spots</h3>
+        <p>A valet stand keeps a handful of pre-parked cars ready to hand back instantly — fast, as long as you ask for few. Ask for a fifth in a hurry, and the valet has to jog to the far garage (the slow page allocator) for it. That's exactly why XDP_CLONE's throughput holds strong through 4 clones, then roughly halves by 8.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real valet stand's capacity is fixed by headcount; the page pool's "4-ish" threshold is a property of its recycled-cache size and could shift with driver tuning.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="8" fill="#D98A3D"/>
+          <circle cx="30" cy="20" r="6" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2"/>
+          <circle cx="110" cy="20" r="6" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2"/>
+          <circle cx="30" cy="76" r="6" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2"/>
+          <circle cx="110" cy="76" r="6" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2"/>
+          <path d="M70 48 L30 20 M70 48 L110 20 M70 48 L30 76 M70 48 L110 76" stroke="#9A8E7C" stroke-width="1.5"/>
+        </svg></div>
+        <span class="term">Pub-sub fan-out · XDP_CLONE_TX</span>
+        <h3>A receptionist photocopying a memo</h3>
+        <p>One memo arrives addressed to "all subscribers." The receptionist doesn't need to read it into her own files (no local delivery needed) — she just photocopies it n−1 times, writes a different name on each copy, and sends every copy straight back out. That's <code>XDP_CLONE_TX</code>: the broker never touches user space.</p>
+        <div class="breaks"><b>Where it breaks:</b> a receptionist can misfile a copy without much cost; a dropped network clone is a lost message — reliability for these patterns is left to the application (e.g. XuDP's ACK/NACK channel).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="48" r="14" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2"/>
+          <circle cx="70" cy="22" r="14" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2"/>
+          <circle cx="110" cy="48" r="14" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2"/>
+          <circle cx="70" cy="74" r="14" fill="#D9F0E7" stroke="#1F8A72" stroke-width="2"/>
+          <path d="M30 48 L70 22 L110 48 L70 74 Z" fill="none" stroke="#4A5FB0" stroke-width="2" stroke-dasharray="4 3"/>
+        </svg></div>
+        <span class="term">XuDP · Ring vs Linear broadcast</span>
+        <h3>A bucket brigade vs a firehose</h3>
+        <p>Ring broadcast is a bucket brigade: each person keeps a bucket (delivers locally via <code>XDP_CLONE_PASS</code>, n=1) and passes one more down the line — steady but the line takes N hops to empty. Linear broadcast is a single firehose at the first junction, spraying N−2 copies out at once (<code>n=N−2</code>) — fast, but all the pressure is on that one node.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real firehose doesn't slow down with more nozzles; XDP_CLONE's linear broadcast does hit the page-pool cliff once N−2 exceeds ~4, just like any other high-fan-out clone.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">From the cost breakdown to the driver's clone loop to the two demo applications.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Where TC's cost actually comes from</h3>
+      <p>Without any cloning at all, plain <code>XDP_TX</code> already beats <code>bpf_redirect()</code> at TC by <b>5×</b> (10 vs 2 Mpps) — that gap is the <b>fixed cost</b> of reaching TC and building one sk_buff, paid on every packet regardless of replication. On top of that, each <code>bpf_clone_redirect()</code> call adds roughly <b>700 ns</b> and one more sk_buff — the <b>per-copy cost</b>, which accumulates linearly as clone count grows.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Two separate costs, two separate fixes</div>
+      <div class="viz-kicker">illustrative split at n=64 clones (latency, µs)</div>
+      <div class="bars">
+        <div class="bar-row"><div class="bar-label">TC<small>fixed + per-copy</small></div><div class="bar-track"><div class="bar-fill bf-lru" style="width:100%"><span>15 µs fixed + 84 µs of clones = 99 µs</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">XDP_CLONE<small>no fixed cost</small></div><div class="bar-track"><div class="bar-fill bf-hi" style="width:60%"><span>8 µs baseline + 51 µs of clones = 59 µs</span></div></div></div>
+      </div>
+      <figcaption>XDP_CLONE's lower starting point (8 vs 15 µs) comes from skipping TC's sk_buff entirely; its shallower growth (to 59 vs 99 µs at 64 clones) comes from replacing each clone's sk_buff allocation with an in-driver page copy — a ~40% latency reduction at the highest fan-out tested. (Paper, §2, Fig. 1b)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · The two new actions</h3>
+      <p><code>XDP_CLONE_PASS(n)</code> and <code>XDP_CLONE_TX(n)</code> differ only in what happens to the <i>original</i> packet — handed to the local kernel stack (as <code>XDP_PASS</code> would) or retransmitted out the NIC (as <code>XDP_TX</code> would). Each encodes the copy count <code>n</code> and the verdict for the original in a single 32-bit return value — no eBPF verifier changes required, since XDP return codes are already just opaque scalars to the verifier; all safety checks live in the driver.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">One packet in, n+1 packets out</div>
+      <div class="viz-kicker">the clone loop, as the driver executes it</div>
+      <svg class="full" viewBox="0 0 700 260" role="img" aria-label="XDP_CLONE driver loop diagram">
+        <rect x="20" y="20" width="150" height="50" rx="8" fill="#FBE6C8" stroke="#D98A3D" stroke-width="1.5"/>
+        <text x="95" y="40" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#6e4a09">Packet arrives</text>
+        <text x="95" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6e4a09">XDP program runs once</text>
+
+        <path d="M170 45 h40" stroke="#9A8E7C" stroke-width="1.6" marker-end="url(#arr)"/>
+        <rect x="210" y="20" width="170" height="50" rx="8" fill="#E3E6F7" stroke="#4A5FB0" stroke-width="1.5"/>
+        <text x="295" y="40" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#3a409a">XDP_CLONE_PASS/TX(n)</text>
+        <text x="295" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#3a409a">original follows PASS/TX</text>
+
+        <path d="M295 70 v20 h-150" stroke="#C1503A" stroke-width="1.6" fill="none"/>
+        <text x="130" y="100" font-family="JetBrains Mono" font-size="9" fill="#9a3a22">original packet — unmodified, own page</text>
+
+        <path d="M380 45 h40" stroke="#9A8E7C" stroke-width="1.6" marker-end="url(#arr)"/>
+        <rect x="420" y="20" width="160" height="50" rx="8" fill="#D9F0E7" stroke="#1F8A72" stroke-width="1.5"/>
+        <text x="500" y="40" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#1f5b51">n × page_pool alloc</text>
+        <text x="500" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">+ memcpy into each page</text>
+
+        <path d="M500 70 v20" stroke="#9A8E7C" stroke-width="1.6" marker-end="url(#arr)"/>
+        <rect x="420" y="100" width="160" height="50" rx="8" fill="#D9F0E7" stroke="#1F8A72" stroke-width="1.5"/>
+        <text x="500" y="120" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#1f5b51">tag data_meta = i</text>
+        <text x="500" y="138" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">i ∈ [1, n]</text>
+
+        <path d="M500 150 v20" stroke="#9A8E7C" stroke-width="1.6" marker-end="url(#arr)"/>
+        <rect x="420" y="180" width="160" height="50" rx="8" fill="#FBE6C8" stroke="#D98A3D" stroke-width="1.5"/>
+        <text x="500" y="200" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#6e4a09">re-run XDP program</text>
+        <text x="500" y="218" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6e4a09">on this one clone</text>
+
+        <path d="M420 205 h-40" stroke="#9A8E7C" stroke-width="1.6" marker-end="url(#arr)"/>
+        <rect x="230" y="180" width="170" height="50" rx="8" fill="#F3EADA" stroke="#D8C8AC" stroke-width="1.5"/>
+        <text x="315" y="200" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#6E6456">standard verdict</text>
+        <text x="315" y="218" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">TX / PASS / DROP / REDIRECT</text>
+        <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#9A8E7C"/></marker></defs>
+      </svg>
+      <figcaption>A clone returning another clone action is rejected as <code>XDP_ABORTED</code> — nested cloning never happens, bounding per-packet work. (Paper, §3, Fig. 2 &amp; §3.1)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · Life cycle of a cloned packet, in order</h3>
+      <ol class="seq">
+        <li><b>Page allocation.</b> For each of the n copies, the driver pulls a fresh page from the pool and <code>memcpy</code>s the original packet's bytes into it — no sk_buff allocated at this step.</li>
+        <li><b>Failure handling.</b> If the pool can't satisfy an allocation, that one copy is dropped (reported via the <code>xdp_exception</code> tracepoint); the original packet, already on its own page, is unaffected.</li>
+        <li><b>Metadata tagging.</b> The driver writes the clone's index <code>i ∈ [1,n]</code> into the packet's <code>data_meta</code> region, just before the packet data.</li>
+        <li><b>Re-injection.</b> The driver calls <code>bpf_prog_run_xdp()</code> again on this one clone's buffer — the same program, a fresh invocation.</li>
+        <li><b>Per-clone verdict.</b> The returned action must be a standard one (TX/PASS/DROP/REDIRECT); a clone action here is rejected as <code>XDP_ABORTED</code>.</li>
+      </ol>
+    </div>
+
+    <div class="prose">
+      <h3>4 · The programming model, side by side</h3>
+      <p>At TC, replicating n times costs n+1 helper calls and n sk_buff allocations, on top of the one the kernel already built:</p>
+      <pre class="sketch"><span class="kw">SEC</span>("tc")
+<span class="kw">int</span> tc_clone(<span class="kw">struct</span> __sk_buff *skb) {
+  <span class="cm">// one helper call (+ one sk_buff alloc) per clone</span>
+  <span class="kw">for</span> (i = 0; i &lt; n_clone; i++)
+    bpf_clone_redirect(skb, skb-&gt;ifindex, 0);
+  <span class="kw">return</span> bpf_redirect(skb-&gt;ifindex, 0); <span class="cm">// forward original</span>
+}</pre>
+      <p>With XDP_CLONE, the whole duplication is one return value; the driver handles the loop:</p>
+      <pre class="sketch"><span class="kw">SEC</span>("xdp")
+<span class="kw">int</span> xdp_clone(<span class="kw">struct</span> xdp_md *ctx) {
+  <span class="kw">if</span> (data_meta + <span class="kw">sizeof</span>(__u32) &lt;= data) {
+    __u32 num_copy = *(__u32*)data_meta;      <span class="cm">// which clone am I?</span>
+    <span class="kw">if</span> (num_copy &gt; 0 &amp;&amp; num_copy &lt;= n_clone)
+      <span class="kw">return</span> <span class="hl">XDP_TX</span>;                        <span class="cm">// per-clone verdict</span>
+  }
+  <span class="kw">return</span> <span class="hl">XDP_CLONE_TX</span>(n_clone);             <span class="cm">// original path</span>
+}</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why this matters:</b> the eBPF program never allocates anything and never loops over clones itself — it just branches on whether metadata is present, and picks one verdict either way.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · The two demo applications</h3>
+      <p><b>XuDP</b> (§4.1) reproduces MPI's broadcast collective over UDP using <code>XDP_CLONE_PASS</code>: the original reaches the local process (as a real receiver would need), while the in-driver copies fan out to the rest of the ring or the remaining linear-broadcast neighbors. Reliability rides on a parallel TCP control channel: every receiver sends a single end-of-broadcast ACK or NACK, so in the common loss-free case the root just collects N−1 ACKs — there are no per-packet acknowledgments or timers on the fast path.</p>
+      <p>The <b>pub-sub broker</b> (§4.2), built on BPF-Broker, is pure forwarding — the publish message never needs to reach user space — so <code>XDP_CLONE_TX</code> is the natural fit: every subscriber gets an independently re-addressed copy, transmitted straight back out, collapsing what used to be a two-hook (XDP + TC) pipeline into one.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations straight from the paper's own reported figures.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① TC's per-copy cost, from the endpoints</h3>
+      <p style="color:var(--ink-soft)">TC's RTT is 15 µs with no cloning and 99 µs at 64 copies. The paper says each <code>bpf_clone_redirect()</code> adds "roughly 700 ns."</p>
+      <ol class="seq">
+        <li><b>Total added latency:</b> 99 − 15 = <b>84 µs</b> across 64 clones.</li>
+        <li><b>Effective per-copy cost:</b> 84 µs ÷ 64 = <b>1.31 µs/clone</b> — higher than the quoted ~700 ns helper cost alone, since each clone also carries extra buffer bookkeeping and queuing beyond the helper call itself.</li>
+        <li><b>Takeaway:</b> even the "roughly 700 ns" figure, taken as a floor, means 64 clones add at least 44.8 µs — TC's per-copy tax is structural, not incidental.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>② XDP_CLONE's ~40% latency reduction</h3>
+      <p style="color:var(--ink-soft)">XDP_CLONE's RTT: 8 µs baseline, 59 µs at 64 copies.</p>
+      <ol class="seq">
+        <li><b>Effective per-copy cost:</b> (59 − 8) ÷ 64 = <b>0.80 µs/clone</b> — about 40% below TC's 1.31 µs/clone.</li>
+        <li><b>Reduction at 64 clones:</b> (99 − 59) ÷ 99 = <b>40.4%</b> — matches the paper's headline "~40% reduction" exactly.</li>
+        <li><b>Where the saving comes from:</b> avoiding both TC's fixed 7 µs entry cost (15 − 8) <i>and</i> roughly 40% of the per-clone cost, by copying a page instead of allocating an sk_buff.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ The page-pool cliff, quantified</h3>
+      <p style="color:var(--ink-soft)">XDP_CLONE throughput goes from ~11 Mpps at 4 copies to 5 Mpps at 8 copies.</p>
+      <ol class="seq">
+        <li><b>Drop:</b> (11 − 5) ÷ 11 ≈ <b>55% throughput loss</b> from doubling the clone count once.</li>
+        <li><b>Cause:</b> each copy needs a page from <code>page_pool_dev_alloc_pages()</code>; past 4 concurrent copies the recycled cache is exhausted and the slower general allocator becomes the bottleneck.</li>
+        <li><b>Still ahead of TC:</b> even post-cliff, 5 Mpps (at 8 copies) and 4.0 Mpps (at 64) both comfortably beat TC's 1.5–2.5 Mpps range — the cliff shrinks the lead, it doesn't erase it.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Pub-sub fan-out at 64 subscribers</h3>
+      <p style="color:var(--ink-soft)">At N=64 subscribers: XDP_CLONE = 2.28 Mpps, TC = 0.97 Mpps, user-space baseline = 0.47 Mpps.</p>
+      <ol class="seq">
+        <li><b>vs TC:</b> 2.28 ÷ 0.97 ≈ <b>2.35×</b> — matches the paper's headline "2.3×" (and the abstract's "up to 2.3x" claim).</li>
+        <li><b>vs baseline:</b> 2.28 ÷ 0.47 ≈ <b>4.85×</b> — matches the paper's "4.8×."</li>
+        <li><b>Why TC plateaus early:</b> at high fan-out, TC's core spends its cycles allocating one sk_buff per subscriber rather than transmitting — the same per-copy tax measured in the microbenchmark, now bottlenecking a real application.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Why can't <code>bpf_redirect_map()</code> with <code>BPF_F_BROADCAST</code> alone replace XDP_CLONE?</div>
+      <details><summary>Show answer</summary><div class="ans">It produces sk_buff-free replicas too, but every replica is byte-identical and the program gets no chance to edit each one or deliver the original locally while duplicating. XDP_CLONE re-runs the program per copy, so each one can be independently addressed.<span class="mis">Misconception: that XDP already "does duplication." It does uniform broadcast, not programmable per-copy duplication.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 2 · easy</span>
+      <div class="qtext">A clone's XDP invocation itself returns <code>XDP_CLONE_TX(3)</code> — what happens?</div>
+      <details><summary>Show answer</summary><div class="ans">The driver rejects it as <code>XDP_ABORTED</code> and raises the <code>xdp_exception</code> tracepoint. Nested cloning is explicitly disallowed to bound per-packet work and prevent unbounded recursion.<span class="mis">Misconception: that clones can themselves be cloned, producing a fan-out tree. The mechanism is strictly one level deep.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">TC's RTT goes from 15 µs to 99 µs across 64 clones. Roughly how much of that 84 µs increase would be explained by the paper's "~700 ns per clone" figure alone?</div>
+      <details><summary>Show answer</summary><div class="ans">700 ns × 64 = 44.8 µs — only about 53% of the 84 µs actually observed. The rest comes from other TC-layer overheads (redirect bookkeeping, queuing) that scale with clone count beyond the helper call itself.<span class="mis">Misconception: that the quoted per-helper cost fully explains the measured slope. It's a lower bound, not the whole story.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 4 · medium</span>
+      <div class="qtext">What distinguishes <code>XDP_CLONE_PASS</code> from <code>XDP_CLONE_TX</code>, and which does the pub-sub broker use?</div>
+      <details><summary>Show answer</summary><div class="ans">They differ only in the original packet's fate: PASS hands it to the local kernel stack, TX retransmits it out the NIC. The broker uses <code>XDP_CLONE_TX</code>, because a publish message is pure forwarding and never needs to reach a local user-space process.<span class="mis">Misconception: that the two actions differ in how clones are produced. Clone production is identical; only the original's path differs.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 5 · hard</span>
+      <div class="qtext">Why does linear broadcast's completion time grow much faster with N than ring broadcast's, under both TC and XDP_CLONE?</div>
+      <details><summary>Show answer</summary><div class="ans">In linear broadcast, one node fans out N−2 copies in a single burst, so that node's clone-count — and its exposure to per-copy overhead (sk_buff cost for TC, page-pool pressure for XDP_CLONE) — scales directly with N. Ring broadcast spreads the work into N single-copy hops, so no one node's per-packet cost grows with N; only the hop count does.<span class="mis">Misconception: that fewer total "rounds" (linear) is strictly better. Concentrating fan-out on one node trades hop-count for a much steeper per-node clone cost.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 6 · medium</span>
+      <div class="qtext">At N=1 subscriber, the paper reports identical 0.4 Mpps for both the TC-based broker and the XDP_CLONE broker. Why no difference here?</div>
+      <details><summary>Show answer</summary><div class="ans">With a single subscriber there's nothing to duplicate — both brokers just rewrite the destination and return a plain <code>XDP_TX</code> from the XDP fast path, doing identical work. The two paths only diverge once N≥2 and actual cloning (and its differing costs) begins.<span class="mis">Misconception: that XDP_CLONE always wins. It only pays off once duplication is actually required.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Does XDP_CLONE replace the existing XDP_* actions?<span class="chev">▾</span></summary><div class="a">No — it adds two new ones (<code>XDP_CLONE_PASS</code>, <code>XDP_CLONE_TX</code>) alongside the existing five. A non-cloning program is unaffected; the new actions are opt-in.</div></details>
+      <details><summary><span class="q">Q2</span>Does using XDP_CLONE require eBPF verifier changes?<span class="chev">▾</span></summary><div class="a">No. For XDP programs the verifier only checks that the return value is a 32-bit scalar, so the new encoded values pass through unchanged. All new safety logic (rejecting nested clones) lives in the driver, not the verifier.</div></details>
+      <details><summary><span class="q">Q3</span>Can a clone be modified independently of the original and its siblings?<span class="chev">▾</span></summary><div class="a">Yes — each clone lives on its own page and is re-run through its own invocation of the XDP program, so edits to one copy are invisible to the others and to the original.</div></details>
+      <details><summary><span class="q">Q4</span>What happens if the page pool can't satisfy a clone's allocation?<span class="chev">▾</span></summary><div class="a">That single copy is dropped: the driver releases the page, returns <code>XDP_ABORTED</code> for it, and raises the <code>xdp_exception</code> tracepoint. The original packet, which already has its own page and verdict, is unaffected.</div></details>
+      <details><summary><span class="q">Q5</span>Does XDP_CLONE preserve TCP semantics for cloned streams?<span class="chev">▾</span></summary><div class="a">No — it's transport-agnostic and duplicates raw frames. Stateful semantics like TCP sequencing are left entirely to the program or application above it; this is why XuDP is built on UDP plus its own lightweight ACK/NACK channel.</div></details>
+      <details><summary><span class="q">Q6</span>Why is UDP chosen for XuDP instead of TCP?<span class="chev">▾</span></summary><div class="a">UDP carries no per-connection state, so XDP can freely inspect, modify, and re-transmit packets without breaking a session abstraction. TCP's sequencing and connection state would be disrupted by in-driver duplication and rewriting.</div></details>
+      <details><summary><span class="q">Q7</span>How much driver code did XDP_CLONE actually take to implement?<span class="chev">▾</span></summary><div class="a">189 additional lines in the mlx5 driver, handling the clone loop, re-running the XDP program per copy, and acting on the returned verdict — publicly available on GitHub.</div></details>
+      <details><summary><span class="q">Q8</span>Why does the linear broadcast's single fan-out node concentrate all the work?<span class="chev">▾</span></summary><div class="a">Because XDP only fires on packet reception — the root sends one datagram to one neighbor, and only that neighbor's XDP program runs and produces the remaining N−2 copies. There's no way to trigger fan-out work on a node that hasn't received anything.</div></details>
+      <details><summary><span class="q">Q9</span>Is XDP_CLONE limited to two-way duplication (original + 1 clone)?<span class="chev">▾</span></summary><div class="a">No — <code>n</code> can be any count the driver and page pool can support; the paper benchmarks up to 64 clones per packet, and the linear broadcast use case requests N−2 clones in a single call.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>XDP_CLONE</b><span>The paper's mechanism: two new XDP return actions that duplicate a packet as pages, entirely inside the driver, before any sk_buff is allocated.</span></div>
+      <div class="term-def"><b>XDP_CLONE_PASS(n)</b><span>Produces n in-driver clones; the original packet is handed to the local kernel stack, as XDP_PASS would.</span></div>
+      <div class="term-def"><b>XDP_CLONE_TX(n)</b><span>Produces n in-driver clones; the original packet is retransmitted out the interface, as XDP_TX would.</span></div>
+      <div class="term-def"><b>Clone metadata tag</b><span>An integer index i ∈ [1,n] the driver writes into each clone's data_meta region before re-running the XDP program on it.</span></div>
+      <div class="term-def"><b>Re-injection</b><span>The driver calling bpf_prog_run_xdp() again on a freshly produced clone, letting the same program issue an independent verdict for it.</span></div>
+      <div class="term-def"><b>Page pool</b><span>The driver's recycled-page allocator for RX buffers; each XDP_CLONE copy draws one fresh page from it.</span></div>
+      <div class="term-def"><b>Page-pool cliff</b><span>The throughput drop once clone demand exceeds the pool's recycled cache (observed beyond ~4 copies), forcing a fallback to the slower general allocator.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>sk_buff</b><span>The kernel's general packet descriptor, built once a packet reaches TC or higher layers; a major source of per-packet overhead.</span></div>
+      <div class="term-def"><b>bpf_clone_redirect()</b><span>The TC helper that replicates a packet, allocating one new sk_buff per call — XDP_CLONE's baseline.</span></div>
+      <div class="term-def"><b>xdp_buff</b><span>The lightweight, page-backed structure XDP programs operate on — what every XDP_CLONE clone is created as; a clone that later returns XDP_PASS still gets wrapped in an sk_buff once it enters the kernel stack, same as any packet.</span></div>
+      <div class="term-def"><b>xdp_exception tracepoint</b><span>Kernel tracepoint that fires when a clone allocation fails or a nested clone action is rejected as XDP_ABORTED.</span></div>
+      <div class="term-def"><b>XuDP</b><span>A lightweight UDP-based broadcast protocol combining XDP_CLONE_PASS with a TCP control channel for end-of-transmission ACK/NACK.</span></div>
+      <div class="term-def"><b>Ring / linear broadcast</b><span>Two MPI-style broadcast patterns: hop-by-hop single-copy forwarding vs one node fanning out to all others at once.</span></div>
+      <div class="term-def"><b>BPF-Broker</b><span>The prior pub-sub system XDP_CLONE's broker is built on; its multi-subscriber fan-out previously required falling back to TC.</span></div>
+      <div class="term-def"><b>Loss-free criterion</b><span>The paper's zero-loss condition: for K packets with n requested copies, a run only counts if all K(n+1) packets return.</span></div>
+      <div class="term-def"><b>DUT / mlx5</b><span>Device under test — here a ConnectX-6 Dx NIC using the mlx5 driver, modified by 189 lines to support XDP_CLONE.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What XDP_CLONE buys (vs TC)</div>
+      <div class="viz-kicker">headline numbers from the paper · higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">64-copy throughput<small>microbenchmark</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="2.6"><span>2.6× (4.0 vs 1.5 Mpps)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">64-copy latency<small>microbenchmark</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="0.4"><span>−40% (59 vs 99 µs)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Pub-sub throughput<small>N=64 subscribers</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="2.3"><span>2.3× (2.28 vs 0.97 Mpps)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Linear broadcast<small>N=32 ranks</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="3.6"><span>3.6× faster (1.06 vs 3.83 ms)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">No-clone baseline<small>XDP_TX vs TC redirect</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="5"><span>5× even with zero clones</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 6×</p>
+      <figcaption>Even before any duplication happens, XDP's fixed-cost advantage over TC is 5×; duplication work on top of that still keeps XDP_CLONE 2.3–3.6× ahead depending on workload. (Paper §2, §5)</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes — what's from the paper vs. this guide's framing</div>
+    <div class="callout note"><span class="ic">📎</span><div><b>From the paper directly:</b> all numeric results (§2, §5) and the two code listings (§3.2) are taken from the source text and its captions.<br><b>This guide's framing:</b> the five-step clone life cycle (§3.1) and the two application designs (§4.1–4.2) are this guide's paraphrase and restructuring of the paper's description, not verbatim text; the signature throughput curve (Big Idea tab) interpolates smoothly between the paper's exact reported points (marked in its caption) to show the described shape; all analogies, the "print shop / valet / bucket brigade" framings, and the worked-example arithmetic (per-copy cost divisions, percentage reductions) are original computations grounded in the paper's stated endpoints, added for intuition.</div></div>
+
+    <div class="subhead">Further reading</div>
+    <div class="read-item reveal"><h4>The eXpress Data Path: fast programmable packet processing <span class="diff med">medium</span></h4><div class="meta">Høiland-Jørgensen et al. · CoNEXT 2018</div><p>The original XDP paper — the architecture XDP_CLONE extends.</p></div>
+    <div class="read-item reveal"><h4>Creating Complex Network Services with eBPF <span class="diff med">medium</span></h4><div class="meta">Miano et al. · HPSR 2018</div><p>Background on the TC hook and its eBPF programming model, the paper's baseline.</p></div>
+    <div class="read-item reveal"><h4>Toward eBPF-Accelerated Pub-Sub Systems <span class="diff med">medium</span></h4><div class="meta">Zhou, Al-Kiswany, Tahmasbi Arashloo · eBPF'25</div><p>BPF-Broker — the pub-sub system XDP_CLONE's broker is built directly on top of.</p></div>
+    <div class="read-item reveal"><h4>Demystifying Performance of eBPF Network Applications <span class="diff hard">hard</span></h4><div class="meta">Shahinfar, Miano, Panda, Antichi · Proc. ACM Netw. 2025</div><p>Deeper look at why XDP outperforms TC structurally — cited for the "TC sits deeper in the stack" claim.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Mazzella, Paschali, Fazzari, Zhou, De Sensi, Pontarelli, "XDP_CLONE: Efficient In-Driver Packet Duplication for eBPF-Accelerated Systems" (eBPF '26)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 6;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal split.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Not optimal — adjust the slider.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
