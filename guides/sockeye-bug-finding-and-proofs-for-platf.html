@@ -659,7 +659,7 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         <li><b>Request 1:</b> address <code>0x8000_0000_0070</code>, <code>is_secure: false</code>, write, value <code>1</code>. Decode the address: bit 47 set (region-config space), bits [6:5] = region id, [4:3] = register id. This targets <b>region3.ATTR</b>, setting it to <code>1 = ATTR_NONSEC</code>.</li>
         <li><b>Why region 3 matters:</b> in the setup, region3 was configured EMPTY with START=END=0 — but <code>allows()</code> only checks <code>START ≤ addr ≤ END</code>, and 0 ≤ 0 ≤ 0 is true, so address 0 (inside the Secure range) now also matches region3, which is Non-Secure-accessible.</li>
         <li><b>Request 2:</b> address <code>0</code>, <code>is_secure: false</code>, write, value <code>0x48ad_c33c_fdc9_99d4</code>. This lands inside the Secure DRAM range (region0, 0 – 0xff_ffff) but is now <em>also</em> permitted by region3 — the write succeeds.</li>
-        <li><b>Total cost:</b> exactly <b>2 steps</b>, both plain MMIO writes a Non-Secure driver could issue — no special privilege needed.</li>
+        <li><b>Total cost:</b> exactly <b>2 steps</b> a Non-Secure driver could issue — an MMIO write to the ASC's region-config registers (Request 1), then a plain DRAM write (Request 2) — no special privilege needed.</li>
       </ol>
       <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the bug isn't in the ASC's DRAM-filtering logic — it's that the <em>filter's own configuration registers</em> weren't behind the filter.</div></div>
     </div>
@@ -669,17 +669,17 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
       <p style="color:var(--ink-soft)">The sample setup: region0 = <code>0x0</code>–<code>0xff_ffff</code> (SEC), region1 = <code>0x100_0000</code>–<code>0x3_ffff_ffff</code> (NONSEC), regions 2/3 EMPTY.</p>
       <ol class="seq">
         <li><b>Secure range size:</b> <code>0xff_ffff + 1 = 0x100_0000</code> = 16,777,216 bytes = <b>16 MB</b>.</li>
-        <li><b>Non-secure range size:</b> <code>0x3_ffff_ffff − 0x100_0000 + 1 ≈ 0x3_ff00_0000</code> ≈ <b>16.4 GB</b> — matches the 16 GB DRAM array (2³¹ × 8-byte words = 2³⁴ bytes = 16 GB).</li>
-        <li><b>The test property</b> checks addresses ≤ <code>0x1f_ffff</code> (2 MB) — a sub-range of the 16 MB Secure region, chosen for solver tractability, not because the rest is unprotected.</li>
+        <li><b>Non-secure range size:</b> <code>0x3_ffff_ffff − 0x100_0000 + 1 = 0x3_ff00_0000</code> = <b>15.98 GiB (17.16 GB)</b> — just under the full 16 GiB DRAM array (2³¹ × 8-byte words = 2³⁴ bytes = 16 GiB), short by exactly the 16 MiB Secure carve-out.</li>
+        <li><b>The test property</b> checks word-addresses ≤ <code>0x1f_ffff</code> — since <code>test_addr</code> indexes 2³¹ eight-byte DRAM words, that's <code>0x20_0000</code> words = <b>16 MiB</b>, i.e. the property covers the <em>entire</em> 16 MiB Secure region, not just a sub-range.</li>
       </ol>
-      <div class="callout why"><span class="ic">💡</span><div>Note the asymmetry: 4 configurable regions must partition a 16.4 GB address space with byte-level START/END fields — a tiny, easy-to-misconfigure control surface guarding a huge memory.</div></div>
+      <div class="callout why"><span class="ic">💡</span><div>Note the asymmetry: 4 configurable regions must partition a 16 GiB address space with byte-level START/END fields — a tiny, easy-to-misconfigure control surface guarding a huge memory.</div></div>
     </div>
 
     <div class="card reveal">
       <h3>③ Sizing the specs — Table 1's LOC counts</h3>
       <p style="color:var(--ink-soft)">Spec size (S), scenario/proof size (V), and total (T) lines of code, from Table 1.</p>
       <ol class="seq">
-        <li><b>Jetson TX2: S = 9667.</b> The paper calls it "the most difficult system to model" — ambiguous carveout-region overlap semantics. LOC bears that out: 4–9× every other platform's spec.</li>
+        <li><b>Jetson TX2: S = 9667.</b> The paper calls it "the most difficult system to model" — ambiguous carveout-region overlap semantics. LOC bears that out: roughly 2.4–8.8× every other platform's spec (from 3984 LOC at STM32H753 up to 1096 at Pico 2).</li>
         <li><b>ThunderX-1: S = 2366, V = 1160.</b> V is unusually large relative to S — reflecting the ZIP-engine proof (§6.2) plus multiple bug scenarios, not just the minimized example in §2.</li>
         <li><b>Raspberry Pi Pico: S = 1096</b>, the smallest spec — a microcontroller has far fewer components than a server SoC — yet <b>V = 450</b>, the second-largest scenario code, because of its two separate induction proofs (DMA-only, and with core 1 + <code>FORCE_CORE_NS</code>).</li>
       </ol>
@@ -764,7 +764,7 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
       <details><summary><span class="q">Q6</span>Why can Sockeye's proofs not express "eventually" properties?<span class="chev">▾</span></summary><div class="a">Sockeye's current property language (assume/assert over scenarios, plus base-case/inductive-step for induction) can express safety properties ("nothing bad ever happens") but not liveness properties ("something good eventually happens") — the paper explicitly lists this as a current limitation.</div></details>
       <details><summary><span class="q">Q7</span>What happens if the manual is right but the hardware is wrong, and Sockeye reports "secure"?<span class="chev">▾</span></summary><div class="a">This is the one blind spot the paper is explicit about: if the spec (faithful to the manual) proves a property, but the real silicon deviates from its own documentation in a way that breaks the property, Sockeye has no way to catch it — that requires techniques working from the hardware itself, like fuzzing or RTL-hardware refinement proofs.</div></details>
       <details><summary><span class="q">Q8</span>Are Sockeye's proofs peer-reviewed to the same standard as, say, Coq proofs?<span class="chev">▾</span></summary><div class="a">They're fully automatic SMT-discharged proofs (no interactive tactic scripts), which trades some assurance (trusting the SMT solver, the backend encoders, and the compiler chain — explicitly listed among the paper's stated assumptions) for dramatically lower proof-engineering effort compared to hand-written invariants in an interactive prover.</div></details>
-      <details><summary><span class="q">Q9</span>How long does it take a new user to become productive in Sockeye?<span class="chev">▾</span></summary><div class="a">The paper reports bachelor's/master's students with little prior formal-methods or SoC background were modeling their own platform within a few weeks of starting a thesis, with the main bottleneck being manual ambiguity/complexity rather than the DSL itself. All managed to find bugs; fewer completed full proofs, which are more involved.</div></details>
+      <details><summary><span class="q">Q9</span>How long does it take a new user to become productive in Sockeye?<span class="chev">▾</span></summary><div class="a">The paper reports bachelor's/master's students with little prior formal-methods or SoC background were modeling their own platform within a few weeks of starting a thesis, with the main bottleneck being manual ambiguity/complexity rather than the DSL itself. All managed to model bugs and bugfixes; fewer completed full proofs, which are more involved.</div></details>
       <details><summary><span class="q">Q10</span>What's next for Sockeye?<span class="chev">▾</span></summary><div class="a">The authors mention more backends (e.g. KLEE) run in parallel for lower wall-clock latency, fuzzing-based bug-finding, auto-generating hardware setup/test code from found exploits, translating from existing formal ISA specs (Sail, ASL) or even using LLMs to help transcribe manuals, and better support for true concurrency (currently each request runs to completion before the next starts).</div></details>
     </div>
   </div>
@@ -805,8 +805,8 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
 
     <div class="subhead">Results at a glance</div>
     <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
-      <div class="viz-title">What Sockeye found, across 8 platforms</div>
-      <div class="viz-kicker">spec size (S, lines of code) by platform — Table 1</div>
+      <div class="viz-title">What Sockeye found, across 6 of the paper's 8 platforms</div>
+      <div class="viz-kicker">spec size (S, lines of code) — Table 1 also lists OMAP and Zynq, omitted here</div>
       <div class="bars" id="resultsBars">
         <div class="bar-row"><div class="bar-label">Jetson TX2<small>most ambiguous</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="9667"><span>9667 LOC</span></div></div></div>
         <div class="bar-row"><div class="bar-label">STM32H753<small>flash readout</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="3984"><span>3984 LOC</span></div></div></div>
