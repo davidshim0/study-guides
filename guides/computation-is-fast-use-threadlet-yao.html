@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<!-- Threadlet / Loom field guide — Computation Is Fast, Use Threadlet! (SOSP'26).
+     Semantic colors: teal = loaded threadlet (register file, hot) · indigo = unloaded threadlet
+     (memory hierarchy, cold — echoes "LtRAM") · honey = Loom's hardware machinery · terracotta =
+     conventional software threading baseline (Linux). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Expose the Thread, Not the Core — Threadlet &amp; Loom, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D9932E; --honey-deep:#B0740F; --honey-soft:#F8E8C7;
+  --dram:#1E8A8A; --dram-soft:#DAF0EC;      /* teal  = loaded threadlet (register file, hot)   */
+  --ltram:#5B54B8; --ltram-soft:#E7E4F8;    /* indigo = unloaded threadlet (memory hierarchy, cold) */
+  --optane:#B8452F; --optane-soft:#F6DFD8;  /* terracotta = conventional software threading baseline */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Expose the <span class="swash">thread</span>, not the <span class="swash" style="color:var(--optane)">core</span></h1>
+    <p class="lede">Every context switch, scheduling decision, and thread wakeup today is a software detour costing microseconds. This is the plain-English story of <strong>threadlet</strong> and <strong>Loom</strong>, hardware that treats software threads as first-class, schedulable citizens.</p>
+    <div class="hero-meta">
+      <span>📄 "Computation Is Fast, Use Threadlet!" · Yao, Qin, Fan et al., SOSP'26</span>
+      <span>🎓 OS scheduling &amp; cache-coherence basics assumed — primers fill the hardware-threading gaps</span>
+      <span>⏱ ~28 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧵</div>
+      <p>Hardware should expose <span class="ro">schedulable units of execution (threads)</span>, not just <span class="wo">computational resources (cores)</span>.<br><em style="font-size:.9rem">Then switching, scheduling, and waking threads become hardware operations — not software detours.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then eight primers</h2>
+      <p class="sub">The paper mints several new acronyms; look them up here first. Then work through the primers — each clears one piece of background the design assumes.</p>
+    </div>
+
+    <div class="subhead">Quick glossary — the paper's own acronyms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Loom</b><span>The hardware architecture that supports threadlets on a core — the "loom" that weaves many threads into a schedule.</span></div>
+      <div class="term-def"><b>LoomOS</b><span>The research OS (built on a small Rust RISC-V kernel) that drives Loom — replaces schedulers, locks, and I/O paths with threadlet-native versions.</span></div>
+      <div class="term-def"><b>TPT</b><span>Threadlet Policy Table — per-threadlet priority (2 bits) + deadline (16 bits) storage; 1.2 KB for 512 threadlets.</span></div>
+      <div class="term-def"><b>MAT</b><span>Address Monitor Table — per-core table mapping a monitored memory address to a threadlet ID, for coherence-based wakeup; 2.8 KB for 512 entries.</span></div>
+      <div class="term-def"><b>CTID</b><span>Current Threadlet ID register (9 bits) — identifies the running threadlet and doubles as the round-robin pointer.</span></div>
+      <div class="term-def"><b>EEVDF</b><span>Earliest Eligible Virtual Deadline First — Linux's default CPU scheduler; LoomOS re-implements it atop Loom's 3-tuple.</span></div>
+      <div class="term-def"><b>ASID / PTBR</b><span>Address-Space ID / Page-Table Base Register — per-threadlet tags letting the MMU switch address spaces without a TLB flush.</span></div>
+      <div class="term-def"><b>MWAIT/MONITOR</b><span>x86 idle-loop instructions that inspired threadlet's <code>tlet_monitor</code>/<code>tlet_wait</code> notification pair.</span></div>
+      <div class="term-def"><b>FFS</b><span>Find-First-Set — the circuit Loom uses to scan its 512-bit placement bitmap for unloaded runnable threadlets.</span></div>
+      <div class="term-def"><b>SMT / OoO</b><span>Simultaneous Multithreading / Out-of-Order execution — conventional hardware threading techniques Loom is designed to coexist with, not replace.</span></div>
+    </div>
+
+    <div class="legend" style="margin-top:22px">
+      <span><i style="background:var(--dram)"></i> loaded threadlet (register file, hot)</span>
+      <span><i style="background:var(--honey)"></i> Loom's hardware machinery</span>
+      <span><i style="background:var(--ltram)"></i> unloaded threadlet (memory hierarchy, cold)</span>
+      <span><i style="background:var(--optane)"></i> conventional software threading (baseline)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What "architectural context" means<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A running thread's <b>context</b> is everything the CPU needs to resume it exactly where it left off: general-purpose registers, the program counter, the stack pointer, and a handful of control/status registers (page-table base, privilege level). Bigger contexts (like x86's floating-point/vector state) can run 2–16× larger than the general-purpose registers alone.</p>
+          <div class="ready"><b>Now you're ready:</b> threadlet's whole design is about shrinking this context to only what's critical — everything else is dropped or shared (§3.3).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Context switching — why it's slow<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Multiplexing many software threads on one core means saving the outgoing thread's registers to memory and loading the incoming thread's registers back in. Even in the best case (no cache pollution), this round-trip to memory costs real cycles — the paper measures 0.6 µs on real Linux hardware.</p>
+          <div class="ready"><b>Now you're ready:</b> Loom's fix is to never spill the <i>active set</i> of threads to memory at all — it keeps a few resident in the register file (§4.3).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>How an OS scheduler picks the next thread<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Linux's default scheduler, <b>EEVDF</b>, tracks each task's virtual runtime (CPU time received, weighted by priority) and virtual deadline (when its next slice should finish), then picks the eligible task with the earliest deadline — using a red-black tree for fast lookups. Correct, but not free: the paper measures 1.0 µs per decision.</p>
+          <div class="ready"><b>Now you're ready:</b> Loom's fast path replaces the red-black tree with a fixed 3-tuple (priority, deadline, time slice) that hardware can rank directly (§3.4).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Interrupts vs. polling — the notification tradeoff<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>When an event happens (I/O completes, a lock is released), software finds out one of two ways. <b>Interrupts</b> are cheap when idle but expensive to service (asserting APIC, entering/exiting a softirq — the paper measures 1.46 µs). <b>Polling</b> is fast to notice but burns a CPU core continuously checking, even when nothing has happened.</p>
+          <div class="ready"><b>Now you're ready:</b> Loom's memory notification is designed to match polling's latency without wasting the CPU — the exact tradeoff §2.3 sets up (§3.5).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Cache coherence &amp; snooping<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>On a multicore chip, each core's private cache must see a consistent view of memory. When one core writes to a cache line another core holds, a <b>coherence protocol</b> sends an invalidation message to that core so it drops its (now-stale) copy. Every core's cache controller can "snoop" these messages as they pass by.</p>
+          <div class="ready"><b>Now you're ready:</b> threadlet's <code>tlet_monitor</code> first pulls the target cache line into the core's own cache; Loom's Address Monitor Table (MAT) then reacts the instant a coherence invalidation arrives for that specific, registered address — not a passive feed of every write in the system (§4.5).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Hardware multithreading (SMT), and why threadlet isn't that<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>SMT</b> (e.g., Intel Hyper-Threading) gives a core two or so hardware-resident thread contexts to interleave, hiding pipeline stalls. It's a microarchitectural trick for utilization, capped at a handful of contexts because each one needs its own full register file slot.</p>
+          <div class="ready"><b>Now you're ready:</b> threadlet solves a different problem — software's scheduling and notification overhead, not pipeline utilization — and scales to <i>hundreds</i> per core precisely because most threadlets stay off-chip (§7).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Spinlocks vs. blocking locks<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A thread that fails to acquire a lock can either <b>spin</b> (busy-loop rechecking — fast to notice release, wastes CPU) or <b>block</b> (yield the core and get woken later — CPU-efficient, but only if the wakeup itself is cheap). Because wakeups have historically been slow, most production lock implementations just spin.</p>
+          <div class="ready"><b>Now you're ready:</b> Loom's cheap memory notification is what finally makes blocking locks competitive with spinning (§5.4).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>TLB shootdowns &amp; IPIs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Most hardware doesn't keep per-core TLBs coherent automatically. When a page table changes, the OS must send an <b>inter-processor interrupt (IPI)</b> to every other core so each can flush its stale translation — a costly, latency-sensitive broadcast.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper flags TLB shootdown as a promising but <i>unimplemented</i> use case for threadlet's cheap thread-to-thread notification (§5.6).</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Threadlet &amp; Loom in a nutshell</h2>
+      <p class="sub">Four inefficiencies, one insight, one tiered-storage trick that makes it practical.</p>
+    </div>
+    <div class="prose">
+      <p>The conventional threading model has two layers: hardware exposes <b>cores</b> as computational resources, and privileged software multiplexes <b>threads</b> onto them. That extra layer of indirection is invisible to hardware, so every context switch, scheduling decision, and notification must be mediated by software — and at µs-scale, that mediation dominates. The paper measures four such taxes on a real Linux box: <span class="mem-chip chip-lru">context switching (0.6 µs)</span>, <span class="mem-chip chip-lru">scheduling (1.0 µs)</span>, <span class="mem-chip chip-lru">thread-to-thread notification (1.5 µs)</span>, and <span class="mem-chip chip-lru">device-to-thread notification (1.46 µs)</span>.</p>
+      <p>The fix, <strong>threadlet</strong>, is a lightweight hardware representation of a software thread — general-purpose registers, a few control registers, and a small 3-tuple of scheduling metadata (priority, deadline, time slice), with floating-point/debug/performance-counter state deliberately dropped or shared. <strong>Loom</strong> is the architecture that hosts them: a core keeps a handful (8) of <span class="mem-chip chip-hi">loaded</span> threadlets resident in the register file, one <span class="mem-chip chip-sat">staged</span> threadlet pre-fetched and ready, and the rest — up to 512 per core — sit <span class="mem-chip chip-ucp">unloaded</span> in the memory hierarchy.</p>
+      <p>This works because of one measured fact: in real µs-scale workloads with heavy thread oversubscription, only <b>1.5%–1.9%</b> of threads are runnable at any instant (Figure 5). So a small on-chip "hot set" plus asynchronous prefetching of the next-most-likely thread covers the common case almost for free, while the memory hierarchy absorbs the long tail. Loom then unifies both flavors of notification — thread-to-thread and device-to-thread — through cache-coherence snooping on a monitored memory address, matching polling's latency without its CPU waste.</p>
+      <p><strong>The payoff:</strong> built on an FPGA (Rocket RISC-V core) with a research OS, LoomOS outperforms prior software and hardware approaches by <b>3× to 47×</b> on end-to-end networking and key-value-store (LMDB) throughput, plus up to <b>28.5×</b> lower lock latency and a <b>46.2%</b> cut in delegation-syscall overhead — for about <b>5.8 KB</b> of on-chip storage per core and a measured <b>5%</b> increase in total on-chip power.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🧵 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Conventional threading pays four taxes: context switching, scheduling, thread-to-thread notification, device-to-thread notification.</li>
+        <li><b>threadlet</b> = a minimized hardware execution context (registers + PC + a 3-tuple scheduling metadata), not a full thread or a full core.</li>
+        <li><b>Loom</b> keeps 8 <span class="mem-chip chip-hi">loaded</span> + 1 <span class="mem-chip chip-sat">staged</span> threadlets on-chip; the rest stay <span class="mem-chip chip-ucp">unloaded</span> in memory — because usually &lt;2% of threads are runnable.</li>
+        <li>Scheduling has a hardware fast path (rank by the 3-tuple) and a software slow path (a dedicated <i>scheduling threadlet</i> that adjusts the 3-tuple for policies like EEVDF).</li>
+        <li>Memory notification unifies thread-to-thread and device-to-thread wakeups via cache-coherence snooping on a monitored address.</li>
+        <li>Result: 3×–47× on real workloads, ~5.8 KB on-chip storage, &lt;5% power increase, nothing hard-wired to one policy.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">where a threadlet's state actually lives</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> loaded (register file)</span>
+        <span><i style="background:var(--honey)"></i> staged (staging buffer)</span>
+        <span><i style="background:var(--ltram)"></i> unloaded (memory hierarchy)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 320" role="img" aria-label="Three-tier threadlet storage: register file, staging buffer, memory hierarchy">
+        <rect x="30" y="40" width="220" height="120" rx="14" fill="#DAF0EC" stroke="#1E8A8A" stroke-width="2.2"/>
+        <text x="140" y="66" text-anchor="middle" font-family="Fraunces" font-size="15" font-weight="600" fill="#16463e">Register File</text>
+        <text x="140" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">8 loaded threadlets</text>
+        <text x="140" y="112" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">context switch:</text>
+        <text x="140" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="16" font-weight="700" fill="#16463e">17 cycles</text>
+        <text x="140" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">(fetch redirect only)</text>
+
+        <rect x="290" y="55" width="180" height="90" rx="14" fill="#F8E8C7" stroke="#B0740F" stroke-width="2.2"/>
+        <text x="380" y="80" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#6e4a09">Staging Buffer</text>
+        <text x="380" y="100" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">1 staged threadlet</text>
+        <text x="380" y="122" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">9th-ranked; loaded async</text>
+
+        <rect x="510" y="30" width="220" height="140" rx="14" fill="#E7E4F8" stroke="#5B54B8" stroke-width="2.2"/>
+        <text x="620" y="56" text-anchor="middle" font-family="Fraunces" font-size="15" font-weight="600" fill="#3a409a">Memory Hierarchy</text>
+        <text x="620" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">up to 503 unloaded</text>
+        <text x="620" y="102" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">promotion (64 unloaded):</text>
+        <text x="620" y="122" text-anchor="middle" font-family="JetBrains Mono" font-size="16" font-weight="700" fill="#3a409a">128 cycles</text>
+        <text x="620" y="140" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">pipelined FFS scan + rank</text>
+
+        <path d="M250 90 h40" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arr)" fill="none"/>
+        <path d="M470 100 h40" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arr)" fill="none"/>
+        <text x="270" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">swap</text>
+        <text x="490" y="92" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">promote</text>
+        <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#9A8E7C"/></marker></defs>
+
+        <text x="380" y="210" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456">observed: only 1.5%–1.9% of threads are runnable at any instant (DeathStarBench, Fig. 5)</text>
+        <rect x="130" y="230" width="500" height="26" rx="6" fill="#fff" stroke="#E7DBC6"/>
+        <rect x="130" y="230" width="9" height="26" rx="3" fill="#1E8A8A"/>
+        <text x="380" y="248" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">≈1.7% runnable (thin teal sliver) of hundreds of total threads in a 4-core DeathStarBench run</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> the register file caches only the handful of threadlets that are actually about to run; a single staging buffer hides the swap-in latency for whoever's next; everything else — the overwhelming majority — waits cheaply in memory until it's promoted. (Paper, §4.3–4.4, Fig. 5)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">four inefficiencies → one insight → Loom's mechanisms → LoomOS use cases</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Software threads are invisible to hardware — every switch/schedule/notify needs OS mediation</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Insight</div><div class="nd">Expose the thread abstraction directly in hardware (threadlet)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Storage (Loom)</div><div class="nd">8 loaded + 1 staged + up to 503 unloaded, ranked by a 3-tuple</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Notify (Loom)</div><div class="nd">Coherence-snooped memory monitoring unifies both notification types</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Schedule (Loom)</div><div class="nd">Hardware fast path (3-tuple rank) + software scheduling threadlet slow path (EEVDF, etc.)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Use cases (LoomOS)</div><div class="nd">Networking &amp; locking (3×–47× real-app gains), delegation syscalls (46.2% lower overhead)</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Seven everyday pictures</div>
+      <h2>How to think about threadlet &amp; Loom</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="30" width="46" height="46" rx="6" fill="#DAF0EC" stroke="#1E8A8A" stroke-width="2.4"/>
+          <text x="37" y="58" text-anchor="middle" font-family="monospace" font-size="10" fill="#16463e">×8</text>
+          <rect x="72" y="40" width="30" height="26" rx="4" fill="#F8E8C7" stroke="#B0740F" stroke-width="2"/>
+          <text x="87" y="57" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">next</text>
+          <path d="M110 40 q18 -10 18 10" stroke="#9A8E7C" stroke-width="1.6" fill="none" stroke-dasharray="3 2"/>
+          <circle cx="120" cy="66" r="10" fill="#E7E4F8" stroke="#5B54B8" stroke-width="2"/>
+          <circle cx="124" cy="20" r="6" fill="#E7E4F8" stroke="#5B54B8" stroke-width="1.6"/>
+        </svg></div>
+        <span class="term">The core idea · Tiered residency</span>
+        <h3>The green room, not the greenroom of everyone</h3>
+        <p>A theater has one small green room (8 seats) for actors about to go on stage, one "on deck" chair for whoever's next, and a much larger backstage area for the rest of the cast. Loom's register file is the green room — a fixed, tiny set of <span class="mem-chip chip-hi">loaded</span> threadlets — with the staging buffer as the on-deck chair and the memory hierarchy as backstage.</p>
+        <div class="breaks"><b>Where it breaks:</b> actors decide their own cues; Loom's controller <i>computes</i> who's next from explicit priority/deadline metadata, not from watching for a signal — it's a ranking, not a queue.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="10" y="16" width="34" height="64" rx="4" fill="#DAF0EC" stroke="#1E8A8A" stroke-width="2.2"/>
+          <rect x="53" y="16" width="34" height="64" rx="4" fill="#E7E4F8" stroke="#5B54B8" stroke-width="2.2"/>
+          <rect x="96" y="16" width="34" height="64" rx="4" fill="#F3EADA" stroke="#D8C8AC" stroke-width="2"/>
+          <text x="27" y="94" text-anchor="middle" font-family="monospace" font-size="8" fill="#16463e">hot</text>
+          <text x="70" y="94" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">cold</text>
+          <text x="113" y="94" text-anchor="middle" font-family="monospace" font-size="8" fill="#6E6456">DRAM</text>
+        </svg></div>
+        <span class="term">For the tiering-minded reader</span>
+        <h3>A memory tiering system, for threads</h3>
+        <p>Loaded / staged / unloaded is structurally the same shape as hot/warm/cold page tiering: a small fast tier, an async promotion buffer, and a large slow tier holding the rest. Just as a tiering system promotes a "hot" page from NVM to DRAM before it's touched, Loom promotes the highest-ranked threadlet <i>before</i> it needs to run.</p>
+        <div class="breaks"><b>Where it breaks:</b> page tiering usually infers "hotness" statistically (access-bit sampling, PEBS counters); Loom's ranking is deterministic and software-declared (priority + deadline), and the unit moved is a few-hundred-byte context, not a 4 KB page.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="26" fill="#F8E8C7" stroke="#B0740F" stroke-width="2.4"/>
+          <path d="M45 34 v14 l10 6" stroke="#6e4a09" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+          <path d="M80 48 h30" stroke="#5B54B8" stroke-width="2.4" stroke-dasharray="4 3"/>
+          <circle cx="118" cy="48" r="8" fill="#E7E4F8" stroke="#5B54B8" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Notification · Coherence snooping</span>
+        <h3>A doorman watching one registered door, not the whole street</h3>
+        <p>A doorman doesn't watch every door in the neighborhood — only the ones he's been asked to. Registering a delivery (<code>tlet_monitor</code>) makes him first walk over and stand by that specific door (pulling the cache line local); from then on he only reacts when <i>that</i> door's intercom (a coherence invalidation) buzzes, not to traffic on every other door in the building.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real doorman never mistakes packages; if a monitored cache line is silently evicted (not written), Loom still wakes the waiter — a "spurious wakeup," the cost of using an imperfect proxy signal.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="60" width="30" height="16" rx="3" fill="#DAF0EC" stroke="#1E8A8A" stroke-width="2"/>
+          <rect x="55" y="60" width="30" height="16" rx="3" fill="#F8E8C7" stroke="#B0740F" stroke-width="2"/>
+          <rect x="94" y="60" width="30" height="16" rx="3" fill="#E7E4F8" stroke="#5B54B8" stroke-width="2"/>
+          <text x="31" y="72" text-anchor="middle" font-family="monospace" font-size="7" fill="#16463e">grp A</text>
+          <text x="70" y="72" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e4a09">deadline</text>
+          <text x="109" y="72" text-anchor="middle" font-family="monospace" font-size="7" fill="#3a409a">slice</text>
+          <path d="M20 44 l8 10 l-8 10" stroke="#332C24" stroke-width="2" fill="none" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">Scheduling · The 3-tuple</span>
+        <h3>Airport boarding groups</h3>
+        <p>Boarding works on three signals: your group number (priority), your specific boarding time (deadline), and how long you're allotted at the jet bridge (time slice). Gate staff never re-derive your itinerary from scratch — they just compare these three numbers. Loom's hardware scheduler does exactly this three-field comparison in a fixed few cycles.</p>
+        <div class="breaks"><b>Where it breaks:</b> airlines rarely recompute your whole boarding priority mid-flight; EEVDF's virtual runtime evolves continuously, so LoomOS's software "scheduling threadlet" must periodically recompute and reprogram the 3-tuple — the gate staff occasionally get new instructions from the airline.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="56" rx="6" fill="#F3EADA" stroke="#D8C8AC" stroke-width="2"/>
+          <circle cx="45" cy="48" r="10" fill="#DAF0EC" stroke="#1E8A8A" stroke-width="2"/>
+          <circle cx="70" cy="48" r="10" fill="#F8E8C7" stroke="#B0740F" stroke-width="2"/>
+          <circle cx="95" cy="48" r="10" fill="#fff" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 2"/>
+          <text x="70" y="12" text-anchor="middle" font-family="monospace" font-size="8" fill="#6E6456">shared FPU token</text>
+        </svg></div>
+        <span class="term">Lightweight context · Shared state</span>
+        <h3>A shared checked bag, with a claim ticket</h3>
+        <p>Cutting weight for a µs-scale "trip," threadlet leaves the floating-point/vector registers, debug, and performance-counter state at home — they're bulky and rarely needed. If a threadlet does need them, it can't just grab them; it must explicitly acquire ownership (a claim ticket) via <code>tlet_acq_state</code>, use them, and release with <code>tlet_rel_state</code>.</p>
+        <div class="breaks"><b>Where it breaks:</b> an unclaimed suitcase just sits there; forgetting to release the shared FPU state blocks every other threadlet on the core from using it — it behaves like a lock, not idle luggage.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="24" width="92" height="16" rx="4" fill="#DAF0EC" stroke="#1E8A8A" stroke-width="2"/>
+          <rect x="24" y="46" width="92" height="16" rx="4" fill="#DAF0EC" stroke="#1E8A8A" stroke-width="2"/>
+          <rect x="24" y="68" width="92" height="8" rx="3" fill="#F3EADA" stroke="#D8C8AC" stroke-width="1.6"/>
+          <path d="M18 32 l-8 0 M18 54 l-8 0" stroke="#332C24" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Enforcement · Context switching without moves</span>
+        <h3>Changing lanes, not changing cars</h3>
+        <p>When both the current and next threadlets already sit in registers, "switching" is just redirecting instruction fetch to a different lane of the same highway — no cargo (register data) ever moves. That's why LoomOS's context switch costs 17 cycles: it's a fetch redirect, not a save/restore.</p>
+        <div class="breaks"><b>Where it breaks:</b> if the next-ranked threadlet is unloaded (not one of the 8 in registers), you genuinely do need to "get a new car" — swap it in from memory, which is exactly the slower, asynchronous path Loom hides behind the staging buffer.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">From the four measured inefficiencies through Loom's tiered storage, scheduling, and notification mechanisms.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The four inefficiencies, measured</h3>
+      <p>The paper breaks each overhead down (Figure 2, Xeon Silver 4216, Linux 6.12):</p>
+      <table class="tbl">
+        <thead><tr><th>Inefficiency</th><th>Total</th><th>Main components</th></tr></thead>
+        <tbody>
+          <tr><td><span class="mem-chip chip-lru">Context switch</span></td><td class="mono">0.60 µs</td><td>Hardware save/restore 0.31 µs + software save/restore 0.29 µs</td></tr>
+          <tr><td><span class="mem-chip chip-lru">Scheduling</span></td><td class="mono">1.02 µs</td><td>Task update 0.28 + rbtree pick 0.21 + rbtree update 0.40 + other 0.13 µs</td></tr>
+          <tr><td><span class="mem-chip chip-lru">Thread-to-thread notify</span></td><td class="mono">1.52 µs</td><td>Update kernel wait/run-queue state 0.94 µs + wait for next scheduler tick 0.58 µs</td></tr>
+          <tr><td><span class="mem-chip chip-lru">Device-to-thread notify</span></td><td class="mono">1.46 µs</td><td>APIC→kernel entry 0.65 + update stats 0.35 + IRQ→softirq 0.18 + softirq exit 0.28 µs</td></tr>
+        </tbody>
+      </table>
+      <div class="callout note"><span class="ic">📈</span><div>At peak load, the paper's networking workloads see up to <b>900,000</b> notifications/sec and an average context-switch interval as low as <b>5.5 µs</b> — so these four costs are not rare, they're the steady state.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · A minimized execution context</h3>
+      <p>A <b>threadlet</b> keeps only what's critical: all general-purpose registers, a few control/status registers (PC, stack pointer, page-table register, privilege level), and a 3-tuple of scheduling metadata. It deliberately drops floating-point/vector registers, debug registers, and performance counters — sharing them among sibling threadlets via explicit acquire/release instructions instead.</p>
+      <table class="tbl">
+        <thead><tr><th></th><th>SW threads</th><th>HW cores/SMT</th><th><b>Threadlets</b></th></tr></thead>
+        <tbody>
+          <tr><td>Number per core</td><td class="mono">many</td><td class="mono">a few (~2)</td><td class="mono"><b>512</b></td></tr>
+          <tr><td>General-purpose regs</td><td class="mono">full</td><td class="mono">full</td><td class="mono">full</td></tr>
+          <tr><td>Control/status regs</td><td class="mono">full</td><td class="mono">full</td><td class="mono">only critical</td></tr>
+          <tr><td>FPU/DR/PMC</td><td class="mono">full</td><td class="mono">full</td><td class="mono"><b>none</b></td></tr>
+          <tr><td>Scheduling metadata</td><td class="mono">full (~700 B)</td><td class="mono">none</td><td class="mono">only critical</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Tiered storage — the register-file challenge</h3>
+      <p>Supporting 512 threadlets by simply expanding the register file is a non-starter: CACTI modeling (Figure 5a) shows register-file access latency and area both grow rapidly with the number of hardware-resident contexts, which would slow down <i>every</i> instruction. Loom instead exploits the DeathStarBench observation that only <b>1.5%–1.9%</b> of threads are runnable on average (up to 15.4% at peak) — so it keeps just 8 <span class="mem-chip chip-hi">loaded</span> threadlets in the register file, 1 <span class="mem-chip chip-sat">staged</span> in a staging buffer, and lets the rest sit <span class="mem-chip chip-ucp">unloaded</span> in the memory hierarchy.</p>
+      <p>Ranking is a simple total order over four fields, evaluated in a three-level compare-select tree (≤2 cycles for the 8 loaded threadlets):</p>
+      <pre class="sketch"><span class="cm"># compare two threadlets; higher rank wins</span>
+<span class="kw">def</span> compare_threadlet_rank(a, b):
+    <span class="cm"># 1. runnable beats blocked</span>
+    <span class="kw">if</span> a.is_runnable != b.is_runnable: <span class="kw">return</span> a <span class="kw">if</span> a.is_runnable <span class="kw">else</span> b
+    <span class="cm"># 2. higher priority wins</span>
+    <span class="kw">if</span> a.priority != b.priority: <span class="kw">return</span> a <span class="kw">if</span> a.priority > b.priority <span class="kw">else</span> b
+    <span class="cm"># 3. earlier deadline wins</span>
+    <span class="kw">if</span> a.deadline != b.deadline: <span class="kw">return</span> a <span class="kw">if</span> a.deadline < b.deadline <span class="kw">else</span> b
+    <span class="cm"># 4. round-robin distance from CTID breaks ties</span>
+    <span class="kw">return</span> a <span class="kw">if</span> <span class="hl">RR_dist</span>(ctid, a.tid) < <span class="hl">RR_dist</span>(ctid, b.tid) <span class="kw">else</span> b</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why a staging buffer?</b> Without it, every rank change (a threadlet blocking, waking, or changing priority) would need to scan <i>all</i> unloaded threadlets to see if anyone now outranks a loaded one. With a staged 9th-ranked threadlet held ready, most rank changes only need one comparison — against the staged one — done asynchronously, off the execution critical path.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Scheduling: hardware fast path + software slow path</h3>
+      <p>Scheduling triggers at two points: every 32-cycle tick, or when the current threadlet yields/blocks/terminates. The fast path just re-ranks the loaded set (above). The slow path is a dedicated, highest-priority <b>scheduling threadlet</b> the OS registers to fire on key events (creation, wakeup, blocking) — it computes complex policies (like EEVDF's virtual deadlines) and writes the result back into the 3-tuple via <code>tlet_set_sched</code>. Convex, simple policies (round-robin, EDF) need the slow path rarely; EEVDF needs it once per round.</p>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Notification via coherence snooping</h3>
+      <p>A threadlet registers a memory address with <code>tlet_monitor</code> — which brings that cache line into the core's own cache — then yields via <code>tlet_wait</code>. Loom's per-core <b>Address Monitor Table (MAT)</b> remembers which threadlet is waiting on which address. When a subsequent write invalidates that specific, now-local cache line, the coherence invalidation is matched against the MAT, and the controller wakes the corresponding threadlet directly, without OS mediation.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">One notification path for both thread-to-thread and device-to-thread events</div>
+      <div class="viz-kicker">write → coherence message → MAT match → wakeup</div>
+      <svg class="full" viewBox="0 0 720 190" role="img" aria-label="Memory notification flow via cache coherence and the Address Monitor Table">
+        <rect x="20" y="70" width="140" height="50" rx="10" fill="#F8E8C7" stroke="#B0740F" stroke-width="2"/>
+        <text x="90" y="92" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#6e4a09">Writer</text>
+        <text x="90" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">core / NIC DMA</text>
+        <path d="M160 95 h60" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arr2)"/>
+        <text x="190" y="88" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">store</text>
+
+        <rect x="220" y="70" width="150" height="50" rx="10" fill="#F3EADA" stroke="#D8C8AC" stroke-width="2"/>
+        <text x="295" y="92" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#332C24">Coherence</text>
+        <text x="295" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">invalidation msg</text>
+        <path d="M370 95 h60" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arr2)"/>
+
+        <rect x="430" y="70" width="140" height="50" rx="10" fill="#E7E4F8" stroke="#5B54B8" stroke-width="2"/>
+        <text x="500" y="92" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#3a409a">MAT</text>
+        <text x="500" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">match address→TID</text>
+        <path d="M570 95 h60" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arr2)"/>
+
+        <rect x="630" y="70" width="70" height="50" rx="10" fill="#DAF0EC" stroke="#1E8A8A" stroke-width="2"/>
+        <text x="665" y="92" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#16463e">Waiter</text>
+        <text x="665" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">wakes</text>
+        <defs><marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#9A8E7C"/></marker></defs>
+        <text x="360" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456">LoomOS: 73 cycles (T-T) / 82 cycles (D-T) — matches polling, no APIC/softirq detour</text>
+      </svg>
+      <figcaption><b>Same path, two use cases:</b> a thread releasing a lock and a NIC completing a DMA both just write to a monitored address; Loom doesn't distinguish them. (Paper, §3.5, §4.5, Fig. 7c–d)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>6 · Where LoomOS plugs it in</h3>
+      <table class="tbl">
+        <thead><tr><th>Use case</th><th>Ctx switch</th><th>Scheduling</th><th>T-T notify</th><th>D-T notify</th></tr></thead>
+        <tbody>
+          <tr><td>Networking runtime</td><td class="mono">✓</td><td class="mono">✓</td><td class="mono">✓</td><td class="mono">✓</td></tr>
+          <tr><td>Blocking lock (MCS)</td><td class="mono">✓</td><td class="mono">✓</td><td class="mono">✓</td><td class="mono">–</td></tr>
+          <tr><td>Thread scheduling (EEVDF)</td><td class="mono">✓</td><td class="mono">✓</td><td class="mono">–</td><td class="mono">–</td></tr>
+          <tr><td>Delegation system calls</td><td class="mono">✓</td><td class="mono">–</td><td class="mono">✓</td><td class="mono">–</td></tr>
+          <tr><td>TLB shootdown / microkernel IPC*</td><td class="mono">✓</td><td class="mono">–</td><td class="mono">✓</td><td class="mono">–</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:.88rem;color:var(--ink-faint)">* Envisioned in §5.6, not yet implemented.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Five traces using the paper's own measurements, recomputed to check they hold together.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The headline speedups, recomputed</h3>
+      <p style="color:var(--ink-soft)">Figure 7 gives raw cycle counts for LoomOS vs. Linux baselines. Do the paper's "×" claims check out?</p>
+      <ol class="seq">
+        <li><b>Context switch:</b> LoomOS 17 cycles vs. Linux 728 cycles → 728 ÷ 17 = <b>42.8×</b>.</li>
+        <li><b>Scheduling:</b> LoomOS 92 cycles (20 select + 72 amortized policy maintenance) vs. Linux 2,315 cycles → 2315 ÷ 92 = <b>25.2×</b>, matching the paper's stated "25× lower."</li>
+        <li><b>Thread-to-thread notification vs. IPI:</b> LoomOS 73 cycles vs. IPI 6,201 cycles → 6201 ÷ 73 = <b>84.9×</b>, exactly the paper's cited figure.</li>
+        <li><b>Device-to-thread notification vs. interrupt:</b> LoomOS 82 cycles vs. interrupt 1,312 cycles → 1312 ÷ 82 = <b>16.0×</b>, again matching.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🧵</span><div><b>Insight:</b> these four ratios (42.8×, 25.2×, 84.9×, 16.0×) are Loom's per-mechanism <i>microbenchmark</i> speedups from Figure 7 — not the abstract's headline. The abstract's <b>3×–47×</b> describes separate, end-to-end real-application measurements (networking, LMDB, locking); notably, Figure 7's own 84.9× already exceeds the abstract's 47× ceiling, since the two number sets answer different questions.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Storage cost as a fraction of the prototype's cache</h3>
+      <p style="color:var(--ink-soft)">The paper states Loom costs ~5.8 KB per core. Where does that number come from, and how small is it really?</p>
+      <ol class="seq">
+        <li><b>TPT:</b> 512 threadlets × (2-bit priority + 16-bit deadline) = 512 × 18 bits = 9,216 bits = <b>1,152 bytes</b> ≈ 1.2 KB (paper's rounding).</li>
+        <li><b>MAT:</b> stated directly — a 512-entry, 8-way set-associative table with 48-bit physical addresses costs <b>2.8 KB</b>.</li>
+        <li><b>Register file growth:</b> stated directly as <b>+1.8 KB</b> (8 loaded contexts' worth of extra general-purpose registers).</li>
+        <li><b>Total:</b> 1.2 + 2.8 + 1.8 = <b>5.8 KB</b> — matches the paper's "around 5.8 KB."</li>
+        <li><b>As a fraction of the FPGA prototype's 512 KB L2</b> (§4.7): 5,800 ÷ 524,288 ≈ <b>1.1%</b> — in the same ballpark as UCP's "&lt;1% area" for cache partitioning, a familiar order of magnitude for cheap per-core hardware bookkeeping.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>None of these structures sit on the instruction critical path — Vivado reports the critical path stays in Rocket's existing DTLB/L1D logic, with only a 5% total on-chip power increase.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ How rare is a spurious wakeup?</h3>
+      <p style="color:var(--ink-soft)">The paper estimates spurious-wakeup frequency from SPEC CPU2017's L2 miss rate. Recompute it.</p>
+      <ol class="seq">
+        <li><b>Given:</b> 8.1 L2 misses per 1,000 instructions, a 3 GHz core, IPC = 1 (so instructions/sec = cycles/sec = 3×10⁹).</li>
+        <li><b>Misses/sec</b> = 8.1/1000 × 3×10⁹ = <b>24.3 million misses/sec</b>.</li>
+        <li><b>Bandwidth</b> (assuming a standard 64 B line, consistent with the paper's own figure): 24.3M × 64 B ≈ <b>1.56 GB/s</b> ≈ the paper's stated "about 1.6 GB/s."</li>
+        <li><b>Time to fill a 1 MiB L2:</b> 1,048,576 B ÷ 1.6×10⁹ B/s ≈ <b>655 µs</b> ≈ the paper's "about 0.7 ms."</li>
+        <li><b>Conclusion:</b> spurious wakeups fire roughly once every 0.7 ms per monitored line — far less often than genuine µs-scale wakeups, so they're not a meaningful tax.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ DeathStarBench's runnable-thread ratio</h3>
+      <p style="color:var(--ink-soft)">Figure 5b gives raw counts for three microservice apps. Recompute the percentages the paper cites.</p>
+      <table class="tbl">
+        <thead><tr><th>App</th><th>Avg runnable</th><th>Max runnable</th><th>Total threads</th><th>Avg %</th><th>Max %</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">Social Network</td><td class="mono">7.76</td><td class="mono">26</td><td class="mono">496</td><td class="mono">1.56%</td><td class="mono">5.24%</td></tr>
+          <tr><td class="mono">Media Service</td><td class="mono">3.35</td><td class="mono">12</td><td class="mono">179</td><td class="mono">1.87%</td><td class="mono">6.70%</td></tr>
+          <tr><td class="mono">Hotel Reservation</td><td class="mono">3.96</td><td class="mono">41</td><td class="mono">267</td><td class="mono">1.48%</td><td class="mono">15.36%</td></tr>
+        </tbody>
+      </table>
+      <div class="callout takeaway"><span class="ic">🧵</span><div>Averages land at 1.48–1.87% (paper: "1.5% to 1.9%"), maxima at 5.24–15.36% (paper: "5.2% to 15.4%") — both recomputations match, and it's this low-runnable-fraction observation that justifies keeping only 8 loaded threadlets. These totals (496 / 179 / 267 threads) come from a 4-core DeathStarBench deployment — total threads observed, not a per-core count.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>⑤ End-to-end use-case gains</h3>
+      <p style="color:var(--ink-soft)">A summary of LoomOS's measured multiples over each baseline, straight from §6.3–6.5.</p>
+      <table class="tbl">
+        <thead><tr><th>Workload</th><th>vs. Shinjuku</th><th>vs. Linux (polling)</th><th>vs. Shenango / Argobots</th></tr></thead>
+        <tbody>
+          <tr><td>Bimodal networking</td><td class="mono">1.3×</td><td class="mono">1.5×</td><td class="mono">1.3×</td></tr>
+          <tr><td>Heavy-tailed networking</td><td class="mono">3.5×</td><td class="mono">53.1×</td><td class="mono">6.5×</td></tr>
+          <tr><td>LMDB (GET/SCAN)</td><td class="mono">3.4×</td><td class="mono">47.0×</td><td class="mono">8.25×</td></tr>
+          <tr><td>Lock latency (32 threads)</td><td class="mono">—</td><td class="mono">28.5× (mutex)</td><td class="mono">17.1× / 26.5× (MCS-B)</td></tr>
+          <tr><td>Delegation syscall</td><td class="mono">—</td><td class="mono">46.2% lower overhead</td><td class="mono">—</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:.88rem;color:var(--ink-faint)">Note: the abstract's "3×–47×" headline range is anchored by LMDB's 47.0× — the 53.1× heavy-tailed-networking number is a separate, larger outlier vs. Linux polling specifically, not part of the abstract's stated range.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Why does Loom keep only 8 threadlets loaded in the register file instead of, say, 64?</div>
+      <details><summary>Show answer</summary><div class="ans">CACTI modeling (Figure 5a) shows register-file access latency and area grow with the number of hardware-resident contexts — a bigger register file slows down <i>every</i> instruction, which is unacceptable for µs-scale computing. Since usually &lt;2% of threads are runnable, 8 loaded slots already covers the common case; the rest live cheaply off-chip.<span class="mis">Misconception: that more on-chip contexts is strictly better. Register-file size trades off against per-instruction latency for every thread, not just the extra ones.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">The TPT stores only priority and deadline per threadlet, yet LoomOS implements EEVDF, which also needs a virtual runtime per task. Where does virtual runtime live?</div>
+      <details><summary>Show answer</summary><div class="ans">It's maintained in software by the scheduling threadlet (the slow path), not in the hardware 3-tuple. At the end of each round, the scheduling threadlet advances every threadlet's virtual runtime, recomputes virtual deadlines, and programs only the resulting deadline/time-slice fields into Loom via <code>tlet_set_sched</code>. The hardware fast path never sees virtual runtime directly.<span class="mis">Misconception: assuming Loom's hardware tracks full EEVDF state. It only tracks the derived 3-tuple; the policy's real bookkeeping stays in software, invoked infrequently.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 3 · hard</span>
+      <div class="qtext">Thread-to-thread notification (1.52 µs) is slower than device-to-thread notification (1.46 µs) in Figure 2, even though waking a sleeping thread sounds simpler than servicing an interrupt. Why?</div>
+      <details><summary>Show answer</summary><div class="ans">Thread-to-thread wakeup pays 0.94 µs just updating kernel wait/run-queue state, plus 0.58 µs "wait for a tick" — a woken thread must wait for the next scheduler tick (often a timer interrupt) before it actually runs. Device notification instead runs the interrupt handler immediately (its overhead is APIC/softirq machinery, not a waiting period). The "wait for tick" tax is what makes even a conceptually simple wakeup surprisingly slow.<span class="mis">Misconception: that conceptual simplicity predicts latency. Both paths are OS-mediated; the specific mediation steps (and whether you must wait for a periodic tick) determine cost, not how "simple" the event feels.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 4 · easy</span>
+      <div class="qtext">True or false: Loom expands the register file enough to hold all 512 threadlets a core can manage.</div>
+      <details><summary>Show answer</summary><div class="ans">False. The register file only grows enough to hold 8 loaded threadlets (+1.8 KB). The other up to 503 threadlets a core can support stay unloaded in the memory hierarchy and are swapped in only when they rank into the top 8 (or become the staged 9th).<span class="mis">Misconception: conflating "supports 512 threadlets per core" with "512 hardware-resident contexts." Support means addressable and manageable, not simultaneously resident.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why does Loom need a dedicated staging buffer, rather than just promoting directly from the unloaded pool into the register file whenever a rank change happens?</div>
+      <details><summary>Show answer</summary><div class="ans">Promoting from the unloaded pool requires a sequential scan (via find-first-set over the 512-bit placement bitmap plus TPT lookups) that can take on the order of 100+ cycles for tens of unloaded threadlets — too slow to do synchronously on every rank change. The staging buffer holds the current 9th-ranked candidate so that most rank changes only need a cheap comparison against it; the expensive scan of the unloaded pool happens asynchronously, off the critical path.<span class="mis">Misconception: that the staging buffer is just "one more loaded slot." Its role is specifically to absorb the asynchronous scan latency, not to add scheduling capacity.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 6 · medium</span>
+      <div class="qtext">A monitored cache line gets evicted (not written) — Loom still wakes the waiting threadlet. Is this a bug?</div>
+      <details><summary>Show answer</summary><div class="ans">No — it's a deliberate, conservative design choice, analogous to x86's MWAIT behaving the same way. Since Loom can't distinguish "the data changed" from "the line just left the cache," it errs toward waking the threadlet (a spurious wakeup) rather than risking a missed wakeup. The back-of-envelope analysis shows this happens roughly once per 0.7 ms per monitored line for typical workloads — rare enough to be a non-issue.<span class="mis">Misconception: that any spurious wakeup indicates incorrect hardware. It's the safe default for an imperfect proxy signal, and its cost is bounded and small.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">Switching between threadlets on the same core doesn't require rewriting page-table registers or flushing in-flight instructions from other threadlets, unlike a full process switch. Why?</div>
+      <details><summary>Show answer</summary><div class="ans">Each threadlet carries its own ASID, page-table base register (PTBR), and privilege level as part of its (small) on-chip metadata, and every in-flight instruction is tagged with its threadlet ID and privilege level. The MMU uses that per-instruction tag to select the right address space and check permissions, so multiple threadlets' in-flight instructions can coexist in the pipeline without a global address-space reload.<span class="mis">Misconception: that switching execution contexts always implies switching address spaces the way a process switch does. Loom decouples "which threadlet is fetching" from "flush the pipeline for a new address space" by tagging instructions individually.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 8 · hard</span>
+      <div class="qtext">For a reader working on DRAM/NVM tiering: how is Loom's loaded/staged/unloaded threadlet storage similar to — and different from — page-level memory tiering?</div>
+      <details><summary>Show answer</summary><div class="ans">Similar: both use a small fast tier (register file / DRAM), an async promotion mechanism to hide movement latency (staging buffer / migration or prefetch queue), and a large slow tier for the long tail (memory hierarchy / NVM). Different: (1) the "hotness" signal — Loom uses explicit, deterministic software metadata (priority + deadline), while page tiering typically infers hotness statistically from access-bit sampling or hardware counters; (2) the unit size — a threadlet context is a few hundred bytes vs. a 4 KB page, so the cost/benefit ratio of movement is very different; (3) Loom's promotion is triggered by scheduling rank changes (an event), whereas page tiering is often triggered by periodic scans or access-frequency thresholds.<span class="mis">Misconception: assuming any "hot/cold tiered storage" system uses the same signal and granularity. The mechanism shape can repeat across very different abstraction levels while the actual hotness signal and unit size differ substantially.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is a threadlet the same thing as a hardware thread (SMT context)?<span class="chev">▾</span></summary><div class="a">No. SMT contexts are a microarchitectural trick — a fixed handful of full hardware thread slots to hide pipeline stalls and maximize utilization. threadlet is an OS-visible abstraction carrying scheduling semantics (priority, deadline, time slice) and full manageability (create/delete/wake instructions), and it scales to hundreds per core precisely because most stay off the pipeline entirely. The paper notes they're complementary and can coexist (§4.8, §7).</div></details>
+      <details><summary><span class="q">Q2</span>Why not just make the register file bigger to hold every thread?<span class="chev">▾</span></summary><div class="a">Register-file access latency and area both scale up with the number of resident contexts (Figure 5a), which would slow down every instruction — unacceptable at µs-scale. Since typically under 2% of threads are runnable at once, a small resident set (8) plus off-chip storage for the rest is far cheaper without sacrificing common-case performance.</div></details>
+      <details><summary><span class="q">Q3</span>How does Loom fix all four inefficiencies at once?<span class="chev">▾</span></summary><div class="a">By removing the software-thread layer of indirection. Context switching becomes a fetch redirect among on-chip contexts (no memory round-trip). Scheduling becomes a fixed hardware comparison over a 3-tuple. Both notification types collapse into one mechanism — coherence-snooped memory monitoring — since hardware can now interface directly with the threads themselves.</div></details>
+      <details><summary><span class="q">Q4</span>What happens when more than 8 threadlets are runnable?<span class="chev">▾</span></summary><div class="a">The controller swaps threadlets between the register file and memory as scheduling ranks change, using the staging buffer to hide the swap latency asynchronously. If more than 512 threadlets are needed on one core, LoomOS migrates some to another core in software.</div></details>
+      <details><summary><span class="q">Q5</span>Isn't memory-address monitoring just MWAIT/MONITOR?<span class="chev">▾</span></summary><div class="a">Similar in spirit — both watch a memory address and go idle until it's written — but MWAIT primarily targets power savings during idle loops and still leaves the OS to do the actual thread bookkeeping. threadlet's <code>tlet_monitor</code>/<code>tlet_wait</code> directly transitions the threadlet to blocked and lets Loom's own scheduler pick the next one, with no OS involvement at all.</div></details>
+      <details><summary><span class="q">Q6</span>Does Loom replace the OS scheduler entirely?<span class="chev">▾</span></summary><div class="a">No — it replaces the fast, per-tick decision with hardware, but the OS (via the scheduling threadlet) still defines and periodically recalibrates the policy. This "fast path in hardware, slow path in software" split is what lets Loom stay flexible instead of hard-wiring one scheduling policy.</div></details>
+      <details><summary><span class="q">Q7</span>What happens to floating-point/vector state, since threadlets don't carry it?<span class="chev">▾</span></summary><div class="a">It's shared among sibling threadlets on a core. A threadlet must explicitly acquire ownership (<code>tlet_acq_state</code>) before using it and release it afterward (<code>tlet_rel_state</code>); accessing it without acquiring triggers an exception. This mirrors Linux's existing lazy-FPU-switching optimization.</div></details>
+      <details><summary><span class="q">Q8</span>Can Loom migrate threadlets across cores?<span class="chev">▾</span></summary><div class="a">Not in hardware — Loom itself has no cross-core migration support. LoomOS implements it in software: create a new threadlet on the target core, copy over architectural and scheduling state, then delete the original. The paper flags generic hardware support for this as future work.</div></details>
+      <details><summary><span class="q">Q9</span>What's the total overhead of adding Loom to a core?<span class="chev">▾</span></summary><div class="a">About 5.8 KB of on-chip storage per core (1.8 KB register file growth + 1.2 KB TPT + 2.8 KB MAT), roughly 1% of the 512 KB L2 in their FPGA prototype. Vivado reports a 5% increase in total on-chip power, and the critical path stays in the baseline Rocket core's existing DTLB/L1D logic — nothing new is added to it.</div></details>
+      <details><summary><span class="q">Q10</span>What's still missing / left for future work?<span class="chev">▾</span></summary><div class="a">Cross-core migration support in hardware (currently software-only), TLB shootdown and microkernel IPC use cases (designed but not yet implemented), and extending Loom to SMT/out-of-order cores beyond the in-order Rocket prototype used for evaluation (§4.8 sketches the direction).</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results, and provenance</h2>
+      <p class="sub">Every term in one place, the headline numbers, and where each claim in this guide comes from.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>threadlet</b><span>A hardware abstraction representing a unit of execution: general-purpose registers, key control registers, and a 3-tuple of scheduling metadata — lighter than a software thread or a hardware core.</span></div>
+      <div class="term-def"><b>Loom</b><span>The supporting architecture: a threadlet controller, an enlarged (but still small) register file, the TPT, and the MAT, integrated into a core.</span></div>
+      <div class="term-def"><b>Loaded / staged / unloaded</b><span>Loom's three-tier storage for threadlet state: 8 resident in the register file, 1 pre-fetched in a staging buffer, up to 503 more in the memory hierarchy.</span></div>
+      <div class="term-def"><b>3-tuple</b><span>A threadlet's scheduling parameters — priority, deadline, time slice — that hardware ranks directly to pick the next threadlet to run.</span></div>
+      <div class="term-def"><b>Scheduling threadlet</b><span>An OS-registered, highest-priority threadlet that runs on key scheduling events to implement policies (e.g., EEVDF) too complex for the hardware fast path alone.</span></div>
+      <div class="term-def"><b>Memory notification</b><span>threadlet's unified mechanism for thread-to-thread and device-to-thread wakeups: monitor an address, yield, and be woken by a coherence-detected write.</span></div>
+      <div class="term-def"><b>Spurious wakeup</b><span>A wakeup triggered by eviction (not a true write) of a monitored cache line — a conservative, infrequent side effect of the monitoring mechanism.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>LoomOS</b><span>The research OS (9,517 LOC, extending a small Rust RISC-V kernel) that exercises Loom across networking, locking, scheduling, and syscalls.</span></div>
+      <div class="term-def"><b>TPT</b><span>Threadlet Policy Table: per-threadlet priority + deadline, 1.2 KB for 512 threadlets.</span></div>
+      <div class="term-def"><b>MAT</b><span>Address Monitor Table: per-core, 512-entry, 8-way set-associative table mapping monitored addresses to threadlet IDs, 2.8 KB.</span></div>
+      <div class="term-def"><b>CTID</b><span>Current Threadlet ID register (9 bits); also the round-robin tie-break pointer.</span></div>
+      <div class="term-def"><b>Placement bitmap</b><span>A 512-bit bitmap tracking which runnable threadlets are currently unloaded, scanned via find-first-set.</span></div>
+      <div class="term-def"><b>EEVDF</b><span>Earliest Eligible Virtual Deadline First — Linux's default scheduler, which LoomOS re-implements on top of the 3-tuple.</span></div>
+      <div class="term-def"><b>FlexSC / delegation syscalls</b><span>A model where dedicated cores handle system calls via shared memory, avoiding trap overhead; LoomOS realizes this without the spinning FlexSC/io_uring otherwise require.</span></div>
+      <div class="term-def"><b>MCS lock</b><span>A classic scalable queue-based lock; LoomOS implements a blocking variant (MCS-B) using memory notification instead of spinning.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What LoomOS buys, end to end</div>
+      <div class="viz-kicker">selected result highlights vs. strongest baseline · higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Ctx switch<small>cycles, vs Linux</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="42.8"><span>42.8× fewer cycles</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Scheduling<small>cycles, vs Linux</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="25.2"><span>25.2× fewer cycles</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">T-T notify<small>vs IPI</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="47"><span>84.9× lower latency</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Heavy-tailed net.<small>vs Linux polling</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="47"><span>53.1× throughput</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Lock latency<small>vs Linux mutex</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="28.5"><span>28.5× lower latency</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">bars scaled for legibility — see exact multiples in labels, not to one shared axis</p>
+      <figcaption>Gains vary widely by baseline and workload shape (53.1× is Linux-polling under heavy-tailed load; the paper's headline "3×–47×" describes the fuller cross-domain range, anchored by LMDB's 47.0×). (Paper §6)</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes — provenance</div>
+    <div class="card">
+      <p style="margin-bottom:10px"><b>From the paper (facts, figures, quotes):</b> all cycle/latency/throughput numbers, the four-inefficiency breakdown (Figure 2), the CACTI register-file observation (Figure 5a), the DeathStarBench runnable-thread ratios (Figure 5b), the storage/power costs (§4.7.1), the ranking pseudocode (Figure 6), the networking/lock/syscall evaluation results (§6.3–6.5), and all direct quotes are drawn from "Computation Is Fast, Use Threadlet!" (Yao, Qin, Fan et al., SOSP'26).</p>
+      <p style="margin:0"><b>This guide's framing (added, not the paper's):</b> the "green room" / boarding-group / suitcase analogies, the explicit hot/warm/cold memory-tiering comparison (Tab 3, Practice Q8), the recomputed arithmetic in Worked Examples (speedup ratios, storage tallies, the spurious-wakeup back-of-envelope, and the DeathStarBench percentage recomputation — all checked against the paper's stated totals), and the SVG diagrams are original explanatory material built to ground the paper's claims, not paper content themselves.</p>
+    </div>
+
+    <div class="subhead">Related work worth reading first</div>
+    <div class="read-item reveal"><h4>Attack of the Killer Microseconds <span class="diff easy">easy</span></h4><div class="meta">Barroso, Marty, Patterson, Ranganathan · CACM · 2017</div><p>The vision paper this work is "heavily inspired by" — proposes many hardware thread contexts with fast switching and a memory-monitoring I/O model.</p></div>
+    <div class="read-item reveal"><h4>A Case Against (most) Context Switches <span class="diff med">medium</span></h4><div class="meta">Humphries, Kaffes, Mazières, Kozyrakis · HotOS XVIII · 2021</div><p>The closest prior proposal — expanding register files / using caches for hardware-thread state. This paper answers the "how many threads can hardware actually hold" question it leaves open.</p></div>
+    <div class="read-item reveal"><h4>Scheduler Activations <span class="diff hard">hard</span></h4><div class="meta">Anderson, Bershad, Lazowska, Levy · ACM TOCS · 1992</div><p>The classic software-only attempt to bridge units-of-execution and computing-resource abstractions — useful contrast for why Loom needs hardware, not just a better software interface.</p></div>
+    <div class="read-item reveal"><h4>ghOSt: Fast &amp; Flexible User-Space Delegation of Linux Scheduling <span class="diff med">medium</span></h4><div class="meta">Humphries et al. · SOSP · 2021</div><p>A software delegation approach to flexible scheduling policy; useful comparison point for Loom's hardware fast-path/software slow-path split.</p></div>
+    <div class="read-item reveal"><h4>Shinjuku: Preemptive Scheduling for µsecond-scale Tail Latency <span class="diff med">medium</span></h4><div class="meta">Kaffes et al. · NSDI · 2019</div><p>One of the paper's primary networking baselines — a software-only preemptive scheduler LoomOS is measured against in §6.3.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Yao, Qin, Fan, Li, Hu, Li, Wang, Xie, Wang, Tamir, Luo, Zhou — "Computation Is Fast, Use Threadlet!" (SOSP '26, Prague)</span>
+    <span><b>Artifact:</b> github.com/TELOS-syslab/Threadlet</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 50;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
