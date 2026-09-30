@@ -1,0 +1,1107 @@
+<!DOCTYPE html>
+<!-- StreamEP field guide — Straggler-Tolerant MoE Decoding without Communication Barriers (Liang et al., SOSP'26).
+     Semantic colors: teal = StreamEP / async streaming (the fix) · terracotta = Barrier EP / collective barrier (the villain)
+     · indigo = StreamInfer machinery (μ-queues, scheduler, communicator) · honey = straggler / network variability. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nobody Waits for the Slow Link — StreamEP, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E0973D; --honey-deep:#B96F12; --honey-soft:#FAE9C9;
+  --dram:#1D7A8C; --dram-soft:#D8EEF1;      /* teal  = StreamEP / async streaming (the fix)      */
+  --ltram:#6456B8; --ltram-soft:#EAE6F8;    /* indigo = StreamInfer machinery                     */
+  --optane:#B8452E; --optane-soft:#F5DCD2;  /* terracotta = Barrier EP / collective barrier (villain) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(29,122,140,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(100,86,184,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(224,151,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(100,86,184,.05) 31px,rgba(100,86,184,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(224,151,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#123f47;font-size:.96rem}
+.primer .ready b{color:#0d2e33}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#123f47}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a2f8a}
+.chip-lru{background:var(--optane-soft);color:#7a2c1a}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B7DEE4;color:#123f47}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#7a2c1a}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fcdd4;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c3bbe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--optane)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#123f47;border:1px solid #9fcdd4}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#123f47}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#7a2c1a}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e0973d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8a7fd8}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#123f47}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#7a2c1a}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(29,122,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(100,86,184,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(224,151,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Nobody should wait for whoever's link is <span class="swash" style="color:var(--optane)">slowest</span> — let every GPU <span class="swash">stream</span></h1>
+    <p class="lede">Mixture-of-Experts inference splits experts across GPUs and syncs every one of them, every layer, at a hard collective barrier. This is the plain-English story of <strong>StreamEP</strong>, which deletes that barrier and lets tokens flow like water instead of marching in lockstep.</p>
+    <div class="hero-meta">
+      <span>📄 "StreamEP" · Liang, Wang, Song, Zhou, Kim, He, Park</span>
+      <span>🎓 Some distributed-GPU-serving basics assumed — the primers cover them</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🌊</div>
+      <p>Let each GPU <span class="ro">START on tokens that have ARRIVED</span> — not <span class="wo">WAIT for the ones still in flight</span>.<br><em style="font-size:.9rem">Queue what's late; compute on what's ready; forward the result immediately.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then eight ideas the paper assumes you know</h2>
+      <p class="sub">Skim the acronym list first — every one recurs constantly. Then the primer cards below build up the rest; open whichever looks unfamiliar.</p>
+    </div>
+
+    <div class="card" style="background:var(--ltram-soft);border-color:#c3bbe8">
+      <h3 style="color:#3a2f8a">Quick glossary — the acronyms you'll see everywhere</h3>
+      <div class="gloss" style="color:#3a2f8a">
+        <div class="term-def"><b>MoE</b><span>Mixture-of-Experts — a layer with many "expert" sub-networks; a router sends each token to only a few.</span></div>
+        <div class="term-def"><b>EP</b><span>Expert Parallelism — spreads experts across GPUs; the paper's target parallelism strategy for decoding.</span></div>
+        <div class="term-def"><b>TP / PP</b><span>Tensor / Pipeline Parallelism — the two alternatives to EP, each with a decode-time weakness (§2.1).</span></div>
+        <div class="term-def"><b>TBO</b><span>Two-Batch Overlap — splits a batch in two and overlaps one's communication with the other's compute.</span></div>
+        <div class="term-def"><b>NCCL</b><span>NVIDIA's collective communication library — the lowest common denominator on commodity clusters.</span></div>
+        <div class="term-def"><b>RDMA / RoCE / IBGDA</b><span>Hardware-accelerated network paths some MoE stacks require; not all commodity clusters have them.</span></div>
+        <div class="term-def"><b>ITL</b><span>Inter-Token Latency — the time between consecutive output tokens during decoding.</span></div>
+        <div class="term-def"><b>KV cache</b><span>Per-request cached attention state; its size caps how many requests can run concurrently.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:20px">
+      <span><i style="background:var(--dram)"></i> StreamEP / async streaming (the fix)</span>
+      <span><i style="background:var(--optane)"></i> Barrier EP / collective barrier (the villain)</span>
+      <span><i style="background:var(--ltram)"></i> StreamInfer machinery</span>
+      <span><i style="background:var(--honey)"></i> straggler / network variability</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What Mixture-of-Experts actually computes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A dense transformer layer runs every token through the same feed-forward network. An MoE layer instead has many parallel "expert" networks and a small router that picks the top-<i>k</i> experts for each token (GPT-OSS-120B: 128 experts, top-4; GLM-4.5-Air: 128 experts + 1 shared, top-8). This lets total parameters grow into the hundreds of billions while each token only touches a small slice of them.</p>
+          <div class="ready"><b>Now you're ready:</b> because different tokens want different experts, and experts live on different GPUs, every MoE layer needs to <i>shuffle</i> tokens to the right device and back — that shuffle is the whole story of this paper.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Why decoding is memory-bandwidth-bound, not compute-bound<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Generating one token at a time (autoregressive decoding) means each step reads the full expert weights from GPU memory to process a comparatively small batch. Throughput hinges on <b>arithmetic intensity</b>: compute-per-byte-moved. Sparse MoE routing already makes each expert's per-step batch small; anything that shrinks it further (like splitting it across pipeline stages) tanks efficiency.</p>
+          <div class="ready"><b>Now you're ready:</b> this is exactly why Pipeline Parallelism (PP) — which divides the batch by N stages — is "counterproductive" for MoE decode (§2.1), while Expert Parallelism (EP) keeps full-size batches per expert.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Expert Parallelism (EP) — the standard fix<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>EP places a subset of experts on each GPU. Each device processes all tokens routed to <i>its</i> experts using full-size weight matrices — arithmetic intensity stays high no matter how many GPUs you add. Attention is usually replicated (data-parallel), so collectives are confined to two exchanges per MoE layer: <b>dispatch</b> (send tokens to their expert's GPU) and <b>combine</b> (send results back).</p>
+          <div class="ready"><b>Now you're ready:</b> dispatch and combine are implemented as blocking collectives (all-to-all, or all-gather+all-reduce) — and blocking is the problem this paper attacks.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>A collective barrier, and what a straggler does to it<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A collective (all-to-all, all-gather, all-reduce) is a hard synchronization point: <i>every</i> participating GPU must send and receive its full share before <i>any</i> of them can proceed. If one link is slow or one GPU is late, the whole collective — and therefore every GPU in it — waits. This paper calls that slow contributor a <b>straggler</b>, and the wait it imposes on everyone else <b>barrier EP</b>.</p>
+          <div class="ready"><b>Now you're ready:</b> on the paper's 16-GPU cluster, an instrumented all-to-all shows the first, median, and last peer arriving at visibly different times (Fig. 2) — that spread is pure wasted GPU-idle time under a barrier.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Commodity clusters vs. hyperscaler fabrics<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Hyperscalers hide the barrier's cost with huge NVLink domains (900 GB/s per GPU) or 400–800 Gbps NICs, plus MoE-optimized stacks that need Hopper-or-newer GPU features (TMA, WGMMA). Most academic and enterprise clusters have neither: pre-Hopper GPUs (A100, L40S), 100–200 Gbps shared NICs, and a mix of PCIe/NVLink intra-node links.</p>
+          <div class="ready"><b>Now you're ready:</b> Table 2's survey found only <b>21%</b> of academic GPUs are Hopper-or-later and just <b>5.1%</b> sit in 8-GPU HGX nodes — the hardware the fast stacks need is genuinely scarce.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Two-batch overlap (TBO) — the leading existing mitigation<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>TBO splits each step's batch into two micro-batches and interleaves them: while micro-batch A does its all-to-all, micro-batch B runs expert compute on a separate stream, and vice versa. This hides communication behind computation — but each micro-batch still hits its own collective barrier, so the slower of the two (compute or comm) still sets the pace, and the maximum speedup is bounded by <code>1 + C/M</code> (compute time over comm time).</p>
+          <div class="ready"><b>Now you're ready:</b> TBO overlaps the barrier's cost; it never removes the barrier itself. That distinction is exactly what separates it from StreamEP.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>NCCL's point-to-point straitjacket<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>NCCL is the one communication library available on essentially every GPU cluster — but its point-to-point send/recv requires the receiver to already know the sender's rank and exact tensor size before the call, so it can allocate a correctly-sized buffer, and both sides must then launch matched <code>NCCLSend</code>/<code>NCCLRecv</code> kernels for the transfer to complete. Fine for a scheduled collective; awkward when any GPU might send a variable-size batch to any other GPU at an unpredictable moment.</p>
+          <div class="ready"><b>Now you're ready:</b> this mismatch is exactly why StreamInfer needs a dedicated protocol (the two-phase communicator, §4.6) instead of calling NCCL P2P naively.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Prefill vs. decode, and why they're usually split<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Serving an LLM request has two phases: <b>prefill</b> (processing the whole input prompt in one compute-bound pass — PP works great here) and <b>decode</b> (generating output tokens one at a time — memory-bandwidth-bound, where EP wins). Because their optimal parallelism strategies differ, production systems often run them on separate GPU pools (prefill–decode disaggregation).</p>
+          <div class="ready"><b>Now you're ready:</b> StreamInfer is a <i>decode-only</i> engine — it's meant to slot into the decode pool of such a disaggregated deployment (§6.7).</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>StreamEP in a nutshell</h2>
+      <p class="sub">The problem, the fix, and the numbers it buys.</p>
+    </div>
+    <div class="prose">
+      <p>Serving MoE models across GPUs with <span class="mem-chip chip-lru">Expert Parallelism</span> means every layer runs two collectives — dispatch and combine — and a collective is a hard barrier: <i>all</i> GPUs must finish before <i>any</i> can continue. On commodity clusters with shared, nonuniform PCIe/NIC links, that barrier can consume up to <b>75%</b> of a layer's execution time, because it always waits for whichever GPU or link happens to be slowest that round.</p>
+      <p><strong>StreamEP</strong> removes the barrier entirely. Instead of collecting the whole batch before computing, each GPU independently receives tokens as they arrive, executes the layer on whatever has arrived, and forwards the results immediately via point-to-point transfers — no waiting for stragglers, no global synchronization point. The paper's system, <b>StreamInfer</b>, realizes this on nothing more exotic than vanilla NCCL, using four mechanisms: per-layer <span class="mem-chip chip-ucp">μ-queues</span> that buffer asynchronously arriving tokens; a <span class="mem-chip chip-ucp">defragmenting scheduler</span> that decides what to execute next without fragmenting batches or starving requests; batch-reformation optimizations that hide the new per-layer reconstruction cost; and a <span class="mem-chip chip-ucp">two-phase communicator</span> that lets any GPU send a variable-size batch to any other GPU at any time over plain NCCL.</p>
+      <p><strong>The payoff:</strong> on a 16×L40S cluster with 200 Gbps inter-node networking, StreamInfer reaches <b>36 K tokens/s</b> on ShareGPT versus barrier EP's <b>21 K</b> — a <b>1.7×</b> improvement — and stays essentially flat under injected network interference that degrades barrier EP by up to <b>24%</b>, even though that interference consumes only ~7.5% of average bandwidth.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🌊 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Barrier EP's dispatch/combine collectives force every GPU to wait for the slowest link or peer, <i>every layer</i>.</li>
+        <li>StreamEP swaps collectives for point-to-point transfers: compute on what's arrived, queue what hasn't, forward what's done.</li>
+        <li>Removing the barrier turns straggler impact from <b>global</b> (everyone stalls) to <b>local</b> (only that token's path is delayed).</li>
+        <li>The idle time barrier EP wastes waiting for late tokens becomes StreamEP's natural batching mechanism — no explicit load balancing needed.</li>
+        <li>Four mechanisms make this real on vanilla NCCL: μ-queues, a defragmenting scheduler, batch-reformation overlap, and a two-phase communicator.</li>
+        <li>Result: up to <b>1.7×</b> decoding throughput vs. EP, near-constant throughput under interference that costs EP up to 24%, and no Hopper-class hardware required — unlike the specialized EP stacks in Table 1, which only <b>21%</b> of surveyed academic GPUs (and just <b>5.1%</b> of HGX-class nodes, 6% of NSF ACCESS GPUs) can even run.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Barrier EP vs. StreamEP, GPU by GPU</div>
+      <div class="viz-kicker">same expert placement · a straggling link on GPU 2 · three MoE layers</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> waiting on the barrier</span>
+        <span><i style="background:var(--dram)"></i> computing / forwarding</span>
+        <span><i style="background:var(--honey)"></i> straggling transfer</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 340" role="img" aria-label="Barrier EP forces all GPUs to wait on a straggler; StreamEP lets each GPU keep computing">
+        <text x="20" y="24" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">(a) Barrier EP — every GPU stalls behind GPU 2's straggling link</text>
+        <g font-family="JetBrains Mono" font-size="11" fill="#6E6456">
+          <text x="20" y="52">GPU 0</text><text x="20" y="90">GPU 1</text><text x="20" y="128">GPU 2</text>
+        </g>
+        <!-- GPU0 row -->
+        <rect x="80" y="38" width="80" height="22" rx="4" fill="#1D7A8C"/><rect x="164" y="38" width="60" height="22" rx="4" fill="#B8452E" opacity=".85"/><rect x="228" y="38" width="80" height="22" rx="4" fill="#1D7A8C"/>
+        <rect x="312" y="38" width="60" height="22" rx="4" fill="#B8452E" opacity=".85"/><rect x="376" y="38" width="80" height="22" rx="4" fill="#1D7A8C"/><rect x="460" y="38" width="60" height="22" rx="4" fill="#B8452E" opacity=".85"/><rect x="524" y="38" width="80" height="22" rx="4" fill="#1D7A8C"/>
+        <!-- GPU1 row -->
+        <rect x="80" y="76" width="80" height="22" rx="4" fill="#1D7A8C"/><rect x="164" y="76" width="60" height="22" rx="4" fill="#B8452E" opacity=".85"/><rect x="228" y="76" width="80" height="22" rx="4" fill="#1D7A8C"/>
+        <rect x="312" y="76" width="60" height="22" rx="4" fill="#B8452E" opacity=".85"/><rect x="376" y="76" width="80" height="22" rx="4" fill="#1D7A8C"/><rect x="460" y="76" width="60" height="22" rx="4" fill="#B8452E" opacity=".85"/><rect x="524" y="76" width="80" height="22" rx="4" fill="#1D7A8C"/>
+        <!-- GPU2 row: straggling dispatch widens (amber), pushes everything -->
+        <rect x="80" y="114" width="80" height="22" rx="4" fill="#1D7A8C"/><rect x="164" y="114" width="60" height="22" rx="4" fill="#E0973D"/><rect x="228" y="114" width="80" height="22" rx="4" fill="#1D7A8C"/>
+        <rect x="312" y="114" width="60" height="22" rx="4" fill="#E0973D"/><rect x="376" y="114" width="80" height="22" rx="4" fill="#1D7A8C"/><rect x="460" y="114" width="60" height="22" rx="4" fill="#E0973D"/><rect x="524" y="114" width="80" height="22" rx="4" fill="#1D7A8C"/>
+        <text x="708" y="130" font-family="JetBrains Mono" font-size="10" fill="#B96F12">straggler</text>
+        <line x1="704" y1="114" x2="704" y2="136" stroke="#B96F12" stroke-width="1.4"/>
+        <text x="380" y="158" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#7a2c1a">All three GPUs finish layer 2 only when GPU 2's straggling dispatch finally completes</text>
+
+        <text x="20" y="196" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">(b) StreamEP — GPUs 0 &amp; 1 keep executing while GPU 2's tokens catch up asynchronously</text>
+        <g font-family="JetBrains Mono" font-size="11" fill="#6E6456">
+          <text x="20" y="224">GPU 0</text><text x="20" y="262">GPU 1</text><text x="20" y="300">GPU 2</text>
+        </g>
+        <rect x="80" y="210" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="154" y="210" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="228" y="210" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="302" y="210" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="376" y="210" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="450" y="210" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="524" y="210" width="80" height="22" rx="4" fill="#1D7A8C"/>
+        <rect x="80" y="248" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="154" y="248" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="228" y="248" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="302" y="248" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="376" y="248" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="450" y="248" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="524" y="248" width="80" height="22" rx="4" fill="#1D7A8C"/>
+        <rect x="80" y="286" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="154" y="286" width="95" height="22" rx="4" fill="#E0973D"/><rect x="253" y="286" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="327" y="286" width="95" height="22" rx="4" fill="#E0973D"/><rect x="426" y="286" width="70" height="22" rx="4" fill="#1D7A8C"/><rect x="500" y="286" width="70" height="22" rx="4" fill="#1D7A8C"/>
+        <text x="600" y="302" font-family="JetBrains Mono" font-size="10" fill="#B96F12">delayed only here</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> under barrier EP (a), GPU 2's slow dispatch (amber) forces GPUs 0 and 1 to idle at every collective — three layers take as long as three stragglers. Under StreamEP (b), GPU 2's delay only pushes back GPU 2's own token stream; GPUs 0 and 1 finish the same three layers uninterrupted. (Adapted from Paper, Fig. 1 &amp; Fig. 4)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">barrier removed → async arrival → scheduled execution → async forwarding → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Dispatch/combine collectives force every GPU to wait for the straggler, every layer</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Buffer (μ-queues)</div><div class="nd">Per-layer attention/expert queues absorb tokens arriving asynchronously</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Decide (Scheduler)</div><div class="nd">Defragmenting scheduler picks which queue to drain next, avoiding fragmentation &amp; livelock</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Reform &amp; Execute</div><div class="nd">Gather scattered token tensors into a contiguous batch, overlapped with CPU prep</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Forward (2-phase comm.)</div><div class="nd">Metadata first, then async NCCL P2P — no barrier, variable size, any peer</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Result</div><div class="nd">Up to 1.7× throughput; flat under network interference</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about StreamEP</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with an honest note about where the picture breaks down.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="30" width="104" height="14" rx="3" fill="#F5DCD2" stroke="#B8452E" stroke-width="2"/>
+          <circle cx="30" cy="37" r="4" fill="#B8452E"/><circle cx="55" cy="37" r="4" fill="#B8452E"/><circle cx="80" cy="37" r="4" fill="#B8452E"/><circle cx="105" cy="37" r="4" fill="#E0973D"/>
+          <rect x="18" y="56" width="104" height="14" rx="3" fill="#D8EEF1" stroke="#1D7A8C" stroke-width="2"/>
+          <circle cx="30" cy="63" r="4" fill="#1D7A8C"/><circle cx="55" cy="63" r="4" fill="#1D7A8C"/><circle cx="80" cy="63" r="4" fill="#1D7A8C"/><circle cx="105" cy="63" r="4" fill="#1D7A8C"/>
+        </svg></div>
+        <span class="term">The core idea · Barrier vs. stream</span>
+        <h3>The whole table must be served at once</h3>
+        <p>A rigid kitchen won't send out <i>any</i> dish until <i>every</i> dish for the table is plated — so if one dish is slow, the whole table waits, food cooling. A better kitchen sends each dish the moment it's ready. Barrier EP is the rigid kitchen: dispatch/combine waits for every GPU's data before any device proceeds. StreamEP sends each token group the moment it's cooked.</p>
+        <div class="breaks"><b>Where it breaks:</b> a table's dishes are independent; MoE layers aren't — a token's layer-2 attention still needs its layer-1 expert output first. StreamEP pipelines this dependency instead of ignoring it.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="50" r="10" fill="#DCEFE9" stroke="#1D7A8C" stroke-width="2.5"/>
+          <circle cx="70" cy="50" r="10" fill="#DCEFE9" stroke="#1D7A8C" stroke-width="2.5"/>
+          <circle cx="110" cy="50" r="10" fill="#DCEFE9" stroke="#1D7A8C" stroke-width="2.5"/>
+          <path d="M40 46 q10 -8 20 0" stroke="#1D7A8C" stroke-width="2" fill="none" stroke-dasharray="3 3"/>
+          <path d="M80 46 q10 -8 20 0" stroke="#1D7A8C" stroke-width="2" fill="none" stroke-dasharray="3 3"/>
+          <rect x="24" y="66" width="12" height="6" rx="2" fill="#E0973D"/>
+        </svg></div>
+        <span class="term">Removing the barrier · Local vs. global straggling</span>
+        <h3>Independent streets, not one clogged highway</h3>
+        <p>A jam on one lane of a single-lane highway stops everyone behind it. A grid of independent streets means one clogged block delays only the traffic on that block — everyone else routes around it. Barrier EP is the highway (one straggling link stalls all 16 GPUs); StreamEP is the grid (a straggling link delays only the tokens riding it).</p>
+        <div class="breaks"><b>Where it breaks:</b> real street grids let you reroute around a jam entirely; a straggling token still has to eventually arrive at its assigned expert — StreamEP tolerates the delay, it doesn't eliminate it.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="24" height="56" rx="4" fill="#EAE6F8" stroke="#6456B8" stroke-width="2"/>
+          <rect x="24" y="26" width="16" height="8" rx="2" fill="#6456B8"/><rect x="24" y="38" width="16" height="8" rx="2" fill="#6456B8"/><rect x="24" y="50" width="16" height="8" rx="2" fill="#6456B8"/>
+          <rect x="96" y="20" width="24" height="56" rx="4" fill="#EAE6F8" stroke="#6456B8" stroke-width="2"/>
+          <rect x="100" y="26" width="16" height="8" rx="2" fill="#6456B8"/>
+          <path d="M50 40 h40" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3"/>
+          <path d="M52 60 h36" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3"/>
+        </svg></div>
+        <span class="term">Natural batching · μ-queues</span>
+        <h3>Mail piling up in your cubbyhole while you're on a call</h3>
+        <p>While you're busy with one task, mail keeps arriving and stacks neatly in your cubbyhole. When you're free, you process a batch of it at once — no one had to wait for you, and you didn't have to interrupt yourself for each letter. That's a μ-queue: tokens accumulate per layer while the GPU computes something else, forming a natural batch with zero explicit coordination.</p>
+        <div class="breaks"><b>Where it breaks:</b> a cubbyhole has no notion of priority — mail sits until you look. μ-queues need an active scheduler (next analogy) deciding which pile to open, or some piles never get touched.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="60" width="20" height="16" fill="#6456B8"/><rect x="46" y="46" width="20" height="30" fill="#6456B8"/><rect x="72" y="30" width="20" height="46" fill="#B8452E"/><rect x="98" y="54" width="20" height="22" fill="#6456B8"/>
+          <path d="M20 24 h98" stroke="#9A8E7C" stroke-width="1.4" stroke-dasharray="2 2"/>
+          <text x="82" y="20" text-anchor="middle" font-family="monospace" font-size="8" fill="#7a2c1a">busiest ≠ best</text>
+        </svg></div>
+        <span class="term">Scheduling · Defragmenting vs. strawmen</span>
+        <h3>Serve the fullest table, or the nearest one?</h3>
+        <p>"Always serve whoever's queue is longest right now" (most-tokens-first) sounds efficient but leaves scraps behind at every other table, scattering your effort thin. "Always serve table 1 first, no matter what" avoids scattering but lets new walk-ins cut the whole line forever. StreamInfer's defragmenting scheduler does neither: it scores each queue by current depth <i>plus</i> a decayed look-ahead down the execution chain, concentrating effort into one advancing wave without starving anyone.</p>
+        <div class="breaks"><b>Where it breaks:</b> a host can glance at every table instantly; the scheduler's look-ahead only estimates a few steps ahead (window <i>W</i>) — it's a heuristic, not a crystal ball.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="22" width="48" height="24" rx="4" fill="#EAE6F8" stroke="#6456B8" stroke-width="2"/>
+          <rect x="76" y="22" width="48" height="24" rx="4" fill="#EAE6F8" stroke="#6456B8" stroke-width="2"/>
+          <path d="M64 30 h12" stroke="#332C24" stroke-width="2" marker-end="url(#arrM)"/>
+          <rect x="16" y="58" width="48" height="24" rx="4" fill="#DCEFE9" stroke="#1D7A8C" stroke-width="2"/>
+          <rect x="76" y="58" width="48" height="24" rx="4" fill="#DCEFE9" stroke="#1D7A8C" stroke-width="2"/>
+          <path d="M64 70 h12" stroke="#1D7A8C" stroke-width="3"/>
+          <defs><marker id="arrM" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#332C24"/></marker></defs>
+        </svg></div>
+        <span class="term">Enforcement · Two-phase communicator</span>
+        <h3>Call ahead before you drive over</h3>
+        <p>You don't show up at a friend's door with an unannounced truckload of furniture — you call first: "I have 3 boxes, here's how big." They clear the space, then you drive over and unload. NCCL P2P needs the same courtesy: the sender's <b>metadata phase</b> tells the receiver how many tensors and what size are coming (via a lightweight CPU message queue), so the receiver can allocate the right buffer before the <b>tensor phase</b>'s actual NCCLSend/NCCLRecv fires — all without either side blocking on the other's schedule.</p>
+        <div class="breaks"><b>Where it breaks:</b> a phone call is instant; the metadata phase still costs real (if tiny) CPU-side latency, and the sender must throttle how many "trucks" it has in flight to bound memory.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="10" rx="3" fill="#F5DCD2" stroke="#B8452E" stroke-width="1.5"/>
+          <rect x="20" y="46" width="100" height="10" rx="3" fill="#F5DCD2" stroke="#B8452E" stroke-width="1.5"/>
+          <rect x="20" y="30" width="14" height="10" fill="#E0973D"/>
+          <rect x="20" y="46" width="30" height="10" fill="#E0973D"/>
+          <text x="70" y="70" text-anchor="middle" font-family="monospace" font-size="9" fill="#7a2c1a">same 7.5% "spilled" → different damage</text>
+        </svg></div>
+        <span class="term">Fragility · Interference amplification</span>
+        <h3>A splash in the bucket everyone drinks from</h3>
+        <p>If sixteen people share one water bucket in strict turn order, spilling just 7.5% of it on one person's turn can still stall the whole line while they wait for a refill — everyone downstream pays for one small spill. If instead everyone has their own cup, that same spill only shorts the person it fell on. Barrier EP's <b>24%</b> throughput loss from interference that removes only ~7.5% of average bandwidth is exactly this amplification; StreamEP's per-GPU independence contains the damage to the affected link.</p>
+        <div class="breaks"><b>Where it breaks:</b> a bucket has one shared resource; the real cluster has many links, so the "spill" in the analogy is really "whichever link is worst that instant" — which link that is keeps changing.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How StreamInfer actually works</h2>
+      <p class="sub">Section by section, matching the paper's own structure (§3–§4.6).</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Why EP, and why its collectives are the bottleneck</h3>
+      <p>Table 1 in the paper lists nearly every specialized EP communication stack (DeepEP, pplx-kernels, fabric-lib, UEP, NCCL EP, FlashMoE, Comet) — and their hardware requirements vary widely: FlashMoE needs only SM70+ and NVLink, Comet needs SM90+ and NVLink, several TBO-oriented stacks need SM90+ and GPUDirect RDMA, while vanilla NCCL runs on any GPU over any interconnect. None of the specialized stacks remove the barrier; they only overlap or fuse around it. On commodity hardware, dispatch and combine still serialize on whichever GPU or link is slowest — measured at up to <b>75%</b> of a layer's execution time.</p>
+      <table class="tbl">
+        <thead><tr><th>Strategy</th><th>Decode weakness</th><th>Sphere throughput</th></tr></thead>
+        <tbody>
+          <tr><td><b>PP × TP</b></td><td>Pipeline bubbles + tiny per-stage batches collapse arithmetic intensity</td><td class="mono">~5 K tok/s</td></tr>
+          <tr><td><b>EP (barrier)</b></td><td>Collectives serialize on the straggler, every layer</td><td class="mono">21–28 K tok/s</td></tr>
+          <tr><td><b>EP-TBO (ideal)</b></td><td>Overlaps comm/compute but each micro-batch still hits a barrier</td><td class="mono">25–35 K tok/s (projected)</td></tr>
+          <tr class="best"><td><b>StreamEP</b></td><td>No barrier — compute on arrival, forward on completion</td><td class="mono">36–40 K tok/s</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="prose">
+      <h3>2 · The five-stage token pipeline</h3>
+      <p>Each GPU runs a <b>StreamEP engine</b> that pulls a token through five stages, independent of every other GPU's schedule:</p>
+    </div>
+    <figure class="viz reveal">
+      <div class="viz-title">One token's journey through an engine</div>
+      <div class="viz-kicker">request 37 · layer 1 expert 1 → layer 2 attention</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">① Receive</div><div class="nd">Communicator lands tensor data in GPU memory; receptor reads only the CPU-side metadata</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">② Stream to μ-queue</div><div class="nd">LayerID routes the token to layer 1's expert queue; tokens accumulate while GPU is busy</div></div>
+      </div>
+      <div style="text-align:center;margin:10px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.2rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">③ Select task</div><div class="nd">Defragmenting scheduler scores all queues, picks layer 1's experts</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">④ Reform &amp; execute</div><div class="nd">Gather scattered tensors into a contiguous batch; launch the GEMM</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">⑤ Dispatch</div><div class="nd">Relabel as layer 2 | attn DP rank 1 | expert=null; forward via communicator</div></div>
+      </div>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · μ-queues and token metadata</h3>
+      <p>An <i>L</i>-layer model keeps <b>2 × L</b> μ-queues per GPU: one attention queue and one expert queue per layer. Each token carries a compact <code>LayerID</code> triple — <code>&lt;layer#&gt; | &lt;attn. DP rank&gt; | &lt;expert#&gt;</code> — plus a <code>RequestID</code> (needed because async arrival destroys position-based ordering), a reference to its GPU-resident tensor, and its top-<i>k</i> gating weight. The <code>attn. DP rank</code> field never changes for a request's lifetime, guaranteeing it always finds its way back to the GPU holding its KV cache.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · The defragmenting scheduler</h3>
+      <p>Two naïve strawmen fail in opposite ways. <b>Most-tokens-first-serve (MTFS)</b> always executes whichever queue is currently fullest — this scatters execution across many layers with small, inefficient batches, because the "last slice" of every layer keeps getting deprioritized by whatever queue just grew bigger. <b>First-layer-first-serve (FLFS)</b> strictly prioritizes the earliest layer — this defragments beautifully but lets a flood of brand-new requests (which always enter at layer 0) permanently starve tokens already deep in the pipeline: livelock.</p>
+      <pre class="sketch"><span class="cm">// score(layer, type) = current depth + decayed lookahead down the chain</span>
+score = Q[l][t]
+<span class="kw">for</span> k <span class="kw">in</span> 1..W:
+    (l, t) = next(l, t)                 <span class="cm">// attn → expert → next layer's attn</span>
+    occ = Q[l][t] + sum(drained_last_B_steps[l][t])
+    score += occ * <span class="hl">δ^k</span>                <span class="cm">// exponential decay, δ &lt; 1</span>
+pick (l*, t*) = argmax score</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why blend current depth with drained history?</b> A queue that was just drained looks momentarily empty, but its co-runners are likely still feeding it — counting recently drained tokens keeps the scheduler from abandoning an active wave the instant it dips.</div></div>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Scattered fragments vs. one advancing wave</div>
+      <div class="viz-kicker">μ-queue depth over time, by layer (illustrative, matched to Fig. 8)</div>
+      <svg class="full" viewBox="0 0 700 220" role="img" aria-label="MTFS scatters execution across many layers; the defragmenting scheduler keeps one concentrated wave">
+        <text x="20" y="22" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">MTFS — many small, fragmented executions</text>
+        <g fill="#B8452E">
+          <rect x="20" y="34" width="14" height="18"/><rect x="60" y="30" width="14" height="22"/><rect x="100" y="40" width="14" height="12"/><rect x="140" y="36" width="14" height="16"/><rect x="180" y="32" width="14" height="20"/><rect x="220" y="42" width="14" height="10"/><rect x="260" y="38" width="14" height="14"/><rect x="300" y="34" width="14" height="18"/><rect x="340" y="40" width="14" height="12"/><rect x="380" y="36" width="14" height="16"/><rect x="420" y="30" width="14" height="22"/><rect x="460" y="44" width="14" height="8"/><rect x="500" y="38" width="14" height="14"/><rect x="540" y="34" width="14" height="18"/><rect x="580" y="40" width="14" height="12"/><rect x="620" y="36" width="14" height="16"/>
+        </g>
+        <text x="20" y="90" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">layers 1–16, each barely fed →</text>
+
+        <text x="20" y="128" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Defragmenting scheduler — one consolidated wave sweeps forward</text>
+        <g fill="#1D7A8C">
+          <rect x="20" y="140" width="14" height="4"/><rect x="60" y="136" width="14" height="8"/><rect x="100" y="150" width="14" height="46" fill="#1D7A8C"/><rect x="140" y="130" width="14" height="10"/><rect x="180" y="126" width="14" height="6"/>
+          <rect x="220" y="180" width="14" height="16"/><rect x="260" y="122" width="14" height="4"/>
+        </g>
+        <rect x="95" y="146" width="24" height="52" rx="4" fill="none" stroke="#6456B8" stroke-width="1.6" stroke-dasharray="3 2"/>
+        <text x="107" y="210" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#3a2f8a">active wave</text>
+      </svg>
+      <figcaption><b>MTFS</b> leaves scraps at every layer — no single execution gets big enough for good arithmetic intensity. The <b>defragmenting scheduler</b> keeps almost all activity concentrated in one tall bar (the active wave) that sweeps through the layers each decoding step. (Illustrative, matched to Paper Fig. 8)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · The two-phase communicator</h3>
+      <p>Because scheduling is asynchronous, any GPU may need to send a variable-size batch to any other GPU at an unpredictable moment — the opposite of NCCL's expectations. StreamInfer splits each transfer into two phases.</p>
+    </div>
+    <figure class="viz reveal">
+      <div class="viz-title">Phase 1 (CPU, cheap) then Phase 2 (GPU, async)</div>
+      <div class="viz-kicker">two-phase protocol over vanilla NCCL</div>
+      <svg class="full" viewBox="0 0 700 200" role="img" aria-label="Two-phase communicator: metadata exchange then tensor transfer">
+        <rect x="30" y="20" width="280" height="70" rx="8" fill="#EAE6F8" stroke="#6456B8" stroke-width="1.6"/>
+        <text x="170" y="40" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#3a2f8a">Sender</text>
+        <rect x="45" y="50" width="120" height="26" rx="5" fill="#fff" stroke="#6456B8"/><text x="105" y="67" text-anchor="middle" font-family="monospace" font-size="10" fill="#332C24">CPU: msg queue</text>
+        <rect x="175" y="50" width="120" height="26" rx="5" fill="#fff" stroke="#1D7A8C"/><text x="235" y="67" text-anchor="middle" font-family="monospace" font-size="10" fill="#332C24">GPU: NCCLSend</text>
+
+        <rect x="390" y="20" width="280" height="70" rx="8" fill="#EAE6F8" stroke="#6456B8" stroke-width="1.6"/>
+        <text x="530" y="40" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#3a2f8a">Receiver</text>
+        <rect x="405" y="50" width="120" height="26" rx="5" fill="#fff" stroke="#6456B8"/><text x="465" y="67" text-anchor="middle" font-family="monospace" font-size="10" fill="#332C24">CPU: msg queue</text>
+        <rect x="535" y="50" width="120" height="26" rx="5" fill="#fff" stroke="#1D7A8C"/><text x="595" y="67" text-anchor="middle" font-family="monospace" font-size="10" fill="#332C24">GPU: NCCLRecv</text>
+
+        <path d="M165 63 h240" stroke="#E0973D" stroke-width="2.4" marker-end="url(#arr1)"/>
+        <text x="285" y="55" text-anchor="middle" font-family="monospace" font-size="10" fill="#B96F12">Phase 1: metadata (size, rank)</text>
+        <path d="M295 100 v20 h230 v-20" stroke="#1D7A8C" stroke-width="2.4" fill="none" marker-end="url(#arr2)"/>
+        <text x="410" y="135" text-anchor="middle" font-family="monospace" font-size="10" fill="#123f47">Phase 2: async tensor transfer (NCCL)</text>
+        <defs>
+          <marker id="arr1" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#E0973D"/></marker>
+          <marker id="arr2" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#1D7A8C"/></marker>
+        </defs>
+        <text x="350" y="175" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">CPU moves to the next transfer immediately after launching Phase 2 — no waiting for GPU completion</text>
+      </svg>
+      <figcaption><b>Phase 1</b> resolves NCCL's buffer-size agreement problem cheaply, on the CPU, via a lightweight message queue. <b>Phase 2</b> launches the actual NCCLSend/NCCLRecv on dedicated streams; the CPU then immediately checks for the next transfer rather than blocking on this one's completion. (Paper, Fig. 10)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>6 · Hiding batch reformation behind computation</h3>
+      <p>Because tokens land at scattered GPU memory locations, every layer needs a reformation kernel to gather them into a contiguous batch before computing — a cost barrier EP never paid, since its collectives delivered contiguous batches for free. StreamInfer hides most of this: while the GPU computes μ-batch <i>i−1</i>, the CPU concurrently schedules and prepares μ-batch <i>i</i>'s metadata via GDRCopy, so the GPU can launch reformation + compute for batch <i>i</i> the instant batch <i>i−1</i> finishes.</p>
+      <table class="tbl">
+        <thead><tr><th>Stage</th><th>Attention: per-step / hidden</th><th>Expert: per-step / hidden</th></tr></thead>
+        <tbody>
+          <tr><td>Schedule</td><td class="mono">127.2 μs / 50.6%</td><td class="mono">29.6 μs / 68.3%</td></tr>
+          <tr><td>Prepare</td><td class="mono">90.2 μs / 50.0%</td><td class="mono">23.3 μs / 66.9%</td></tr>
+          <tr><td>Launch</td><td class="mono">289.4 μs / 66.6%</td><td class="mono">75.4 μs / 65.9%</td></tr>
+          <tr><td>Post-process</td><td class="mono">126.6 μs / 96.4%</td><td class="mono">57.8 μs / 97.4%</td></tr>
+          <tr class="best"><td><b>CPU total</b></td><td class="mono">633.4 μs / 67.0%</td><td class="mono">186.1 μs / 76.2%</td></tr>
+          <tr><td>GPU execution</td><td class="mono">178.4 μs</td><td class="mono">437.3 μs</td></tr>
+        </tbody>
+      </table>
+      <div class="callout note"><span class="ic">🔍</span><div>Expert batches hide CPU overhead better (76.2% vs. 67.0%) simply because expert GEMMs run longer (437.3 μs) and are usually flanked by other expert batches — more GPU time to hide behind. Attention batches carry more metadata (KV-cache bookkeeping), so their CPU cost is both larger and harder to fully mask. (Paper, Table 4)</div></div>
+    </div>
+
+    <!-- INTERACTIVE: concurrency explorer -->
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: slide the concurrency level</div>
+      <div class="viz-kicker">watch barrier EP plateau (then degrade) while StreamInfer keeps scaling — curve shapes only, not measured tok/s values</div>
+      <div class="part-viz">
+        <div>
+          <div class="ways-strip" id="waysStrip"></div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">concurrency level:</span>
+            <input type="range" min="1" max="10" value="3" id="partRange">
+            <span class="mono" id="partRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">3</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-set="1">Low — KV-cache limited</button>
+            <button class="tbtn" data-set="6">Mid — comm. starts to dominate</button>
+            <button class="tbtn" data-set="10">High — comm.-saturated</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">Barrier EP<b id="pVpr">—</b></div>
+            <div class="pstat">StreamInfer<b id="pEq">—</b></div>
+            <div class="pstat">Speedup<b id="pTot">—</b></div>
+          </div>
+          <div class="pverdict sub" id="pVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>What you'll find:</b> at low concurrency both systems are limited by KV-cache capacity and the gap is modest (~1.2×, matching Fig. 15's full-model GLM-4.5-Air result). As concurrency rises, barrier EP's per-layer collective volume grows and it plateaus, then degrades; StreamInfer keeps converting extra concurrency into larger, self-forming batches. The specific tok/s numbers shown by the slider are synthetic and illustrative only — they are not measurements from the paper; only the overall curve shapes are matched to Fig. 14 and the 1.2×→1.3–1.4× ratios of Fig. 15.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations straight from the paper's own reported figures.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The TBO speedup bound, and why it's optimistic</h3>
+      <p style="color:var(--ink-soft)">The paper bounds ideal two-batch-overlap speedup as <code>T_ideal_TBO ≤ T · (C+M)/max(C,M)</code>. On Sphere's communication-bound setup, the paper reports <code>C/M ≈ 0.33</code>.</p>
+      <ol class="seq">
+        <li><b>Communication-bound means M &gt; C</b>, so <code>max(C,M) = M</code>.</li>
+        <li><b>Simplify the bound:</b> (C+M)/M = 1 + C/M = 1 + 0.33 = <b>1.33×</b>. This ceiling is TBO's speedup over its <i>own</i> non-overlapped, single-micro-batch throughput — not a comparison against StreamInfer.</li>
+        <li><b>That's the absolute ceiling for TBO on its own terms</b> — even with zero interference between the overlapped communication and compute kernels.</li>
+        <li><b>StreamInfer separately measures 1.4× throughput over the projected EP-TBO baseline itself</b> on ShareGPT (36 K vs. 25 K tok/s). This is a different ratio with a different denominator than the 1.33× above — the 25 K figure is EP-TBO's projected throughput <i>after</i> applying its own overlap benefit, so "36 K/25 K = 1.4×" isn't "StreamInfer beating TBO's 1.33× ceiling" in any direct sense. What it does show is that StreamInfer still comfortably outperforms the already-optimistic EP-TBO projection.</li>
+        <li><b>Why:</b> TBO still pays a full collective barrier per micro-batch; StreamEP never pays one at all. A real TBO implementation would fall further short of both its own 1.33× ceiling and the 25 K projection, making StreamInfer's true advantage larger still.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Reading Sphere's headline throughput numbers</h3>
+      <p style="color:var(--ink-soft)">StreamInfer: 36 K tok/s (ShareGPT) and 40 K tok/s (GSM8k). Barrier EP: 21 K and 28 K tok/s.</p>
+      <ol class="seq">
+        <li><b>ShareGPT ratio:</b> 36,000 ÷ 21,000 = <b>1.71×</b> — matches the paper's headline "up to 1.7×."</li>
+        <li><b>GSM8k ratio:</b> 40,000 ÷ 28,000 = <b>1.43×</b> — smaller gain.</li>
+        <li><b>Why the gap between datasets?</b> GSM8k has shorter, more uniform sequences than ShareGPT's high length variance — shorter, uniform sequences produce less skewed dispatch/combine volume, so barrier EP's straggler penalty is naturally smaller to begin with, leaving less room for StreamEP to reclaim.</li>
+        <li><b>Sanity check on Delta:</b> 25 K ÷ ~19K(EP, backed out from 1.3× ratio) ≈ 1.3×, and 31 K ÷ ~20.7K ≈ 1.5× — smaller than Sphere because Delta's 4×4 NVLink topology hides more inter-node hops behind fast intra-node links.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Compounding the ablation gains</h3>
+      <p style="color:var(--ink-soft)">Ablation baseline: MTFS scheduling, no batch-reformation optimizations, no CPU–GPU overlap.</p>
+      <ol class="seq">
+        <li><b>MTFS → +Defrag:</b> the paper reports a <b>3.2×</b> throughput jump — the single largest contributor, because MTFS's fragmented tiny batches waste arithmetic intensity.</li>
+        <li><b>+Defrag → +Defrag+Opt (full StreamInfer):</b> batch-reformation optimizations and CPU–GPU overlap add a further <b>4.5%</b>.</li>
+        <li><b>Total multiplier over the MTFS baseline:</b> 3.2 × 1.045 = <b>3.34×</b>.</li>
+        <li><b>Interpretation:</b> getting the scheduling policy right matters an order of magnitude more than shaving overhead — but the overhead-shaving still compounds on top of it, not instead of it.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ End-to-end makespan sanity check</h3>
+      <p style="color:var(--ink-soft)">Table 5: serving 5,000 ShareGPT requests. Prefill (profiled separately): 12.4 s. Total makespan: SGLang EP 171 s, StreamInfer 96 s.</p>
+      <ol class="seq">
+        <li><b>Decode-only time for EP:</b> 171 − 12.4 = <b>158.6 s</b>.</li>
+        <li><b>Decode-only time for StreamInfer:</b> 96 − 12.4 = <b>83.6 s</b>.</li>
+        <li><b>Decode-only ratio:</b> 158.6 ÷ 83.6 = <b>1.90×</b> — even higher than the 1.7× headline decoding-throughput number, since removing the fixed 12.4 s prefill isolates decoding more precisely.</li>
+        <li><b>Total makespan ratio</b> (what a user actually experiences, prefill included): 171 ÷ 96 = <b>1.78×</b>, close to the paper's reported "about 1.7× faster."</li>
+        <li><b>Takeaway:</b> because prefill is a small, fixed, compute-bound cost, StreamInfer's decode-side speedup survives almost intact into end-to-end serving time — but only for decode-heavy workloads (§6.7's explicit caveat).</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Removing the collective barrier means batches are no longer delivered whole — shouldn't that make every execution smaller and less efficient, hurting throughput?</div>
+      <details><summary>Show answer</summary><div class="ans">No — the paper argues the opposite happens. Under barrier EP, a GPU idles after early tokens arrive, waiting for the rest. Under StreamEP, that same idle interval becomes productive: the GPU computes on early arrivals while later tokens queue in μ-queues, forming the next batch with zero explicit synchronization. The spread in arrival times that used to be wasted idle time becomes the batching mechanism itself.<span class="mis">Misconception: that asynchronous arrival necessarily means smaller, less-efficient batches. It only does that if nothing buffers the early arrivals — μ-queues are precisely what prevents that.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Suppose a redesigned TBO pipeline has per-micro-batch compute time C = 80 μs and communication time M = 240 μs. What's the ideal TBO speedup ceiling, and is it achievable in practice?</div>
+      <details><summary>Show answer</summary><div class="ans">M &gt; C, so the bound is (C+M)/M = 1 + C/M = 1 + 80/240 = 1 + 0.33 = <b>1.33×</b>. This is a ceiling assuming perfect, zero-interference overlap between the concurrent micro-batches' kernels. In practice, pipeline fill/drain, kernel interference on shared SMs, and lower per-micro-batch kernel efficiency (half the batch size) all pull real TBO implementations below this ceiling — which is exactly why the paper compares against the <i>optimistic projection</i> rather than a real TBO run, and still shows StreamInfer ahead.<span class="mis">Misconception: that the bound itself is achievable. It's a theoretical maximum; real systems fall short of it, making the true StreamEP-vs-TBO gap even larger than the paper's conservative comparison shows.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 3 · hard</span>
+      <div class="qtext">Interference consuming only ~7.5% of average bandwidth degrades barrier EP's throughput by up to 24%. Explain the mechanism behind this disproportion.</div>
+      <details><summary>Show answer</summary><div class="ans">A collective's completion time is set by its <i>worst instantaneous link</i>, not its average bandwidth. Even a brief interference spike on a single link — which barely dents the cluster-wide average — forces every other GPU in the barrier to wait for that one link to recover before the whole collective (and hence every GPU's next layer) can proceed. Average bandwidth loss and worst-case delay are different quantities; the barrier is exposed to the latter, not the former. Separating TCP control traffic onto a different NIC from NCCL's RoCE datapath doesn't fix it either, confirming the bottleneck is structural (the collective itself), not a NIC contention artifact.<span class="mis">Misconception: that throughput impact should scale roughly with the fraction of bandwidth lost. Under a hard barrier, a small, localized spike can have an outsized, cluster-wide effect because everyone waits for the single worst link.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 4 · medium</span>
+      <div class="qtext">Construct a short scenario where first-layer-first-serve (FLFS) scheduling causes livelock, and explain why the defragmenting scheduler avoids it.</div>
+      <details><summary>Show answer</summary><div class="ans">Under FLFS, layer 0 (where every new request's tokens first enter) always outranks every other layer, no matter how full those other layers' queues are. If requests arrive continuously at a high rate, layer 0's queue is perpetually replenished by new arrivals, so the scheduler never "runs dry" there and never moves on to drain layers 1, 2, 3… — tokens already deep in the pipeline wait forever. The defragmenting scheduler avoids this because its score for each (layer, type) blends current occupancy with a decayed look-ahead down the execution chain, so a heavily-loaded downstream layer with recently drained tokens can out-score layer 0, so the wave keeps advancing instead of getting pinned at the entry point.<span class="mis">Misconception: that "always prioritize the earliest stage" is a safe way to defragment. It defragments well under moderate load but is vulnerable to starvation whenever new arrivals can outpace draining — precisely the high-request-rate regime that matters for throughput-optimized serving.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 5 · easy</span>
+      <div class="qtext">Why can't a GPU just call NCCLSend the moment its output tokens are ready for some other GPU, at any time?</div>
+      <details><summary>Show answer</summary><div class="ans">NCCL's point-to-point API requires the receiver to already know the sender's rank and the exact tensor size before it can post a matching NCCLRecv — otherwise it can't allocate a correctly-sized receive buffer — and both sides must then launch matched send/recv kernels for the transfer to complete. Under StreamEP, any GPU may need to send a variable-size batch to any other GPU at an unscheduled moment, which violates NCCL's buffer-size-agreement expectations. The two-phase communicator solves this by having the sender announce size and rank via a lightweight CPU message queue first (Phase 1), so the receiver can prepare its buffer before the actual NCCL transfer (Phase 2) launches.<span class="mis">Misconception: that NCCL's collective-oriented P2P calls are naturally suited to ad-hoc, unscheduled transfers. They're built for scheduled, size-known exchanges — asynchronous serving needs an extra negotiation layer on top.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">For what kind of workload would StreamInfer's decoding speedup translate into essentially no end-to-end benefit?</div>
+      <details><summary>Show answer</summary><div class="ans">An extremely prefill-heavy or prefill-only workload (e.g., a single-pass LLM binary decision on a long input, with little or no generated output). §6.7 shows that prefill is already fast and compute-bound (12.4 s / 8.8 s for 5,000-request batches, versus 96–171 s of decoding) — StreamInfer only accelerates the decode phase, so if a workload spends almost all its time in prefill, there's little decode time left to speed up.<span class="mis">Misconception: that a 1.7× decoding speedup always means a 1.7× end-to-end speedup. It only approaches that when decoding dominates total serving time — the paper is explicit that decode-heavy and moderately-prefill-heavy workloads benefit; prefill-dominated ones won't.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 7 · medium</span>
+      <div class="qtext">GLM-4.5-Air's speedup over EP widens from ~1.2× (full 46-layer model, low concurrency) to 1.3–1.4× (halved 23-layer model, roughly double concurrency). Why does StreamInfer's advantage grow with concurrency while EP's shrinks?</div>
+      <details><summary>Show answer</summary><div class="ans">StreamInfer pays a fixed per-layer overhead (scheduling, batch reformation, metadata transfer) each step; larger concurrency means larger batches, which amortize that fixed cost better — so its efficiency improves with scale. Barrier EP does the opposite: larger concurrency means more tokens must cross the same collective every layer, which amplifies per-layer collective volume and, combined with the barrier waiting on the slowest transfer, actually degrades EP's throughput at higher concurrency. The two systems' overheads move in opposite directions as concurrency rises, which is why the gap between them widens.<span class="mis">Misconception: that both systems should scale similarly with more concurrent requests. EP's collective-based design makes more concurrency actively harmful past a point; StreamInfer's queue-based design makes more concurrency actively helpful.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 8 · hard</span>
+      <div class="qtext">On Delta (4×4 A100, NVLink intra-node) StreamInfer's advantage over EP (1.3–1.5×) is smaller than on Sphere (1.4–1.7×), even though both clusters have 200 Gbps inter-node networking. Why?</div>
+      <details><summary>Show answer</summary><div class="ans">Two structural differences. First, A100's smaller memory (40 GB vs. L40S's 48 GB) caps batch concurrency lower, which reduces cross-node traffic and shrinks the communication bottleneck StreamEP is designed to route around. Second, Delta's 4-GPUs-per-node NVLink topology means only the 4 inter-node NIC hops (one per node) can gate a step, with intra-node traffic riding fast NVLink; on Sphere, all 8 PCIe links and 8 shared NICs run at comparable, more uniform speeds, so any of many hops can become the bottleneck — precisely the "nonuniform and shared interconnect" scenario StreamEP targets. Fewer, faster-hidden bottleneck links means less barrier-serialization for StreamEP to eliminate.<span class="mis">Misconception: that identical inter-node bandwidth numbers (200 Gbps on both clusters) predict identical gains. The gain depends on how uniform the whole interconnect is and how much of the path is masked by fast intra-node links, not just the inter-node NIC spec.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Twelve questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is StreamEP removing the network, or just the software barrier?<span class="chev">▾</span></summary><div class="a">Just the software barrier. The physical network — the same 200 Gbps RoCE/Slingshot links, the same shared PCIe/NICs — is untouched. StreamEP changes how software uses that network: instead of a synchronous all-to-all/all-gather that forces every participant to wait, it uses asynchronous point-to-point sends so each GPU proceeds as soon as its own data is ready.</div></details>
+      <details><summary><span class="q">Q2</span>Doesn't asynchronous, out-of-order token arrival risk mixing up which token belongs to which request?<span class="chev">▾</span></summary><div class="a">No — every token carries a persistent <code>RequestID</code> plus a <code>LayerID</code> that encodes exactly which layer, attention DP rank, and (if applicable) expert it's headed for. Since position-based ordering is meaningless once tokens can arrive in any order, this explicit metadata is what makes reassembly correct regardless of arrival order.</div></details>
+      <details><summary><span class="q">Q3</span>Why can't most people just buy Hopper GPUs and NVLink fabric to sidestep this whole problem?<span class="chev">▾</span></summary><div class="a">Because that hardware is genuinely scarce outside hyperscalers. The paper's survey of major U.S. academic HPC clusters (Table 2) found only 21% of available GPUs are Hopper-or-later, and just 5.1% sit in 8-GPU HGX-class nodes; only 6% of NSF ACCESS GPUs meet DeepEP's requirements. Commercial clouds are similarly uneven — AWS EFA supports some optimized stacks only on P5 instances, and GCP's GPU networking support varies sharply by instance type.</div></details>
+      <details><summary><span class="q">Q4</span>What stops the defragmenting scheduler's newest requests from starving the tokens already in flight?<span class="chev">▾</span></summary><div class="a">That's specifically the failure mode of the FLFS strawman, which the real scheduler avoids by not strictly prioritizing the earliest layer. Its score blends each queue's current depth with a decayed look-ahead down the execution chain, so a heavily-loaded, actively-advancing wave downstream can out-score layer 0's queue — new arrivals accumulate there without permanently blocking older tokens' progress.</div></details>
+      <details><summary><span class="q">Q5</span>Does StreamEP change the model's outputs or numerical results?<span class="chev">▾</span></summary><div class="a">No. StreamEP changes the scheduling and communication of MoE decoding, not the math each layer computes. Tokens still go to exactly the experts the router assigns them to (top-<i>k</i> routing is preserved via one copy dispatched per assigned expert, §4.3), and top-k merge weighting is applied identically — the paper is a systems contribution, not a model-architecture change.</div></details>
+      <details><summary><span class="q">Q6</span>Why is StreamInfer's advantage smaller on Delta (A100/NVLink) than on Sphere (L40S/PCIe)?<span class="chev">▾</span></summary><div class="a">Delta's smaller per-GPU memory caps concurrency (and thus cross-node traffic), and its 4-GPUs-per-node NVLink topology means fewer, faster-hidden inter-node hops can bottleneck a step. Sphere's 8 uniform PCIe/NIC hops all run at comparable speed, so any one of many links can straggle — the exact scenario StreamEP is built to tolerate — giving it more room to help there.</div></details>
+      <details><summary><span class="q">Q7</span>How is StreamEP fundamentally different from two-batch overlap (TBO)?<span class="chev">▾</span></summary><div class="a">TBO overlaps one micro-batch's communication with another's computation, hiding the barrier's cost behind concurrent work — but each micro-batch still fully waits at its own collective barrier before proceeding, and the achievable speedup is capped at 1 + C/M. StreamEP removes the barrier itself: there is no point at which a GPU waits for the whole batch to arrive before computing.</div></details>
+      <details><summary><span class="q">Q8</span>Why does StreamInfer use GDRCopy instead of ordinary CUDA memcpy for CPU–GPU metadata transfers?<span class="chev">▾</span></summary><div class="a">Per-layer scheduling requires many small, frequent host–device transfers (KV-slot allocation, per-token metadata for paged attention, gating weights and expert indices copied back to the CPU). GDRCopy offers lower per-transfer latency than standard CUDA memcpy for exactly this pattern of small, frequent copies, which matters because these transfers happen every layer, not once per request.</div></details>
+      <details><summary><span class="q">Q9</span>Is StreamInfer a complete serving stack, including prompt processing?<span class="chev">▾</span></summary><div class="a">No — StreamInfer is a decode-only engine. It's meant to be deployed as the decoding worker in a prefill–decode disaggregated architecture, with a separate system (e.g., SGLang for prefill, Mooncake-style KV-cache transfer) handling prompt processing and handing off the resulting KV cache.</div></details>
+      <details><summary><span class="q">Q10</span>How much new engineering did removing the barrier actually require?<span class="chev">▾</span></summary><div class="a">The performance-critical components — communicator, receptor, scheduler, and dispatcher — are about 9,000 lines of C++, exposed to a Python model executor via pybind11. The scheduler and executor run in the main Python thread; the receptor and dispatcher run on dedicated POSIX threads with their own CUDA streams, which is also how they sidestep Python's GIL to overlap communication and computation.</div></details>
+      <details><summary><span class="q">Q11</span>What happens to "shared experts" that every token must pass through?<span class="chev">▾</span></summary><div class="a">Some MoE architectures (e.g., DeepSeek-style models) add shared experts that process every token in addition to its top-<i>k</i> routed experts. StreamInfer executes shared experts under data parallelism immediately after attention, on the same GPU, before dispatching token copies onward to the routed experts — no cross-GPU communication needed for that part.</div></details>
+      <details><summary><span class="q">Q12</span>Does StreamEP have anything to say about the prefill phase or training?<span class="chev">▾</span></summary><div class="a">Not directly. The paper's case for EP specifically concerns decoding, where sparse per-token compute makes arithmetic intensity fragile; prefill is compute-bound and already served well by pipeline parallelism, so prefill–decode disaggregation (not StreamEP) is the paper's answer there. Training is out of scope entirely — StreamInfer targets throughput-optimized inference serving.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>StreamEP</b><span>The paper's paradigm: remove the EP collective barrier, letting each GPU independently receive, compute, and forward tokens as they arrive.</span></div>
+      <div class="term-def"><b>Barrier EP</b><span>Standard expert parallelism using blocking dispatch/combine collectives — every GPU must finish before any can proceed.</span></div>
+      <div class="term-def"><b>StreamInfer</b><span>The serving system that realizes StreamEP on vanilla NCCL, using μ-queues, a defragmenting scheduler, batch-reformation overlap, and a two-phase communicator.</span></div>
+      <div class="term-def"><b>μ-queue</b><span>A per-layer, per-type (attention or expert) queue that buffers tokens arriving asynchronously from any peer.</span></div>
+      <div class="term-def"><b>LayerID</b><span>Compact routing metadata per token: &lt;layer#&gt; | &lt;attn. DP rank&gt; | &lt;expert#&gt;, used to select the right μ-queue and destination GPU.</span></div>
+      <div class="term-def"><b>Defragmenting scheduler</b><span>Selects which (layer, type) queue to execute next by combining current depth with a decayed look-ahead, avoiding both fragmentation (MTFS) and livelock (FLFS).</span></div>
+      <div class="term-def"><b>Two-phase communicator</b><span>A protocol layered on NCCL P2P: a CPU-side metadata exchange (Phase 1) followed by an async GPU tensor transfer (Phase 2), enabling variable-size, unscheduled transfers.</span></div>
+      <div class="term-def"><b>Batch reformation</b><span>Gathering scattered, individually-arrived token tensors into one contiguous buffer before launching a layer's kernels.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>MoE / EP / TP / PP</b><span>Mixture-of-Experts; Expert / Tensor / Pipeline Parallelism — the three strategies for sharding a model across GPUs.</span></div>
+      <div class="term-def"><b>Dispatch / Combine</b><span>The pair of collectives per MoE layer: sending tokens to their expert's GPU, and returning expert outputs.</span></div>
+      <div class="term-def"><b>Straggler</b><span>A slow GPU or link that, under a collective barrier, delays every other participant.</span></div>
+      <div class="term-def"><b>TBO (Two-Batch Overlap)</b><span>Splits a batch into two micro-batches, overlapping one's collective with the other's compute; still barrier-bound per micro-batch.</span></div>
+      <div class="term-def"><b>Attn. DP rank</b><span>The data-parallel rank holding a request's replicated attention weights and KV cache; a token's LayerID always routes it back here for attention.</span></div>
+      <div class="term-def"><b>GDRCopy</b><span>A low-latency host–device copy library used for the frequent, small CPU–GPU metadata transfers StreamInfer's per-layer scheduling requires.</span></div>
+      <div class="term-def"><b>ITL</b><span>Inter-Token Latency — the metric used alongside throughput to characterize decoding responsiveness.</span></div>
+      <div class="term-def"><b>Prefill–decode disaggregation</b><span>Running prompt processing and token generation on separate GPU pools, each using its best-fit parallelism strategy.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What StreamEP buys (vs. barrier EP)</div>
+      <div class="viz-kicker">GPT-OSS-120B, Sphere cluster unless noted · higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">ShareGPT throughput<small>Sphere</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="17.1"><span>+71% (21K → 36K tok/s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">GSM8k throughput<small>Sphere</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="14.3"><span>+43% (28K → 40K tok/s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Delta throughput<small>GSM8k</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="15"><span>+50%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">End-to-end makespan<small>5000 req, ShareGPT</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="17.8"><span>1.78× faster (171s → 96s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Interference resilience<small>barrier EP loses up to</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="24"><span>EP: −24% · StreamInfer: ~flat</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ +25pts</p>
+      <figcaption>Sphere is 8×2×L40S over 200 Gbps RoCE (PCIe intra-node); Delta is 4×4×A100 over 200 Gbps Slingshot (NVLink intra-node). All decoding numbers use dummy KV-cache and profile-replayed routing to isolate the decode mechanism (§D). (Paper §6.2–§6.7)</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>Sparse Mixture-of-Experts layers <span class="diff easy">easy</span></h4><div class="meta">explainer · 20–30 min</div><p>Shazeer et al.'s original sparsely-gated MoE — top-k routing, load balancing basics. Foundation for everything the paper builds on.</p></div>
+    <div class="read-item reveal"><h4>NCCL collectives (all-to-all, all-gather, all-reduce) <span class="diff med">medium</span></h4><div class="meta">explainer · 30–45 min</div><p>How GPU collectives are implemented and why they're synchronous by construction — the root of the barrier problem.</p></div>
+
+    <div class="subhead">Related papers (from §7)</div>
+    <div class="read-item reveal"><h4>GShard: Scaling Giant Models with Conditional Computation <span class="diff med">medium</span></h4><div class="meta">Lepikhin et al. · ICLR · 2021</div><p>Introduced expert parallelism as the standard sharding strategy for MoE — the parallelism StreamEP keeps, minus its collective barrier.</p></div>
+    <div class="read-item reveal"><h4>DeepEP: An Efficient Expert-Parallel Communication Library <span class="diff hard">hard</span></h4><div class="meta">Zhao et al. (DeepSeek-AI) · 2025</div><p>The leading Hopper-class, RDMA-dependent EP stack — retains the collective barrier while overlapping it with two-batch computation.</p></div>
+    <div class="read-item reveal"><h4>Comet: Fine-grained Computation-communication Overlapping for MoE <span class="diff hard">hard</span></h4><div class="meta">Zhang et al. · MLSys · 2025</div><p>Fuses communication and computation at tile granularity on NVLink — the "Fused" alternative to TBO that still cannot advance past incomplete transfers.</p></div>
+    <div class="read-item reveal"><h4>Efficient Memory Management for LLM Serving with PagedAttention (vLLM) <span class="diff med">medium</span></h4><div class="meta">Kwon et al. · SOSP · 2023</div><p>The paged KV-cache design StreamInfer's attention executor must coordinate per-token metadata against during batch reformation.</p></div>
+    <div class="read-item reveal"><h4>Mooncake: A KVCache-centric Architecture for Serving LLM Chatbots <span class="diff med">medium</span></h4><div class="meta">Qin et al. · FAST · 2025</div><p>The external KV-cache transfer service StreamInfer's end-to-end evaluation offloads to when profiling prefill separately (§6.7).</p></div>
+    <div class="read-item reveal"><h4>DistServe: Disaggregating Prefill and Decoding <span class="diff med">medium</span></h4><div class="meta">Zhong et al. · OSDI · 2024</div><p>The disaggregation architecture StreamInfer, as a decode-only engine, is designed to plug into.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card">
+      <p style="margin:0 0 .6em"><b>From the paper:</b> all throughput numbers (36K/40K/25K/31K tok/s), the 1.7× headline, Table 1's hardware requirements, Table 2's 21%/5.1%/6% hardware-scarcity statistics, the ablation multipliers (3.2×, +4.5%), Table 4's CPU/GPU overlap percentages, Table 5's makespan figures, the TBO bound formula and C/M≈0.33, and the 24%-under-interference-from-7.5%-bandwidth-loss result are all reported directly in the paper (§6, §2.2, Tables 1–5).</p>
+      <p style="margin:0"><b>Framing added here:</b> the "restaurant table," "relay race," "call ahead," "independent streets," and "splash in the bucket" analogies; the derived decode-only ratio in Worked Example ④; the compounded ablation multiplier in Worked Example ③; and the illustrative (not paper-measured) curve shapes and values in the concurrency-explorer interactive, captioned as such.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Liang, Wang, Song, Zhou, Kim, He &amp; Park, "StreamEP: Straggler-Tolerant MoE Decoding without Communication Barriers" (SOSP '26, 2026)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- CONCURRENCY EXPLORER (illustrative, shapes matched to Fig. 14/15) ---- */
+  var epTput     = [10,15.5,19,21.5,22.5,22,20.5,18.5,16.5,15];
+  var streamTput = [11.5,17,21.5,25.5,29,32,34.5,36.5,38,39];
+  var optI = 0, optRatio = 0;
+  for(var i=0;i<10;i++){ var r = streamTput[i]/epTput[i]; if(r>optRatio){ optRatio=r; optI=i; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=10;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'"></div>'; }
+    strip.innerHTML = html;
+  }
+  function setConc(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(10, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var ep = epTput[v-1], sm = streamTput[v-1], ratio = sm/ep;
+    document.getElementById('pVpr').textContent = ep.toFixed(1)+'K';
+    document.getElementById('pEq').textContent  = sm.toFixed(1)+'K';
+    document.getElementById('pTot').textContent = ratio.toFixed(2)+'×';
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v <= 2){ verd.className = 'pverdict sub'; verd.textContent = 'Low concurrency: both are KV-cache limited, so the gap is modest — roughly the 1.2× seen for GLM-4.5-Air\\'s full 46-layer model (Fig. 15).'; }
+    else if(v < 6){ verd.className = 'pverdict sub'; verd.textContent = 'Barrier EP is still scaling, but per-layer collective volume is starting to grow faster than its gains.'; }
+    else if(v === optI+1 || (v>=7 && v<=9)){ verd.className = 'pverdict opt'; verd.textContent = '✓ Barrier EP has plateaued or is degrading — larger batches amplify its collective cost. StreamInfer keeps converting concurrency into throughput, widening the gap toward the 1.3–1.4× range (Fig. 15).'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Communication-saturated regime: barrier EP is now falling as concurrency rises, exactly the degradation §6.4 describes.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setConc(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setConc(parseInt(b.dataset.set,10)); }); });
+    setConc(3);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>

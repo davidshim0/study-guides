@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Host Is Not Idle — Host-Free SSD Checkpointing, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98A3D; --honey-deep:#B06B1E; --honey-soft:#F6E4C7;
+  --dram:#1E88A8; --dram-soft:#D6EEF5;      /* teal/cyan = GPU / useful compute        */
+  --ltram:#6B4FA0; --ltram-soft:#EAE3F5;    /* violet = FlashStash / CSSD machinery    */
+  --optane:#C0463B; --optane-soft:#F5DAD6;  /* red = host-staged baseline (the stall)  */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#164a5c;font-size:.96rem}
+.primer .ready b{color:#0f3644}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#0f4a5c}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#402f6c}
+.chip-lru{background:var(--optane-soft);color:#7d2c22}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #b8dfe9;color:#164a5c}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#7d2c22}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2e0;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c6b9e3;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#ded3f0}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:210px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#8168b8,#6B4FA0)}
+.bf-hi{background:linear-gradient(90deg,#2ba0c2,#1E88A8)}
+.bf-lru{background:linear-gradient(90deg,#d1675a,#C0463B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#0f3644;border:1px solid #9fd2e0}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#0f3644}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#7d2c22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#d98a3d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#a99bd6}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#0f3644}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#7d2c22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}.bar-row{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,136,168,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,160,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,138,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HotStorage 2026 · A Field Guide</span>
+    <h1>Checkpointing that never <span class="swash">touches the host</span>, because the host is <span class="swash" style="color:var(--optane)">already busy</span></h1>
+    <p class="lede">Video LLM training keeps the CPU decoding and cropping frames every iteration. Stage a checkpoint in host DRAM at the same time, and you steal the exact bandwidth the pipeline needs. This is the plain-English story of <strong>FlashStash</strong>, a computational-SSD checkpointing system that removes the host from the datapath entirely.</p>
+    <div class="hero-meta">
+      <span>📄 "The Host Is Not Idle" · Kang, Ko, Lee, Park, Kim, Jung (KAIST CAMEL)</span>
+      <span>🎓 GPU/storage-systems background assumed — primers cover it</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">💾</div>
+      <p>Commit checkpoints straight from GPU to SSD — <span class="ro">durable the instant they land in the SSD's own DRAM</span>, never <span class="wo">waiting on flash or borrowing host bandwidth</span>.<br><em style="font-size:.9rem">Move the traffic off the contended path, then hide what's left behind compute.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then the primers</h2>
+      <p class="sub">The paper leans on a dozen acronyms before page two. Skim these once, then the primers below build the mental model in order.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="font-size:1.1rem">Quick glossary — key acronyms</h3>
+      <div class="gloss" style="columns:2">
+        <div class="term-def"><b>LLM / ViT</b><span>Large Language Model / Vision Transformer — the text backbone and the frame encoder that feeds it.</span></div>
+        <div class="term-def"><b>MoE</b><span>Mixture-of-Experts — a sparse backbone that activates only a subset of parameters per token.</span></div>
+        <div class="term-def"><b>CSSD</b><span>Computational SSD — a drive with onboard compute (here, an FPGA) that can process data as it streams in, not just store it.</span></div>
+        <div class="term-def"><b>P2P (DMA)</b><span>Peer-to-peer direct memory access — one PCIe device reading/writing another's memory without routing through the host.</span></div>
+        <div class="term-def"><b>PLP</b><span>Power-Loss Protection — capacitors that let an enterprise SSD flush its internal DRAM to flash even after power is cut.</span></div>
+        <div class="term-def"><b>ETTR</b><span>Effective Training Time Ratio — the fraction of wall-clock time spent on useful training progress.</span></div>
+        <div class="term-def"><b>MTBF</b><span>Mean Time Between Failures — how often, on average, a cluster's training run is interrupted.</span></div>
+        <div class="term-def"><b>ZeRO-3</b><span>A sharding scheme that splits model weights and optimizer states across GPUs, so each GPU checkpoints only its own shard.</span></div>
+        <div class="term-def"><b>TP</b><span>Tensor Parallelism — splitting individual layers' matrix ops across GPUs within a node.</span></div>
+        <div class="term-def"><b>LFS</b><span>Log-Structured File System — an append-only on-disk layout; FlashStash borrows its structure for checkpoints.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> GPU / useful compute</span>
+      <span><i style="background:var(--honey-deep)"></i> host preprocessing (the contended resource)</span>
+      <span><i style="background:var(--ltram)"></i> FlashStash / CSSD machinery</span>
+      <span><i style="background:var(--optane)"></i> host-staged baseline (Gemini, CheckFreq)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Video LLM training's extra stage: host preprocessing<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A video LLM turns each clip into a sequence of patch embeddings (via a ViT) and feeds them alongside text tokens into the LLM backbone. Before that can happen, the host CPU must <b>decode</b> the compressed video and <b>resize/crop</b> frames to the encoder's fixed input size — every single iteration, since decoded frames are ~100× larger than the compressed dataset and can't be cached.</p>
+          <p>Frameworks hide this by pipelining: while the GPU computes iteration <i>t</i>, the host prepares iteration <i>t+1</i>. This only works if host prep finishes faster than a GPU iteration.</p>
+          <div class="ready"><b>Now you're ready:</b> the host isn't idle during video LLM training — it's on a tight budget, one GPU-iteration wide, every iteration.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Why checkpoint at all, and why so often<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Large clusters fail routinely — Llama 3's 16,384-GPU run hit 466 interruptions in 54 days, about one every three hours. A checkpoint lets a job resume from its last save instead of from scratch. The metric that matters is <b>ETTR</b>: useful time ÷ total time, traded off between checkpoint overhead and rollback loss.</p>
+          <p>The less time between checkpoints, the less work a failure destroys — so the ideal is checkpointing <i>every iteration</i>, provided the per-checkpoint cost is near zero.</p>
+          <div class="ready"><b>Now you're ready:</b> "near-zero-cost, every-iteration checkpointing" is the explicit target this paper — and the ones before it — is chasing.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>The standard trick: stage in host DRAM, persist in the background<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Existing systems (Gemini, CheckFreq) copy the checkpoint from GPU memory into host DRAM — fast, so the GPU resumes almost immediately — then slowly persist it in the background (to a remote node's memory, or to local SSD) while the GPU keeps computing.</p>
+          <p>This only works if the host has spare cycles and spare memory bandwidth while the GPU computes — the assumption text-only LLM training usually satisfies.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the assumption video LLM training breaks — the host is busy with decode/resize, not idle.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Why this breaks: shared, finite host DRAM bandwidth<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Host-staged checkpointing and resize/crop preprocessing both hammer the <i>same</i> host DRAM bandwidth. When checkpoint traffic saturates it, preprocessing slows down, misses its one-iteration budget, and the GPU stalls waiting for data — a classic bandwidth-contention problem, not a compute problem.</p>
+          <p>Sparse MoE backbones make it worse: they shrink each GPU iteration (less active compute per token) while the checkpoint size — full weights and optimizer states — stays the same, so the same checkpoint cost eats a larger share of a shorter iteration.</p>
+          <div class="ready"><b>Now you're ready:</b> the fix has to remove checkpoint traffic from host DRAM's bus, not just make it "background."</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>GPUDirect RDMA and peer-to-peer DMA<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Normally, moving GPU data to a device involves the host CPU as a middleman. <b>GPUDirect RDMA</b> instead maps a region of GPU HBM into the PCIe address space (via a resizable BAR), so a third-party device — another GPU, a NIC, or here, an SSD — can DMA it directly, peer-to-peer, with the host driver only setting up the mapping once.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the mechanism FlashStash uses to get checkpoint data from GPU to SSD without the host CPU or its DRAM in the path.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Computational SSDs (CSSDs)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A CSSD is a drive with onboard compute — here, an FPGA — that can transform data as it streams through the device, instead of just storing bytes. Placing compression logic inside the SSD means the host never even sees the uncompressed checkpoint, and the compute happens right next to where the data will ultimately live.</p>
+          <div class="ready"><b>Now you're ready:</b> FlashStash's pruning, quantization, and reconstruction all run as small accelerator modules inside the SSD.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Checkpoint compression: prune, then quantize<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Adjacent checkpoints differ only slightly — most weights barely move between saves. <b>ExCP</b>, the compression scheme FlashStash builds on, exploits this: it magnitude-prunes the weight <i>residual</i> (the change since the last checkpoint) and the optimizer's momentum, keeping only the significant survivors, then applies non-uniform <b>quantization</b> (𝑘-means clustering to a small codebook) to shrink what's left — attaining roughly 70× compression with negligible accuracy loss.</p>
+          <div class="ready"><b>Now you're ready:</b> FlashStash's core contribution is deciding <i>where</i> and <i>when</i> each of these two stages runs — not inventing new compression math.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Power-loss protection: why volatile DRAM can count as durable<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Enterprise SSDs carry small capacitors that, on power loss, keep the device alive just long enough to flush its internal DRAM buffer to flash. This is <b>PLP</b>. It means data sitting in the SSD's internal DRAM survives a power failure just as reliably as data already on flash — the flush is guaranteed, just delayed.</p>
+          <div class="ready"><b>Now you're ready:</b> this is why FlashStash can call a checkpoint "committed" the moment it reaches internal DRAM, before it ever touches flash.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>FlashStash in a nutshell</h2>
+      <p class="sub">The problem, the two-phase fix, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>Video LLM training keeps the host CPU busy decoding and resizing frames every iteration, leaving no spare memory bandwidth for the checkpoint staging that existing systems (<span class="mem-chip chip-lru">Gemini</span>, <span class="mem-chip chip-lru">CheckFreq</span>) assume is free. Under intensive checkpointing this can slow training by up to <b>157.5×</b>, because checkpoint traffic saturates host DRAM bandwidth and delays the memory-intensive resize/crop step, which in turn stalls the GPU.</p>
+      <p><strong>FlashStash</strong> removes the host from the datapath: checkpoints move <b>peer-to-peer from GPU HBM directly to the SSD</b> via GPUDirect RDMA, never touching host DRAM. But once host DRAM no longer buffers the write, flash's own low bandwidth would sit directly on the critical path — so FlashStash relocates the durable commit point <i>inside the SSD</i>: a <b>two-phase</b> scheme streams the checkpoint through an inline pruning accelerator and commits it to the SSD's own internal DRAM (Phase 1), made durable by power-loss protection. The GPU resumes immediately. The slower, expensive quantization and the flash write itself are deferred to a background Phase 2, overlapped with the next iterations of GPU compute.</p>
+      <p><strong>The payoff:</strong> on an H100 testbed training seven state-of-the-art video LLMs, FlashStash's full design (<b>AccelSSD</b>) sustains <b>89.3%</b> of ideal no-checkpoint throughput even under per-iteration checkpointing — versus 65% for Gemini and just 10% for CheckFreq — for under 1 extra watt of in-storage compute.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Host-staged checkpointing assumes an <b>idle host</b>; video LLM training makes the host busy every iteration decoding/resizing frames.</li>
+        <li>Checkpoint staging and preprocessing compete for the <b>same host DRAM bandwidth</b> — that contention, not compute, is the real bottleneck.</li>
+        <li><b>P2P GPU→SSD DMA</b> removes the host from the path entirely, but naively exposes flash's slow write on the critical path.</li>
+        <li>FlashStash's fix: commit to the SSD's <b>internal DRAM</b> (durable via PLP) first, defer quantization + the flash write to a background <b>Phase 2</b>.</li>
+        <li>In-storage accelerators keep pruning off the critical path too, at under 1 W of estimated ASIC power.</li>
+        <li>Result: <b>89.3%</b> of ideal throughput under per-iteration checkpointing — near-zero-cost.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one bar chart</div>
+      <div class="viz-kicker">normalized throughput vs. training without checkpointing · per-iteration checkpointing</div>
+      <div class="legend">
+        <span><i style="background:#C0463B"></i> host-staged baseline (checkpoint stalls the GPU)</span>
+        <span><i style="background:#6B4FA0"></i> FlashStash, building up</span>
+        <span><i style="background:#1E88A8"></i> FlashStash, full design</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 340" role="img" aria-label="Normalized throughput bar chart for NoCheck, Gemini, CheckFreq, DirectSSD, CompSSD, EarlySSD, AccelSSD">
+        <line x1="40" y1="60" x2="40" y2="280" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="40" y1="280" x2="720" y2="280" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g stroke="#E7DBC6" stroke-dasharray="3 3">
+          <line x1="40" y1="225" x2="720" y2="225"/><line x1="40" y1="170" x2="720" y2="170"/><line x1="40" y1="115" x2="720" y2="115"/><line x1="40" y1="60" x2="720" y2="60"/>
+        </g>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end">
+          <text x="34" y="283">0</text><text x="34" y="228">0.25</text><text x="34" y="173">0.50</text><text x="34" y="118">0.75</text><text x="34" y="63">1.00</text>
+        </g>
+        <text x="22" y="170" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 22,170)">throughput / ideal</text>
+        <!-- bars: x positions 45,145,245,345,445,545,645 width 70 -->
+        <rect x="45" y="60" width="70" height="220" rx="5" fill="#C7BBA4"/>
+        <rect x="145" y="137" width="70" height="143" rx="5" fill="#C0463B"/>
+        <rect x="245" y="258" width="70" height="22" rx="5" fill="#8F332A"/>
+        <rect x="345" y="260" width="70" height="20" rx="5" fill="#9784BE"/>
+        <rect x="445" y="203" width="70" height="77" rx="5" fill="#6B4FA0"/>
+        <rect x="545" y="185" width="70" height="95" rx="5" fill="#D98A3D"/>
+        <rect x="645" y="83" width="70" height="197" rx="5" fill="#1E88A8"/>
+        <g font-family="JetBrains Mono" font-size="12" font-weight="700" fill="#332C24" text-anchor="middle">
+          <text x="80" y="52">1.00</text><text x="180" y="129">0.65</text><text x="280" y="250">0.10</text>
+          <text x="380" y="252">0.09</text><text x="480" y="195">0.35</text><text x="580" y="177">0.43</text><text x="680" y="75">0.89</text>
+        </g>
+        <g font-family="JetBrains Mono" font-size="10" fill="#6E6456" text-anchor="middle">
+          <text x="80" y="296">NoCheck</text><text x="180" y="296">Gemini</text><text x="280" y="296">CheckFreq</text>
+          <text x="380" y="296">DirectSSD</text><text x="480" y="296">CompSSD</text><text x="580" y="296">EarlySSD</text><text x="680" y="296">AccelSSD</text>
+        </g>
+        <text x="380" y="316" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9A8E7C">DirectSSD: P2P alone, flash write still on the critical path</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> P2P alone (DirectSSD) is <i>worse</i> than either baseline — it deletes host contention but exposes raw flash latency instead. Compression (CompSSD), then two-phase early commit (EarlySSD), then in-storage acceleration (AccelSSD) each remove one more piece of that latency from the critical path, ending at 89.3% of ideal. (Paper, Fig. 13, per-iteration checkpointing.)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → bypass → early commit → hide the rest</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Host busy decoding/resizing every iteration — no spare DRAM bandwidth for checkpoint staging</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-lru"><div class="nt">Contention</div><div class="nd">Checkpoint staging saturates host DRAM bandwidth, preprocessing slows</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-lru"><div class="nt">Stall</div><div class="nd">Preprocessing misses its one-iteration budget; GPU stalls</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Bypass</div><div class="nd">P2P DMA, GPU HBM → SSD, host untouched</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Phase 1: early commit</div><div class="nd">Pruned checkpoint lands in SSD internal DRAM, durable via PLP</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Phase 2: hide the rest</div><div class="nd">Quantize + write to flash in the background, overlapped with compute</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six pictures, one for the OS/memory-systems reader</div>
+      <h2>How to think about FlashStash</h2>
+      <p class="sub">Each stands alone. A few map directly onto DRAM–NVM tiering and CXL ideas — read those with your own systems in mind.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="44" width="46" height="34" rx="4" fill="#D6EEF5" stroke="#1E88A8" stroke-width="2.5"/>
+          <rect x="76" y="54" width="46" height="24" rx="4" fill="#F5DAD6" stroke="#C0463B" stroke-width="2.5" stroke-dasharray="3 3"/>
+          <path d="M64 60 h12" stroke="#332C24" stroke-width="2.2" marker-end="url(#a1)"/>
+          <text x="41" y="66" text-anchor="middle" font-family="monospace" font-size="9" fill="#0f4a5c">DRAM</text>
+          <text x="99" y="70" text-anchor="middle" font-family="monospace" font-size="9" fill="#7d2c22">NVM</text>
+        </svg></div>
+        <span class="term">Two-phase commit · vs. write-back tiering</span>
+        <h3>A hot tier that's already durable</h3>
+        <p>DRAM–NVM tiering systems buffer writes in fast DRAM and migrate cold data to NVM later, accepting that a crash before migration can lose the buffered write. FlashStash's Phase 1 looks the same shape — commit fast, drain slow — but because the SSD's internal DRAM is PLP-backed, the "buffer" is already durable the instant data lands, not merely fast.</p>
+        <div class="breaks"><b>Where it breaks:</b> your tiering migration is reversible and speculative (you can re-promote a page); FlashStash's Phase 1 commit is final — Phase 2 only changes location, never correctness.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="80" height="36" rx="6" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2.5"/>
+          <circle cx="46" cy="48" r="5" fill="#6B4FA0"/><circle cx="70" cy="48" r="5" fill="#6B4FA0"/><circle cx="94" cy="48" r="5" fill="#6B4FA0"/>
+          <path d="M46 66 v10 M94 66 v10" stroke="#332C24" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Internal DRAM · vs. CXL persistent memory</span>
+        <h3>A tiny NVDIMM inside the SSD</h3>
+        <p>PLP turns the SSD's internal DRAM into "battery-backed" memory — durable at DRAM latency, the same promise CXL-attached persistent memory and NVDIMMs chase for the host memory bus. FlashStash gets that promise for free, because the durability boundary is already inside the device.</p>
+        <div class="breaks"><b>Where it breaks:</b> this durable DRAM is megabytes, not the gigabytes a CXL memory expander offers, and it's reached over NVMe commands, not load/store — no byte-addressable access, no coherence.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="40" width="34" height="28" rx="4" fill="#F5DAD6" stroke="#C0463B" stroke-width="2.5"/>
+          <path d="M50 54 q35 -26 62 0" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3" fill="none"/>
+          <rect x="90" y="40" width="34" height="28" rx="4" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2.5"/>
+          <path d="M50 60 h64" stroke="#332C24" stroke-width="2.2"/>
+        </svg></div>
+        <span class="term">P2P DMA · vs. CXL.mem bypassing the host controller</span>
+        <h3>Skipping the shared memory controller</h3>
+        <p>The whole reason this problem exists is that checkpoint DMA and preprocessing compete for the <i>same</i> host memory controller bandwidth — exactly the contention your own tiering work studies when migration traffic collides with application accesses. FlashStash's answer is what CXL.mem promises at a different layer: let the device reach its destination without routing through that shared controller at all.</p>
+        <div class="breaks"><b>Where it breaks:</b> DRAM–NVM tiering can't usually take this shortcut — the NVM tier is still behind the same host memory controller, so migration traffic can't be P2P'd away the way checkpoint traffic can here.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="60" width="24" height="16" rx="2" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2"/>
+          <rect x="48" y="60" width="24" height="16" rx="2" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2"/>
+          <rect x="76" y="60" width="24" height="16" rx="2" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2"/>
+          <path d="M32 60 v-12 M60 60 v-12 M88 60 v-12" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="26" y="20" width="80" height="22" rx="3" fill="#D6EEF5" stroke="#1E88A8" stroke-width="2.5"/>
+          <text x="66" y="35" text-anchor="middle" font-family="monospace" font-size="9" fill="#0f4a5c">merged anchor</text>
+        </svg></div>
+        <span class="term">Background merge · vs. LSM compaction</span>
+        <h3>Compacting a chain of deltas</h3>
+        <p>Each checkpoint after the first is a residual delta; the chain grows with every save, exactly like an LSM-tree's write-amplifying layer of SSTables. FlashStash periodically merges the chain into a fresh anchor, bounding both recovery latency and the accelerator resources needed to reconstruct — the same reason LSM engines compact and tiering systems batch cold-page scans into epochs.</p>
+        <div class="breaks"><b>Where it breaks:</b> the merge trigger here is a fixed hardware resource limit (how many residuals the in-storage dequantizers can chain), not an access-frequency signal — there's no "hot/cold" decision being made, just a depth cap.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="40" height="40" rx="5" fill="#D6EEF5" stroke="#1E88A8" stroke-width="2.5"/>
+          <rect x="80" y="30" width="40" height="40" rx="5" fill="#F5DAD6" stroke="#C0463B" stroke-width="2.5"/>
+          <path d="M60 40 h20 M60 60 h20" stroke="#332C24" stroke-width="2" stroke-dasharray="3 3"/>
+        </svg></div>
+        <span class="term">Host bandwidth contention · your research problem, restated</span>
+        <h3>The same shared-bandwidth fight, one layer up</h3>
+        <p>This paper's central measurement — checkpoint DMA and image resize/crop both fighting for host DRAM bandwidth, with the loser stalling — is structurally the contention problem tiering systems (TPP, HeMem, Memtis) manage between application access and background migration traffic on a shared memory channel.</p>
+        <div class="breaks"><b>Where it breaks:</b> a tiering system typically has to <i>schedule around</i> contention (throttle migration, rate-limit scans) because both traffic streams share the same controller. FlashStash instead <i>eliminates</i> one stream from that controller altogether — a stronger fix than scheduling, but only possible because checkpoint data doesn't need to live in host DRAM at all.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="80" height="36" rx="6" fill="#F6E4C7" stroke="#D98A3D" stroke-width="2.5"/>
+          <path d="M46 48 h48" stroke="#B06B1E" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="46" cy="48" r="4" fill="#B06B1E"/><circle cx="94" cy="48" r="4" fill="#B06B1E"/>
+        </svg></div>
+        <span class="term">Accelerator modules · vs. near-memory compute</span>
+        <h3>Compute that lives where the data already is</h3>
+        <p>FlashStash's pruning/quantization accelerators run inline as the checkpoint streams through the device — the same pitch behind near-memory or CXL Type-2 "smart" compute expanders: do the transform where the data already sits, instead of paying a round trip to move it to a general-purpose core first.</p>
+        <div class="breaks"><b>Where it breaks:</b> these accelerators operate on streamed tiles at NVMe-command granularity, not cache-line-level ops — there's no coherence protocol or fine-grained addressing involved, just a fixed pipeline over a scatter-gather list.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">From the contention that motivates it, through the two-phase commit, to how checkpoints are laid out and recovered on the device.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem, precisely</h3>
+      <p>Under checkpointing, host operation latency inflates by <b>9.21×</b> for Gemini and roughly <b>158×</b> for CheckFreq (normalized to one GPU iteration) — enough to push the host past the GPU's iteration time and stall it. The cause is visible in the breakdown: without checkpointing, memory-intensive resize/crop is 39.8% of host time; with checkpointing, its share jumps to <b>85.7%</b>, because checkpoint staging is saturating the same host DRAM bandwidth that resize/crop needs.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Two datapaths, side by side</div>
+      <div class="viz-kicker">host-staged (Gemini / CheckFreq) vs. FlashStash</div>
+      <svg class="full" viewBox="0 0 700 260" role="img" aria-label="Datapath comparison between host-staged checkpointing and FlashStash">
+        <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#7d2c22">Host-staged — host stays on the datapath</text>
+        <rect x="20" y="38" width="80" height="46" rx="6" fill="#fff" stroke="#9A8E7C" stroke-width="2"/><text x="60" y="65" text-anchor="middle" font-family="monospace" font-size="11" fill="#332C24">GPU</text>
+        <path d="M100 61 h30" stroke="#332C24" stroke-width="2"/><path d="M126 61 l-6 -4 v8 z" fill="#332C24"/>
+        <rect x="140" y="38" width="150" height="46" rx="6" fill="#F6E4C7" stroke="#D98A3D" stroke-width="2"/><text x="215" y="58" text-anchor="middle" font-family="monospace" font-size="10" fill="#6e4a09">Host DRAM</text><text x="215" y="72" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">checkpoint stage</text>
+        <path d="M215 84 v18" stroke="#C0463B" stroke-width="2" stroke-dasharray="4 3"/><text x="230" y="98" font-family="monospace" font-size="9" fill="#7d2c22">contends with ↓</text>
+        <rect x="140" y="108" width="150" height="40" rx="6" fill="#F5DAD6" stroke="#C0463B" stroke-width="2"/><text x="215" y="132" text-anchor="middle" font-family="monospace" font-size="10" fill="#7d2c22">resize/crop (delayed)</text>
+        <path d="M290 61 h40" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3"/><path d="M330 61 l-6 -4 v8 z" fill="#9A8E7C"/>
+        <rect x="340" y="38" width="140" height="46" rx="6" fill="#F5DAD6" stroke="#C0463B" stroke-width="2"/><text x="410" y="58" text-anchor="middle" font-family="monospace" font-size="10" fill="#7d2c22">SSD flash</text><text x="410" y="72" text-anchor="middle" font-family="monospace" font-size="9" fill="#7d2c22">background persist</text>
+
+        <text x="20" y="166" font-family="Fraunces" font-size="14" font-weight="600" fill="#0f4a5c">FlashStash — host untouched</text>
+        <rect x="20" y="178" width="80" height="46" rx="6" fill="#fff" stroke="#9A8E7C" stroke-width="2"/><text x="60" y="205" text-anchor="middle" font-family="monospace" font-size="11" fill="#332C24">GPU</text>
+        <path d="M100 201 h30" stroke="#1E88A8" stroke-width="2.4"/><path d="M126 201 l-6 -4 v8 z" fill="#1E88A8"/><text x="105" y="192" font-family="monospace" font-size="9" fill="#0f4a5c">P2P DMA</text>
+        <rect x="140" y="178" width="220" height="46" rx="6" fill="#D6EEF5" stroke="#1E88A8" stroke-width="2"/><text x="250" y="198" text-anchor="middle" font-family="monospace" font-size="10" fill="#0f4a5c">SSD internal DRAM</text><text x="250" y="212" text-anchor="middle" font-family="monospace" font-size="9" fill="#0f4a5c">Phase 1 · commit, PLP-durable</text>
+        <path d="M360 201 h40" stroke="#6B4FA0" stroke-width="2" stroke-dasharray="4 3"/><path d="M400 201 l-6 -4 v8 z" fill="#6B4FA0"/><text x="365" y="192" font-family="monospace" font-size="9" fill="#402f6c">background</text>
+        <rect x="410" y="178" width="140" height="46" rx="6" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2"/><text x="480" y="198" text-anchor="middle" font-family="monospace" font-size="10" fill="#402f6c">Flash</text><text x="480" y="212" text-anchor="middle" font-family="monospace" font-size="9" fill="#402f6c">Phase 2 · quantize + write</text>
+      </svg>
+      <figcaption><b>The key move:</b> in FlashStash, the host box simply isn't on the datapath. The GPU's commit point moves from "fully on flash" to "in the SSD's own DRAM," and everything expensive after that is background work the GPU never waits on.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · GPU–SSD direct checkpointing</h3>
+      <p>FlashStash exposes GPU HBM through a PCIe resizable BAR via GPUDirect RDMA, pinning the checkpoint regions so a third-party device can read them peer-to-peer. The host driver resolves the physical addresses of weights and optimizer states into a <b>tensor descriptor</b> — a scatter-gather list tagging each region as weight or optimizer state — and hands it to the SSD via a custom NVMe command. The SSD's internal DMA logic then reads the checkpoint directly; the IOMMU still confines it to only the descriptor-listed regions, so no new trust boundary is opened.</p>
+
+      <h3>3 · Two-phase checkpointing</h3>
+      <pre class="sketch"><span class="cm"># Phase 1 (on the critical path, kept short)</span>
+stream checkpoint tile-by-tile through prune accelerator
+write pruned result to <span class="hl">SSD internal DRAM</span>
+<span class="kw">commit</span>                                    <span class="cm"># durable now, via PLP — GPU resumes</span>
+
+<span class="cm"># Phase 2 (background, overlapped with GPU compute)</span>
+quantize pruned weights/optimizer state (k-means)
+write quantized result to <span class="hl">flash</span>
+finalize superblock with flash locations</pre>
+      <p>Phase 1 only needs to prune the checkpoint enough to fit in the small internal DRAM — the expensive quantization step is deliberately delayed to Phase 2, where it's matched against flash's much lower write bandwidth instead of competing for critical-path time.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why is the early commit still durable?</b> The dominant training failures (host or GPU crashes) sit in a failure domain independent of the SSD — the CSSD stays powered and simply finishes draining Phase 2 on its own. For the rarer power failure, PLP only needs to flush the small unwritten tail, not a whole checkpoint. A host-staged snapshot has no such independence, which is why prior systems fall back to replication instead.</div></div>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Checkpoint layout: anchor, residual chain, superblock</div>
+      <div class="viz-kicker">append-only, log-structured — like an LFS for checkpoints</div>
+      <svg class="full" viewBox="0 0 700 190" role="img" aria-label="Checkpoint management: superblock pointing to anchor weight and a residual chain, periodically merged">
+        <rect x="20" y="20" width="110" height="44" rx="6" fill="#F6E4C7" stroke="#D98A3D" stroke-width="2"/><text x="75" y="46" text-anchor="middle" font-family="monospace" font-size="10" fill="#6e4a09">superblock</text>
+        <path d="M130 42 h30" stroke="#332C24" stroke-width="2"/><path d="M160 42 l-6 -4 v8 z" fill="#332C24"/>
+        <rect x="170" y="20" width="110" height="44" rx="6" fill="#D6EEF5" stroke="#1E88A8" stroke-width="2"/><text x="225" y="40" text-anchor="middle" font-family="monospace" font-size="10" fill="#0f4a5c">anchor weight</text><text x="225" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#0f4a5c">t₀, full</text>
+        <path d="M280 42 h20" stroke="#332C24" stroke-width="2"/><path d="M300 42 l-6 -4 v8 z" fill="#332C24"/>
+        <rect x="310" y="20" width="90" height="44" rx="6" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2"/><text x="355" y="40" text-anchor="middle" font-family="monospace" font-size="9" fill="#402f6c">residual Δt₁</text>
+        <path d="M400 42 h20" stroke="#332C24" stroke-width="2"/><path d="M420 42 l-6 -4 v8 z" fill="#332C24"/>
+        <rect x="430" y="20" width="90" height="44" rx="6" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2"/><text x="475" y="40" text-anchor="middle" font-family="monospace" font-size="9" fill="#402f6c">residual Δt₂</text>
+        <path d="M520 42 h20" stroke="#332C24" stroke-width="2"/><path d="M540 42 l-6 -4 v8 z" fill="#332C24"/>
+        <rect x="550" y="20" width="120" height="44" rx="6" fill="#EAE3F5" stroke="#6B4FA0" stroke-width="2" stroke-dasharray="0"/><text x="610" y="40" text-anchor="middle" font-family="monospace" font-size="9" fill="#402f6c">residual Δt₃</text><text x="610" y="54" text-anchor="middle" font-family="monospace" font-size="8" fill="#402f6c">latest</text>
+        <rect x="170" y="110" width="500" height="56" rx="8" fill="#fff" stroke="#D8C8AC" stroke-dasharray="5 4" stroke-width="2"/>
+        <text x="420" y="132" text-anchor="middle" font-family="monospace" font-size="10" fill="#6E6456">background merge</text>
+        <text x="420" y="150" text-anchor="middle" font-family="monospace" font-size="9" fill="#9A8E7C">coalesces anchor + Δt₁ + Δt₂ + Δt₃ → new anchor, bounds chain length</text>
+        <path d="M225 64 v 30 M355 64 v 30 M610 64 v 12" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="3 3"/>
+      </svg>
+      <figcaption>The superblock always points to the latest anchor and residual chain. Longer chains slow both checkpoint creation and recovery, so FlashStash periodically merges them — bounded by how many residuals its dequantizer/sparse-adder accelerators can chain at once (~16 checkpoints in practice).</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Accelerator logic</h3>
+      <p>Three small modules do the work: a <b>vector accelerator</b> (a PE array of adders plus a flag reductor for the pruning bitmap and a max/sum reductor for 𝑘-means), a <b>dequantizer</b> for codebook-lookup reconstruction, and a <b>sparse adder</b> for bitmap-based residual accumulation. Background merging reuses the same datapath, so it adds no extra hardware. Together they draw <b>9.9 W</b> on the FPGA prototype; given the roughly 12× FPGA-to-ASIC dynamic power gap, an ASIC version would add <b>under 1 W</b> — negligible for an enterprise SSD.</p>
+      <h3>5 · Tolerating rarer failures</h3>
+      <p>To survive the rare loss of the CSSD itself, FlashStash periodically flushes the already-compressed checkpoint to an independent storage server, multi-level-checkpoint style. Because the flush carries only the small compressed state, it adds negligible traffic, and a CSSD loss costs at most the progress since that last flush.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces through the paper's real measurements: the host bottleneck, the E2E time it eats, why MoE sparsity makes it worse, and how FlashStash claws the throughput back.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① How host contention inflates preprocessing latency</h3>
+      <p style="color:var(--ink-soft)">Without checkpointing, host operations fit inside one GPU iteration. With CheckFreq's per-iteration checkpointing, the paper reports host latency reaching <b>~158×</b> a GPU iteration's duration, and resize/crop's share of host time rising from 39.8% to 85.7%. What's happening?</p>
+      <ol class="seq">
+        <li><b>Baseline:</b> host time = decode + resize/crop, and the whole thing fits inside one GPU iteration (normalized latency ≈ 1×).</li>
+        <li><b>Add checkpointing:</b> the checkpoint stage now shares host DRAM bandwidth with resize/crop. Decode is compute-bound and barely slows; resize/crop is memory-bound and slows drastically.</li>
+        <li><b>Result:</b> total host latency balloons to ~158× a GPU iteration for CheckFreq (vs. 9.21× for Gemini, which persists less aggressively) — and almost all of that inflation lands on resize/crop, whose share of host time jumps from 39.8% to 85.7%.</li>
+        <li><b>Consequence:</b> since the GPU can't start iteration <i>t+1</i> until preprocessing for it finishes, a 158× host latency means the GPU is stalled for nearly the entire time — matching the reported 157.5× training slowdown for CheckFreq.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the training slowdown (157.5×) and the host latency inflation (~158×) are almost the same number — direct evidence that host DRAM bandwidth contention, not GPU compute, is the bottleneck.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② How much of end-to-end time checkpointing actually eats</h3>
+      <p style="color:var(--ink-soft)">The paper reports that per-iteration checkpointing leaves only <b>10.5%</b> (Gemini) and <b>1.1%</b> (CheckFreq) of E2E time as effective training. What overhead does that imply?</p>
+      <ol class="seq">
+        <li><b>Effective time</b> is what's left after storage stalls and CPU stalls: Gemini = 10.5%, CheckFreq = 1.1%.</li>
+        <li><b>Overhead = 100% − effective:</b> Gemini's checkpointing overhead = 100 − 10.5 = <b>89.5%</b>; CheckFreq's = 100 − 1.1 = <b>98.9%</b>.</li>
+        <li><b>That 98.9% figure reappears later</b> as "the normal-SSD path" baseline the paper compares AccelSSD against.</li>
+        <li><b>AccelSSD's own share</b> of E2E time spent on checkpointing is reported as <b>10.7%</b> — a drop from 98.9% to 10.7%, roughly a <b>9.2×</b> reduction in overhead share.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>At the extreme (CheckFreq, per-iteration), a training job spends 99 out of every 100 seconds not training — checkpointing has effectively become the workload.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Why MoE sparsity makes checkpointing worse, not better</h3>
+      <p style="color:var(--ink-soft)">Table 3 lists Llama-4-Maverick at 400B total / 17B active parameters, routing 1 of 128 experts per token — the sparsest model tested, and the one that retains only <b>~2%</b> of baseline throughput under per-iteration checkpointing. Why would fewer active parameters hurt more?</p>
+      <ol class="seq">
+        <li><b>Active parameter fraction:</b> 17B ÷ 400B ≈ <b>4.25%</b> of parameters do any work on a given token — so GPU compute per iteration is small relative to model size.</li>
+        <li><b>But the checkpoint saves everything:</b> all 400B parameters' weights and optimizer states must be persisted, active or not — checkpoint size doesn't shrink with sparsity.</li>
+        <li><b>Shorter iteration, same checkpoint:</b> lower active-compute means a shorter GPU iteration time, so the same (large) checkpoint cost now occupies a much bigger fraction of each iteration.</li>
+        <li><b>Result:</b> the sparsest model in the sweep (Llama-4-Maverick) is also the one whose throughput collapses hardest (~2% retained) — sparsity amplifies exactly the contention this paper targets.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> as frontier multimodal models trend toward MoE for efficiency, they simultaneously make host-staged checkpointing's relative cost worse — a second, independent reason (beyond video preprocessing) to get the host off the path.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Compounding FlashStash's four design steps</h3>
+      <p style="color:var(--ink-soft)">Normalized throughput: DirectSSD 0.09 → CompSSD 0.35 → EarlySSD 0.43 → AccelSSD 0.89. What does each step contribute, and does the accuracy cost check out?</p>
+      <ol class="seq">
+        <li><b>CompSSD / DirectSSD</b> = 0.35 ÷ 0.09 ≈ <b>3.89×</b> — compression alone, by shrinking what flash has to absorb, more than triples throughput over raw P2P writes.</li>
+        <li><b>EarlySSD / CompSSD</b> = 0.43 ÷ 0.35 ≈ <b>1.23×</b> — moving flash persistence and quantization to a background Phase 2 buys a further ~23%.</li>
+        <li><b>AccelSSD / EarlySSD</b> = 0.89 ÷ 0.43 ≈ <b>2.07×</b> — accelerating the remaining critical-path step (streamed pruning) roughly doubles throughput again.</li>
+        <li><b>End to end:</b> 0.89 ÷ 0.09 ≈ <b>9.9×</b> — going from naive P2P to the full design recovers nearly 10× the throughput.</li>
+        <li><b>Accuracy check:</b> fine-tuning LLaVA-Video-7B while forcibly recovering from a compressed checkpoint every 100 iterations across a 20,000-step run means roughly <b>200 forced recoveries</b> — and the final loss differs from uninterrupted training by only <b>3.8%</b>.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>No single step is free — pruning still costs something, quantization still costs something — the design's trick is <i>where</i> each cost is paid: off the critical path, or accelerated on it.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Text-only LLM pretraining checkpoints fine with host-staged systems. Why does the exact same technique fail for video LLM training?</div>
+      <details><summary>Show answer</summary><div class="ans">Host-staged checkpointing assumes the host has spare DRAM bandwidth while the GPU computes. Text-only training has little host-side work per iteration, so that assumption holds. Video LLM training adds a mandatory per-iteration host stage (decode + resize/crop) that already uses most of the host's budget — checkpoint staging traffic now competes for the same bandwidth and loses (or makes preprocessing lose).<span class="mis">Misconception: that checkpointing overhead is purely a GPU/storage-bandwidth question. It's a <i>host memory bandwidth</i> contention problem specific to workloads that keep the CPU busy.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">DirectSSD removes the host entirely via P2P DMA, yet it retains only 0.09× throughput — worse than Gemini's 0.65×. Explain, using what's still on the critical path.</div>
+      <details><summary>Show answer</summary><div class="ans">Removing the host fixes the contention problem, but DirectSSD still waits for the <i>full</i> flash write to complete before the GPU can resume — and flash bandwidth is far lower than host DRAM bandwidth. So DirectSSD trades "host DRAM contention" for "raw flash latency," and the latter turns out to be worse for training throughput than the contention it replaced.<span class="mis">Misconception: that removing the host from the datapath is, by itself, the fix. It's necessary but not sufficient — the slow resource (flash) still has to be hidden, not just relocated.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">FlashStash calls a checkpoint "committed" once it reaches the SSD's internal DRAM — which is volatile. Why is that not a durability gap?</div>
+      <details><summary>Show answer</summary><div class="ans">Two reasons. First, the dominant training failures (host crash, GPU crash) leave the SSD powered and untouched, so it can simply finish draining Phase 2 on its own — no data is lost. Second, for the rarer case of an actual power failure, the SSD's power-loss protection (PLP) guarantees enough energy to flush whatever's still in internal DRAM to flash before shutting down — so the "volatile" buffer is durable in practice, just not yet relocated.<span class="mis">Misconception: that durability requires data to already be on non-volatile media. Durability really requires a guaranteed path to non-volatile media before power is lost — PLP provides exactly that guarantee.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">From Table 3, compute Llama-4-Maverick's active-parameter fraction and explain why it — not the largest model in the table (also Llama-4-Maverick, coincidentally) — suffers the worst checkpointing slowdown, in terms of iteration time vs. checkpoint size.</div>
+      <details><summary>Show answer</summary><div class="ans">Active fraction = 17B ÷ 400B ≈ 4.25% (equivalently, it routes to only 1 of 128 experts per token). Checkpoint size scales with <i>total</i> parameters (400B) regardless of sparsity, since all weights and optimizer states must be saved. But GPU iteration time scales with <i>active</i> compute (~17B-worth of FLOPs), which is small. A fixed, large checkpoint cost divided by a small iteration time yields a bigger relative overhead — which is why the sparsest model in the sweep also has the worst throughput retention (~2%) under per-iteration checkpointing.<span class="mis">Misconception: that "biggest model" and "worst checkpointing overhead" are the same axis. It's the <i>ratio</i> of checkpoint cost to iteration time that matters, and sparsity shrinks the denominator without shrinking the numerator.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why can't FlashStash just serve every checkpoint entirely from the SSD's internal DRAM and skip flash altogether?</div>
+      <details><summary>Show answer</summary><div class="ans">The internal DRAM is deliberately small — sized to hold one streamed, pruned checkpoint's worth of data, not a growing history of anchors and residual chains for a multi-billion-parameter model. Capacity, not durability, is the reason Phase 2 exists: the checkpoint has to move to flash to make room for the next one, even though it's already "safe" the moment it lands in DRAM.<span class="mis">Misconception: that the PLP-backed internal DRAM could just replace flash entirely. It solves the <i>durability-latency</i> problem, not the <i>capacity</i> problem — those are separate constraints.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Using ETTR and MTBF, explain why "checkpoint less often" is not a free way to reduce FlashStash's already-small overhead.</div>
+      <details><summary>Show answer</summary><div class="ans">ETTR trades off checkpoint overhead against rollback loss: a longer interval between checkpoints reduces overhead (fewer commits) but increases the average work lost when a failure strikes at a random point between checkpoints, which happens roughly every MTBF (hours, at scale). Since FlashStash's per-iteration overhead is already near zero (89.3% of ideal), the overhead side of that trade is nearly flat — so backing off frequency mostly just adds rollback risk for negligible further overhead reduction. The paper's target of every-iteration checkpointing is specifically what near-zero overhead unlocks.<span class="mis">Misconception: that checkpoint frequency and overhead trade off linearly regardless of the system. Once overhead is near-zero, the optimal frequency shifts toward "as often as possible," not toward some balanced middle interval.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">The background merge interval is swept in the paper, and throughput degrades in a sawtooth pattern once the interval exceeds a resource cap (~16 checkpoints), before resetting at the next merge. Why doesn't "merge less often" simply keep improving throughput?</div>
+      <details><summary>Show answer</summary><div class="ans">Merging less often reduces merge <i>overhead</i>, but it also lets the residual chain grow longer. The device's dequantizer and sparse-adder accelerators can only reconstruct a chain up to a fixed length efficiently; past that cap, both checkpoint creation and recovery slow down until the next merge resets the chain — producing the observed sawtooth. There's a genuine sweet spot, not a monotonic "less is better" relationship.<span class="mis">Misconception: that less frequent background work is always better for throughput. Here it trades merge cost against chain-reconstruction cost, and the hardware resource cap sets where the trade-off flips.</span></div></details>
+    </div>
+
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Nine questions newcomers ask most.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is the host literally never involved in a FlashStash checkpoint?<span class="chev">▾</span></summary><div class="a">The host driver sets up the GPUDirect RDMA mapping and issues the custom NVMe command once — a one-time control-plane step. After that, the actual checkpoint <i>data</i> moves peer-to-peer from GPU HBM to the SSD; host DRAM never buffers any of it, which is what keeps it off the contended bandwidth path.</div></details>
+      <details><summary><span class="q">Q2</span>Why not just make the checkpoint smaller instead of restructuring the datapath?<span class="chev">▾</span></summary><div class="a">FlashStash does compress (via ExCP-style pruning + quantization, ~70×) — but compression alone (CompSSD) only reaches 0.35× normalized throughput, because the compression compute itself still sits on the critical path, and flash persistence is still synchronous. The datapath restructuring (P2P + two-phase commit) is what removes the remaining stalls; compression and restructuring are complementary, not substitutes.</div></details>
+      <details><summary><span class="q">Q3</span>What exactly happens to the GPU's own weights during compression — is training affected?<span class="chev">▾</span></summary><div class="a">No. The GPU always continues training from its own uncompressed weights; the compressed checkpoint on the SSD is read back only during an actual recovery. So the failure-free training trajectory is bit-identical to training without FlashStash at all — reconstruction error only enters at a real recovery event.</div></details>
+      <details><summary><span class="q">Q4</span>Why split compression into two phases instead of doing it all at once?<span class="chev">▾</span></summary><div class="a">Pruning is cheap enough to run inline while streaming, so it stays in Phase 1 and shrinks the data to fit the small internal DRAM. Quantization (k-means clustering) is comparatively expensive; delaying it to Phase 2 matches its cost against flash's own low write bandwidth, where it's already overlapped with GPU compute — so its cost is hidden rather than eliminated.</div></details>
+      <details><summary><span class="q">Q5</span>Does MoE routing make FlashStash's job harder, or does it help?<span class="chev">▾</span></summary><div class="a">It makes the underlying problem worse (sparsity shrinks GPU iteration time while checkpoint size stays fixed, per Worked Example 3) — but FlashStash's fix (removing host contention, hiding flash latency) is orthogonal to sparsity, so it helps MoE and dense models roughly alike. The paper's throughput retention numbers are averaged across both dense and MoE models.</div></details>
+      <details><summary><span class="q">Q6</span>What happens if the CSSD itself fails mid-checkpoint?<span class="chev">▾</span></summary><div class="a">This is treated as a separate, rarer failure mode from host/GPU crashes. FlashStash periodically flushes the compressed checkpoint state to an independent storage server (multi-level checkpointing), so a CSSD loss costs at most the progress made since that last flush — not the entire run.</div></details>
+      <details><summary><span class="q">Q7</span>Is this specific to video LLMs, or does it generalize?<span class="chev">▾</span></summary><div class="a">The paper targets video LLMs as the heaviest current case, but the authors note the same structure — a host kept busy while frequent, large state saves are needed — shows up in audio/image-heavy multimodal training, text pretraining with online data filtering, and RL training with host-side rollouts.</div></details>
+      <details><summary><span class="q">Q8</span>How much extra hardware does this actually require?<span class="chev">▾</span></summary><div class="a">P2P DMA and PLP are already commodity features of today's GPUs and enterprise SSDs. The new pieces are a vendor-defined NVMe command and three lightweight accelerator modules, estimated at under 1 W on an ASIC. Adoption can be incremental — even the firmware-only stages (CompSSD, EarlySSD) already beat the host-staged SSD baseline severalfold before any accelerator is added.</div></details>
+      <details><summary><span class="q">Q9</span>How does FlashStash compare to just writing checkpoints via GPUDirect Storage (e.g., FastPersist)?<span class="chev">▾</span></summary><div class="a">GPUDirect-Storage-style approaches also bypass the host for the transfer, but they still leave the full flash write latency on the critical path — essentially what "DirectSSD" measures in this paper's evaluation, which retains only 0.09× throughput. FlashStash's contribution is hiding that flash latency too, via the internal-DRAM early commit and background Phase 2.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, a results snapshot, and where the paper's claims came from.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>FlashStash</b><span>The paper's system: a computational-SSD checkpointing scheme that commits GPU checkpoints peer-to-peer, bypassing the host entirely.</span></div>
+      <div class="term-def"><b>CSSD</b><span>Computational SSD — a drive with onboard compute (here, FPGA accelerators) that transforms data in-flight.</span></div>
+      <div class="term-def"><b>Two-phase checkpointing</b><span>Phase 1: prune + commit to internal DRAM (critical path, short). Phase 2: quantize + write to flash (background).</span></div>
+      <div class="term-def"><b>P2P DMA / GPUDirect RDMA</b><span>Direct GPU-HBM-to-SSD transfer via a pinned PCIe BAR mapping, with no host DRAM buffering.</span></div>
+      <div class="term-def"><b>PLP (Power-Loss Protection)</b><span>Capacitor-backed guarantee that an SSD's internal DRAM is flushed to flash even after power loss — makes early commit durable.</span></div>
+      <div class="term-def"><b>Anchor weight / residual chain</b><span>A full checkpoint (anchor) followed by a chain of delta updates (residuals); recovery replays the chain from the anchor.</span></div>
+      <div class="term-def"><b>Background merge</b><span>Periodically coalescing the residual chain into a fresh anchor to bound checkpoint/recovery latency as chains lengthen.</span></div>
+      <div class="term-def"><b>Superblock</b><span>Metadata block recording the latest anchor and residual-chain locations; advances on every Phase 1 commit.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>ETTR</b><span>Effective Training Time Ratio — useful training time over total wall-clock time; the metric checkpoint frequency trades off against.</span></div>
+      <div class="term-def"><b>MTBF</b><span>Mean Time Between Failures — how often a large training cluster is interrupted (roughly every 3 hours for Llama 3's 16,384-GPU run).</span></div>
+      <div class="term-def"><b>ExCP</b><span>The compression scheme (magnitude-prune residual weights + optimizer momentum, then non-uniform quantization) FlashStash's Phase 1/2 split is built on.</span></div>
+      <div class="term-def"><b>Gemini / CheckFreq</b><span>Prior host-staged checkpointing baselines: Gemini replicates to a remote node's memory over NVLink; CheckFreq persists to local SSD.</span></div>
+      <div class="term-def"><b>Data stall</b><span>GPU idle time caused by host preprocessing (or, here, checkpoint contention) not finishing before the GPU needs the next batch.</span></div>
+      <div class="term-def"><b>ZeRO-3</b><span>Shards weights/optimizer states across GPUs; each GPU's checkpoint (and this paper's checkpointing path) covers only its own shard.</span></div>
+      <div class="term-def"><b>Resize/crop</b><span>Reshaping native-resolution video frames to a ViT's fixed input size — the memory-bound host step most affected by contention.</span></div>
+      <div class="term-def"><b>Tensor descriptor</b><span>A scatter-gather list with metadata (weight vs. optimizer state) describing which GPU memory regions the SSD may read via P2P.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What FlashStash buys (AccelSSD, per-iteration checkpointing)</div>
+      <div class="viz-kicker">percentages · read each row's label for whether higher or lower is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">AccelSSD throughput retained<small>vs. no-checkpoint ideal · higher better</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="89.3"><span>89.3%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">CheckFreq per-iter overhead<small>share of E2E time · lower better</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="98.9"><span>98.9%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">AccelSSD per-iter overhead<small>share of E2E time · lower better</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="10.7"><span>10.7%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">DirectSSD retained (P2P alone)<small>vs. ideal · shows P2P isn't enough</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="9"><span>9%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Accuracy drift after ~200 recoveries<small>final loss delta · lower better</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="3.8"><span>3.8%</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 100%</p>
+      <figcaption>Compression alone shrinks flash pressure; two-phase commit hides what's left; acceleration removes the remaining pruning cost — together they cut checkpointing's share of training time from 98.9% to 10.7%. (Paper §3, §5)</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes</div>
+    <div class="card">
+      <p style="margin:0 0 10px"><b>Paper facts</b> (quoted or directly computed from the text): all throughput/latency/percentage figures in Worked Examples and the Results bars — 8.55×/157.5× slowdowns, 9.21×/158× host-latency inflation, 39.8%→85.7% resize/crop share, 43%/94%/10.5%/1.1% E2E breakdowns, 0.65/0.10/0.09/0.35/0.43/0.893 normalized throughput, ~2% Maverick retention, Table 3's parameter counts, 70× ExCP compression, 3.8% accuracy delta over ~200 forced recoveries, 9.9 W FPGA / &lt;1 W ASIC power, and every architectural claim (two-phase commit, PLP durability argument, GPUDirect RDMA path, superblock/anchor/residual-chain layout, background-merge cap) — are drawn directly from the paper text supplied.</p>
+      <p style="margin:0"><b>Framing added here</b> (not in the paper): the "quick glossary" wording, all six Analogies cards and their explicit ties to DRAM–NVM tiering / CXL / near-memory compute, the derived ratios in Worked Example ④ (3.89×, 1.23×, 2.07×, 9.9×, ~200 recoveries), the Llama-4-Maverick active-fraction arithmetic in Worked Example ③, and all SVG diagram layouts are original explanatory scaffolding built to connect the paper's numbers to each other and to OS-memory-tiering intuition.</p>
+    </div>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>GPUDirect RDMA and PCIe peer-to-peer DMA <span class="diff easy">easy</span></h4><div class="meta">explainer · 20–30 min</div><p>How a third-party PCIe device reads GPU memory directly. Search "NVIDIA GPUDirect RDMA overview" — the mechanism FlashStash's checkpoint path depends on.</p></div>
+    <div class="read-item reveal"><h4>Power-loss protection in enterprise SSDs <span class="diff easy">easy</span></h4><div class="meta">explainer · 15–20 min</div><p>Why capacitor-backed flush lets an SSD's internal DRAM count as durable. Grounds why FlashStash's Phase 1 commit is safe.</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>GEMINI: Fast Failure Recovery in Distributed Training with In-Memory Checkpoints <span class="diff med">medium</span></h4><div class="meta">Wang et al. · SOSP · 2023</div><p>The in-memory replication baseline this paper compares against throughout.</p></div>
+    <div class="read-item reveal"><h4>CheckFreq: Frequent, Fine-Grained DNN Checkpointing <span class="diff med">medium</span></h4><div class="meta">Mohan, Phanishayee, Chidambaram · FAST · 2021</div><p>The local-SSD host-staged baseline; its per-iteration overhead (98.9% of E2E time) is the "normal-SSD path" FlashStash is measured against.</p></div>
+    <div class="read-item reveal"><h4>ExCP: Extreme LLM Checkpoint Compression via Weight-Momentum Joint Shrinking <span class="diff hard">hard</span></h4><div class="meta">Li, Chen, Shu, Tang, Wang · ICML · 2024</div><p>The residual-pruning + quantization scheme FlashStash adapts and splits across its two phases.</p></div>
+    <div class="read-item reveal"><h4>FastPersist: Accelerating Model Checkpointing in Deep Learning <span class="diff med">medium</span></h4><div class="meta">Wang, Ruwase, Xie, He · arXiv · 2024</div><p>A GPUDirect-Storage-based checkpointing design that still leaves flash write latency on the critical path — closest in spirit to this paper's "DirectSSD" ablation.</p></div>
+    <div class="read-item reveal"><h4>The Design and Implementation of a Log-Structured File System <span class="diff hard">hard</span></h4><div class="meta">Rosenblum, Ousterhout · ACM TOCS · 1992</div><p>The append-only layout idea FlashStash's superblock/anchor/residual-chain checkpoint management borrows.</p></div>
+    <div class="read-item reveal"><h4>ZeRO: Memory Optimizations Toward Training Trillion Parameter Models <span class="diff med">medium</span></h4><div class="meta">Rajbhandari, Rasley, Ruwase, He · SC · 2020</div><p>The sharding scheme (ZeRO-3) used in the evaluation, which is why each node's checkpoint — and FlashStash's per-node datapath — covers only a shard.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Kang, Ko, Lee, Park, Kim, Jung, "The Host Is Not Idle: Computational SSDs for Host-Free Checkpointing in Multimodal LLM Training" (HotStorage '26)</span>
+    <span><b>Source:</b> paper text supplied in-session</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Not optimal.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
