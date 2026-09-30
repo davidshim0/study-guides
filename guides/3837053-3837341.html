@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<!-- RLSM field guide — Resource-Aware Compaction for a Disaggregated LSM Store (Lou et al., HotStorage'26).
+     Semantic colors: teal = near-data (MN-side) compaction, the preferred path · amber = CN-side compaction, the RDMA-bound path ·
+     indigo = RLSM's dispatcher/collector machinery · terracotta = CPU-utilization signal (dLSM_dynamic), the baseline RLSM replaces. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Send Compaction Where the Room Is — RLSM, a Disaggregated LSM-Store Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D97B3F; --honey-deep:#A85C24; --honey-soft:#F8E1C8;
+  --dram:#1E8F72; --dram-soft:#D7F1E8;
+  --ltram:#5A5FCB; --ltram-soft:#E6E7FA;
+  --optane:#B5473A; --optane-soft:#F5DAD3;
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,143,114,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,95,203,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,123,63,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,95,203,.05) 31px,rgba(90,95,203,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,123,63,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#12483a;font-size:.96rem}
+.primer .ready b{color:#0d3a2e}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#12483a}
+.chip-sat{background:var(--honey-soft);color:#6e3f0e}
+.chip-ucp{background:var(--ltram-soft);color:#33389a}
+.chip-lru{background:var(--optane-soft);color:#7a2e22}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e3f0e}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#12483a}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#7a2e22}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#8fd0bc;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#7477d4,#5A5FCB)}
+.bf-hi{background:linear-gradient(90deg,#2ba084,#1E8F72)}
+.bf-lru{background:linear-gradient(90deg,#c85a49,#B5473A)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#0d3a2e;border:1px solid #8fd0bc}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#12483a}
+.ptag.medium{background:var(--honey-soft);color:#6e3f0e}
+.ptag.hard{background:var(--optane-soft);color:#7a2e22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#d97b3f} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8e93df}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#12483a}
+.diff.med{background:var(--honey-soft);color:#6e3f0e}
+.diff.hard{background:var(--optane-soft);color:#7a2e22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,143,114,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,123,63,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HotStorage 2026 · A Field Guide</span>
+    <h1>Sending compaction to whoever has <span class="swash">room</span>, not whoever's cores look <span class="swash" style="color:var(--optane)">free</span></h1>
+    <p class="lede">Split compute and storage across the network, and LSM compaction becomes a cross-node resource fight. This is the plain-English story of <strong>RLSM</strong>, a scheduler that watches the resource that actually bites — not CPU.</p>
+    <div class="hero-meta">
+      <span>📄 "RLSM: A Disaggregated LSM-Based Key-Value Store with Resource-Aware Compaction" · Lou, Wei, Zhang, Li, Xu</span>
+      <span>🎓 LSM-tree and RDMA basics assumed — primers cover them</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🗜️</div>
+      <p>Route each compaction task by the <span class="ro">CRITICAL resource on its path</span>, not by <span class="wo">whichever node's CPU looks idle</span>.<br><em style="font-size:.9rem">MN service state gates near-data; RDMA headroom gates CN-side fallback.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then nine ideas the paper assumes</h2>
+      <p class="sub">Acronyms first, so nothing later is opaque. Then nine collapsed primers — read in order the first time, or jump to whatever's unfamiliar.</p>
+    </div>
+
+    <div class="card" style="margin-top:8px">
+      <h3 style="font-size:1.1rem">Quick glossary</h3>
+      <div class="gloss" style="columns:2">
+        <div class="term-def"><b>LSM(-tree)</b><span>Log-Structured Merge tree — buffers writes in memory, flushes as sorted files.</span></div>
+        <div class="term-def"><b>SSTable</b><span>Sorted String Table — an immutable on-disk file an LSM-tree flushes and later merges.</span></div>
+        <div class="term-def"><b>CN</b><span>Compute Node — runs the storage engine and foreground reads/writes.</span></div>
+        <div class="term-def"><b>MN</b><span>Memory Node — stores SSTables in a disaggregated deployment.</span></div>
+        <div class="term-def"><b>RDMA</b><span>Remote Direct Memory Access — low-latency, one-sided network memory access.</span></div>
+        <div class="term-def"><b>NIC</b><span>Network Interface Card — here, a 100 Gbps RDMA-capable card.</span></div>
+        <div class="term-def"><b>KV store</b><span>Key-Value store — the class of system RocksDB/LevelDB/RLSM belong to.</span></div>
+        <div class="term-def"><b>dLSM</b><span>A prior near-data-compaction LSM index for disaggregated memory — RLSM's strongest baseline.</span></div>
+        <div class="term-def"><b>dLSM_dynamic</b><span>dLSM's CPU-utilization-based dynamic scheduler — the CPU-aware baseline RLSM targets.</span></div>
+        <div class="term-def"><b>L0</b><span>Level 0 — the topmost, latency-critical LSM level, given admission priority in RLSM.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> near-data (MN-side) compaction — the preferred path</span>
+      <span><i style="background:var(--honey-deep)"></i> CN-side compaction — the RDMA-bound path</span>
+      <span><i style="background:var(--ltram)"></i> RLSM's dispatcher/collector machinery</span>
+      <span><i style="background:var(--optane)"></i> CPU-utilization signal — the baseline it replaces</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What an LSM-tree is, and why compaction exists<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An LSM-tree buffers writes in memory, then flushes them as immutable <b>SSTables</b>. That turns random writes into fast sequential I/O. But SSTables pile up, so reads must check more and more files (read amplification) and obsolete entries waste space.</p>
+          <p><b>Compaction</b> merges SSTables to reclaim space and bound lookup cost. Production engines even block foreground writes once too many SSTables accumulate, so compaction throughput directly caps write throughput.</p>
+          <div class="ready"><b>Now you're ready:</b> RLSM is entirely about deciding <i>where</i> compaction merge work runs — because that decision now crosses a network.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Disaggregated memory — splitting compute from storage<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Instead of one machine holding both CPU and all its data, a <b>disaggregated</b> deployment splits them: <b>compute nodes (CNs)</b> run the application logic, <b>memory nodes (MNs)</b> hold the data pool, and the two talk over a fast network. This lets memory and compute scale independently.</p>
+          <p>For an LSM store, SSTables live on the MN while the CN runs foreground reads/writes and tree control. RLSM's whole topology in evaluation is 3 CNs sharing 1 MN.</p>
+          <div class="ready"><b>Now you're ready:</b> because SSTables live remotely, a compaction task now has to choose <i>which node</i> does the merge work.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>RDMA — fast, but still a shared, finite pipe<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>RDMA</b> lets a CN read/write MN memory directly, without involving the MN's CPU, at much lower latency than TCP. It's what makes disaggregation viable at all.</p>
+          <p>But RDMA bandwidth is still a physical resource shared by every CN talking to that MN. In this paper's hardware it hard-caps around <b>10–12 GB/s</b>. Push enough compaction traffic through it and everyone's foreground and background I/O slows down together.</p>
+          <div class="ready"><b>Now you're ready:</b> "CPU is idle" does not mean "the network has room." RLSM's whole argument rests on that gap.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Two places a compaction task can run<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>CN-side compaction:</b> the CN pulls input SSTables over RDMA, merges them locally with its own compute, and pushes the outputs back — round-trip network traffic in both directions.</p>
+          <p><b>Near-data compaction:</b> the merge runs on an MN-side worker, using local reads/writes; only the CN's metadata update crosses the network. Near-data avoids the RDMA round trip entirely.</p>
+          <div class="ready"><b>Now you're ready:</b> those two paths stress completely different resources — RDMA fabric vs. MN compute — which is the seed of RLSM's design.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Compaction thread pools and queue depth<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Each node runs compaction tasks through a fixed-size <b>thread pool</b>. <b>Utilization</b> is the fraction of pool workers busy; <b>queue depth</b> is how many tasks are waiting for a free worker. A pool can be highly utilized with a short queue (keeping up) or highly utilized with a long queue (falling behind, tasks piling up).</p>
+          <div class="ready"><b>Now you're ready:</b> utilization alone doesn't tell you if a pool is coping — queue depth does. RLSM's diagnosis leans on exactly this distinction.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Write stalls and slowdowns — the LSM's backpressure<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>When SSTables build up faster than compaction can clear them, the engine applies backpressure: a <b>slowdown</b> throttles write rate, and a full <b>stall</b> blocks writes outright until compaction catches up. Counting how often these trigger is a direct readout of whether compaction is keeping pace.</p>
+          <div class="ready"><b>Now you're ready:</b> fewer slowdown/stall events under the same write load is evidence a scheduler is placing compaction well.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Why CPU utilization looks like the natural signal<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Compaction does merge computation, so "pick the idle node" is a reasonable first instinct — that's exactly what the prior CPU-aware scheduler, <b>dLSM_dynamic</b>, does: it routes tasks toward CN-side or near-data execution based on CPU-utilization readings.</p>
+          <div class="ready"><b>Now you're ready:</b> RLSM's central claim is that this instinct is wrong in disaggregated settings — the primer after next explains why.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Admission control and credits<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An <b>admission controller</b> decides whether a task may enter a limited resource right now, rather than always trying and failing under contention. A <b>credit</b> is a token representing one unit of that capacity; holding a credit means you're allowed in, and releasing it on completion lets the next waiting task in.</p>
+          <div class="ready"><b>Now you're ready:</b> RLSM's near-data path is exactly this — MN admission is credit-gated by pending remote-task count, not attempted blindly.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>Elasticity — why you can't just add MN CPU<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The whole point of disaggregation is letting memory capacity scale independently of compute. If an MN's compaction pool becomes the bottleneck, permanently overprovisioning MN CPU "solves" it — but re-couples memory and compute cost, eroding the elasticity disaggregation was meant to deliver.</p>
+          <div class="ready"><b>Now you're ready:</b> that's why RLSM controls <i>admission into</i> the finite MN pool instead of asking for a bigger pool.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>RLSM in a nutshell</h2>
+      <p class="sub">The mismatch, the fix, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>In a disaggregated LSM store, compaction can run on the <b>CN</b> (fetching SSTables over RDMA) or <b>near the data</b> on the <b>MN</b>. Prior dynamic schedulers, like <span class="mem-chip chip-lru">dLSM_dynamic</span>, pick between them using <b>CPU utilization</b> — a reasonable instinct, since compaction does merge computation. But in disaggregation the path-critical bottlenecks are elsewhere: CN-side compaction is bound by <b>shared RDMA bandwidth</b>, and near-data compaction is bound by the MN's <b>finite compaction-pool capacity</b>. CPU utilization measures neither.</p>
+      <p>The paper's measurements make the mismatch concrete: CN-side compaction reaches only <b>about 50%</b> of near-data compaction's write throughput despite having <i>more</i> compute threads, because it repeatedly saturates the fabric's <b>10–12 GB/s</b> hardware ceiling. And CPU-aware scheduling — despite using CPU on both sides — also lands at only about half of near-data's throughput, because it keeps shifting work back onto the RDMA-heavy CN-side path whenever CN cores look free.</p>
+      <p><strong>RLSM</strong>'s fix: gate placement by the <i>actual</i> critical resource on each path. <b>MN service state</b> (queue depth, not just utilization) governs <span class="mem-chip chip-hi">near-data admission</span>; <b>RDMA bandwidth headroom</b>, measured from real dual-run task timings, governs <span class="mem-chip chip-sat">CN-side fallback</span>. A <span class="mem-chip chip-ucp">completion collector</span> closes the loop, batching completions under one lock and releasing credits so staged tasks can retry.</p>
+      <p><strong>The payoff:</strong> RLSM improves aggregate write throughput by <b>31%–53%</b> over the strongest baseline (near-data dLSM) across 4/8/16 foreground threads per CN, while keeping peak RDMA bandwidth at <b>5.52 GB/s</b> versus 11–13 GB/s for the CPU-driven baselines, and holds comparable throughput under read-heavy mixed workloads.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e3f0e">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e3f0e">
+        <li>CPU-aware scheduling splits by <b>idle compute</b>; RLSM splits by <b>the resource each path actually consumes</b>: RDMA for CN-side, MN service capacity for near-data.</li>
+        <li>CN-side compaction reaches only <b>~50%</b> of near-data throughput despite more threads — the bottleneck is fabric bandwidth (10–12 GB/s ceiling), not CN compute.</li>
+        <li><b>Queue depth</b>, not utilization alone, exposes MN backlog: near-data hits 94.2% util with a queue of 33.9 — tasks arrive faster than the pool can drain them.</li>
+        <li>A dual-run diagnostic shows CN-side is typically <b>2.0–2.3×</b> slower than near-data, and competitive only when pre-launch RDMA usage is <b>below ~2 GB/s</b>.</li>
+        <li>RLSM: <b>MN heartbeats + CN bandwidth summaries</b> → <b>two-layer throttled dispatcher</b> (near-data admission, then RDMA-gated CN fallback) → <b>batched completion collector</b>.</li>
+        <li>Result: <b>+31%–53%</b> write throughput over the strongest baseline, comparable throughput under read-heavy mixes, and a stable <b>~70%</b> MN dispatch ratio as CN count scales.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">relative write throughput · and MN dispatch ratio as CN nodes scale</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> near-data (dLSM) — the 100% baseline</span>
+        <span><i style="background:var(--honey-deep)"></i> CN-side / CPU-aware — ~50% of near-data</span>
+        <span><i style="background:var(--ltram)"></i> RLSM — 131%–153% of near-data</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="Relative write throughput bars and MN dispatch ratio comparison">
+        <text x="10" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Aggregate write throughput, relative to near-data (dLSM) = 100%</text>
+        <line x1="70" y1="40" x2="70" y2="130" stroke="#D8C8AC" stroke-width="1"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">
+          <text x="10" y="58">RocksDB_MD</text><rect x="70" y="46" width="192" height="18" rx="4" fill="#A85C24"/><text x="270" y="59" fill="#332C24">~50%</text>
+          <text x="10" y="82">dLSM (near-data)</text><rect x="70" y="70" width="384" height="18" rx="4" fill="#1E8F72"/><text x="462" y="83" fill="#332C24">100% (baseline)</text>
+          <text x="10" y="106">dLSM_dynamic</text><rect x="70" y="94" width="192" height="18" rx="4" fill="#A85C24"/><text x="270" y="107" fill="#332C24">~50%</text>
+          <text x="10" y="130">RLSM</text><rect x="70" y="118" width="503" height="18" rx="4" fill="#5A5FCB"/><text x="580" y="131" fill="#332C24">131%–153%</text>
+        </g>
+        <line x1="20" y1="155" x2="700" y2="155" stroke="#E7DBC6" stroke-dasharray="4 3"/>
+        <text x="10" y="180" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">MN dispatch ratio as sharing CN nodes scale 1 → 2 → 3</text>
+        <g font-family="JetBrains Mono" font-size="10" text-anchor="middle">
+          <text x="140" y="196" fill="#9A8E7C">1 CN</text><text x="380" y="196" fill="#9A8E7C">2 CN</text><text x="620" y="196" fill="#9A8E7C">3 CN</text>
+        </g>
+        <polyline fill="none" stroke="#B5473A" stroke-width="2.6" stroke-linecap="round" points="140,207 380,240 620,251"/>
+        <circle cx="140" cy="207" r="4" fill="#B5473A"/><circle cx="380" cy="240" r="4" fill="#B5473A"/><circle cx="620" cy="251" r="4" fill="#B5473A"/>
+        <text x="640" y="255" font-family="JetBrains Mono" font-size="10" fill="#7a2e22">dLSM_dynamic: 67.5→55.3→52.3%</text>
+        <polyline fill="none" stroke="#5A5FCB" stroke-width="2.6" stroke-linecap="round" points="140,199 380,197 620,199"/>
+        <circle cx="140" cy="199" r="4" fill="#5A5FCB"/><circle cx="380" cy="197" r="4" fill="#5A5FCB"/><circle cx="620" cy="199" r="4" fill="#5A5FCB"/>
+        <text x="640" y="190" font-family="JetBrains Mono" font-size="10" fill="#33389a">RLSM: 70.0→70.7→69.8%</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> both CN-side (RocksDB_MD) and CPU-aware (dLSM_dynamic) throughput land near half of near-data's, while RLSM lands 31%–53% above it (Fig. 2, Fig. 6, §2.1, §2.3). As more CNs share one MN, CPU-aware routes progressively more work to the RDMA-bound CN-side path (67.5%→52.3% MN dispatch), while RLSM holds near 70% throughout (Fig. 8).</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → observe → measure → decide → enforce → close the loop</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">CPU-aware scheduling ignores RDMA fabric limits and MN queue backlog</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Resource visibility</div><div class="nd">MN heartbeats (pool size, busy workers, queue depth) + CN RDMA-traffic summaries</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Layer 1: admit near-data</div><div class="nd">Gate on MN queue bound + CN pending-task allowance, L0-priority-aware</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Layer 2: gate CN-side</div><div class="nd">Allow fallback only if bounded cost + free CN worker + local/global RDMA headroom</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Completion collector</div><div class="nd">Batch completions, one lock, release credits, wake staged tasks</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">+31%–53% write throughput, comparable read-heavy performance</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about RLSM</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with an honest note about where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="56" width="46" height="30" rx="4" fill="#D7F1E8" stroke="#1E8F72" stroke-width="2.5"/>
+          <path d="M39 56 v-24" stroke="#1E8F72" stroke-width="2.5"/><circle cx="39" cy="26" r="5" fill="#1E8F72"/>
+          <rect x="78" y="62" width="46" height="24" rx="4" fill="#F8E1C8" stroke="#A85C24" stroke-width="2.5"/>
+          <path d="M101 62 q10 -18 22 -30" stroke="#A85C24" stroke-width="2.5" fill="none"/>
+          <circle cx="123" cy="32" r="4" fill="#A85C24"/>
+        </svg></div>
+        <span class="term">The core idea · Critical resource, not idle compute</span>
+        <h3>Picking a shipping route by an empty loading dock</h3>
+        <p>A warehouse manager sees an empty loading dock (idle CPU) and assumes it's safe to ship there — never checking that the highway leading out (RDMA fabric) is already backed up. The dock being free doesn't mean the route is. RLSM checks the <i>road</i> (RDMA headroom), not just the dock.</p>
+        <div class="breaks"><b>Where it breaks:</b> a road's capacity is roughly fixed; RDMA headroom fluctuates task-by-task, which is why RLSM measures it live via dual-run task timing rather than assuming a static limit.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="44" height="56" rx="4" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <rect x="76" y="20" width="44" height="56" rx="4" fill="#D7F1E8" stroke="#1E8F72" stroke-width="2"/>
+          <path d="M32 34 h20 M32 44 h20 M32 54 h14" stroke="#9A8E7C" stroke-width="2" stroke-linecap="round"/>
+          <path d="M88 34 h20 M88 44 h20 M88 54 h14" stroke="#12483a" stroke-width="2" stroke-linecap="round"/>
+          <path d="M64 48 h12" stroke="#A85C24" stroke-width="2.5" marker-end="url(#a1)"/>
+        </svg></div>
+        <span class="term">Two paths · Data locality</span>
+        <h3>Cooking at the grocery store vs. hauling groceries home</h3>
+        <p>Near-data compaction cooks right where the ingredients (SSTables) already sit — only the finished dish (metadata update) travels. CN-side compaction hauls every raw ingredient home over the highway, cooks there, then hauls the leftovers back — the same trip, twice, for every task.</p>
+        <div class="breaks"><b>Where it breaks:</b> the store's "kitchen" (MN compaction pool) is small and shared by every CN — unlike a real kitchen, it can only cook so many dishes at once, which is exactly the second bottleneck RLSM has to manage.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="60" width="100" height="18" rx="4" fill="#F3EADA" stroke="#D8C8AC" stroke-width="1.5"/>
+          <rect x="20" y="60" width="70" height="18" rx="4" fill="#F8E1C8"/>
+          <text x="55" y="73" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e3f0e">busy</text>
+          <path d="M20 40 q50 -10 100 0" stroke="#9A8E7C" stroke-width="2" fill="none" stroke-dasharray="3 3"/>
+          <circle cx="30" cy="38" r="4" fill="#1E8F72"/><circle cx="50" cy="36" r="4" fill="#1E8F72"/><circle cx="70" cy="38" r="4" fill="#1E8F72"/><circle cx="90" cy="36" r="4" fill="#1E8F72"/><circle cx="108" cy="38" r="4" fill="#1E8F72"/>
+        </svg></div>
+        <span class="term">Utilization vs. backlog · Table 1</span>
+        <h3>A busy cashier with, or without, a line</h3>
+        <p>Two cashiers can both be "94% busy." One has no one waiting — busy but coping. The other has thirty people in line — busy <i>and</i> falling behind. Watching only "is the cashier working?" (utilization) can't tell them apart; watching the line (queue depth) can. Near-data compaction hits 94.2% MN utilization <i>and</i> a queue depth of 33.9 — the second number is the one that matters.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real line has a visible physical length; RLSM's "queue" is a soft, sampled signal from periodic heartbeats, not instantaneously exact — good enough for admission decisions, not a precise count.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 q40 10 100 -40" stroke="#B5473A" stroke-width="2.5" fill="none"/>
+          <line x1="70" y1="20" x2="70" y2="80" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="3 3"/>
+          <circle cx="70" cy="46" r="5" fill="#fff" stroke="#1E8F72" stroke-width="2.5"/>
+          <text x="76" y="24" font-family="monospace" font-size="8" fill="#12483a">gate opens</text>
+        </svg></div>
+        <span class="term">The gate · Threshold behavior (Fig. 3)</span>
+        <h3>A highway on-ramp metering light</h3>
+        <p>Busy highways use ramp meters: a light only lets a car merge when there's genuinely room, rather than letting everyone flood in and jam the whole road. RLSM's CN-side fallback gate works the same way — its dual-run diagnostic shows CN-side compaction is only competitive when pre-launch RDMA usage sits below roughly 2 GB/s; above that, it's typically 2.0–2.3× slower, so the gate stays shut.</p>
+        <div class="breaks"><b>Where it breaks:</b> a ramp meter is a single global light; RLSM's gate also checks <i>local</i> conditions (a free CN worker, bounded task cost), so a task can be denied even when the "highway" itself has room.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="20" width="30" height="14" rx="2" fill="#fff" stroke="#9A8E7C" stroke-width="1.5"/>
+          <rect x="16" y="38" width="30" height="14" rx="2" fill="#fff" stroke="#9A8E7C" stroke-width="1.5"/>
+          <rect x="16" y="56" width="30" height="14" rx="2" fill="#fff" stroke="#9A8E7C" stroke-width="1.5"/>
+          <path d="M50 27 h20 M50 45 h20 M50 63 h20" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="2 2"/>
+          <rect x="74" y="38" width="50" height="20" rx="4" fill="#E6E7FA" stroke="#5A5FCB" stroke-width="2.5"/>
+          <text x="99" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#33389a">1 lock</text>
+        </svg></div>
+        <span class="term">Completion collector · Batching</span>
+        <h3>One signature for a stack of packages, not fifty</h3>
+        <p>A courier delivering fifty packages could make you sign fifty separate slips — or hand you one manifest to sign once for the whole batch. RLSM's completion collector does the latter: it gathers ready compaction completions, applies all their metadata edits under a <i>single</i> lock, then releases credits and wakes staged tasks — instead of every completion separately contending for the lock.</p>
+        <div class="breaks"><b>Where it breaks:</b> batching trades a little latency (waiting to accumulate a batch) for less contention; it's a net win under load, but for a single sparse completion it adds a small delay a per-completion lock wouldn't.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="20" fill="#F5DAD3" stroke="#B5473A" stroke-width="2"/>
+          <circle cx="95" cy="48" r="20" fill="#D7F1E8" stroke="#1E8F72" stroke-width="2"/>
+          <text x="45" y="53" text-anchor="middle" font-family="monospace" font-size="9" fill="#7a2e22">wait</text>
+          <text x="95" y="53" text-anchor="middle" font-family="monospace" font-size="9" fill="#12483a">go</text>
+          <path d="M45 28 a20 20 0 0 1 5 -6" stroke="#332C24" stroke-width="2" fill="none" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">Fairness · Staging &amp; priority growth</span>
+        <h3>A ticket line that jumps the impatient to the front</h3>
+        <p>A staged task that keeps losing to higher-priority work is like a customer repeatedly passed over — annoying, but not forgotten. Each time a task fails admission it adds to the round's delay (letting in-flight work finish and free capacity) and its own staging priority quietly rises, so a long-waiting task eventually wins the next round.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real ticket line is strictly ordered; RLSM's priority growth is a soft nudge layered on top of level-awareness (L0 tasks still matter more), so a low-priority task can wait longer than a naive "oldest first" queue would allow.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key structures rebuilt as diagrams you can read at a glance.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The measurements that motivate RLSM</h3>
+      <p>Three placement strategies were measured on the same write workload: pure CN-side, pure near-data, and CPU-aware switching (dLSM_dynamic). Despite more aggregate compute threads, CN-side compaction lands at only <b>~50%</b> of near-data throughput; CPU-aware scheduling, despite using CPU on both sides, also lands near half.</p>
+      <table class="tbl">
+        <thead><tr><th>Strategy</th><th>CN util/queue</th><th>MN util/queue</th><th>Slowdown</th><th>Stall</th></tr></thead>
+        <tbody>
+          <tr><td>CN-side</td><td class="mono">42.6 / 14.1</td><td class="mono">–</td><td class="mono">6888</td><td class="mono">1928</td></tr>
+          <tr class="best"><td>Near-data</td><td class="mono">–</td><td class="mono">94.2 / 33.9</td><td class="mono">4465</td><td class="mono">1424</td></tr>
+          <tr><td>CPU-aware</td><td class="mono">31.2 / 4.0</td><td class="mono">27.1 / 11.1</td><td class="mono">5726</td><td class="mono">1773</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Read the CN-side row carefully:</b> only 42.6% CN utilization, yet the worst throughput and the most write stalls. Idle compute did not translate into throughput — the RDMA path was the bottleneck the whole time.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Resource visibility — cheap, decentralized signals</h3>
+      <p>Critical-resource-aware dispatch needs live visibility into each path's limiting resource, without expensive coordination.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Who reports what, to whom</div>
+      <div class="viz-kicker">MN heartbeats out · CNs exchange bandwidth summaries among themselves</div>
+      <svg class="full" viewBox="0 0 700 220" role="img" aria-label="MN heartbeat broadcast and CN peer bandwidth exchange">
+        <rect x="300" y="20" width="100" height="46" rx="8" fill="#D7F1E8" stroke="#1E8F72" stroke-width="2"/>
+        <text x="350" y="40" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#12483a">MN</text>
+        <text x="350" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#12483a">pool size · busy · queue</text>
+        <g stroke="#5A5FCB" stroke-width="1.6" fill="none">
+          <path d="M320 66 Q220 120 130 150"/><path d="M350 66 L350 150"/><path d="M380 66 Q480 120 570 150"/>
+        </g>
+        <g font-family="JetBrains Mono" font-size="8" fill="#33389a">
+          <text x="185" y="105">heartbeat</text><text x="356" y="105">heartbeat</text><text x="470" y="105">heartbeat</text>
+        </g>
+        <rect x="80" y="150" width="100" height="46" rx="8" fill="#E6E7FA" stroke="#5A5FCB" stroke-width="2"/>
+        <rect x="300" y="150" width="100" height="46" rx="8" fill="#E6E7FA" stroke="#5A5FCB" stroke-width="2"/>
+        <rect x="520" y="150" width="100" height="46" rx="8" fill="#E6E7FA" stroke="#5A5FCB" stroke-width="2"/>
+        <text x="130" y="178" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#33389a">CN₁</text>
+        <text x="350" y="178" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#33389a">CN₂</text>
+        <text x="570" y="178" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#33389a">CN₃</text>
+        <path d="M180 173 H300 M400 173 H520" stroke="#A85C24" stroke-width="1.6" stroke-dasharray="4 3"/>
+        <text x="350" y="210" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6e3f0e">RDMA bandwidth summaries exchanged among peer CNs</text>
+      </svg>
+      <figcaption>Each MN periodically broadcasts compaction-pool size, busy-worker count, and queue depth to CNs sharing it. Each CN separately measures its own recent compaction RDMA traffic and exchanges a bandwidth summary with peer CNs on the same MN. Every dispatcher caches these reports and decides locally — no synchronous remote round-trip per task. (§3.1)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · Throttled dispatch — two gates, in order</h3>
+      <p>Each task is first classified by expected resource pressure, then tried against <b>Layer 1</b> before ever considering <b>Layer 2</b> — near-data is always preferred when it's admissible.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The dispatch pipeline</div>
+      <div class="viz-kicker">admit near-data first · fall back to CN-side only when resource-safe</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Task arrives</div><div class="nd">Dispatcher classifies expected resource pressure</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Layer 1 — near-data admission</div><div class="nd">MN queue &lt; task-class bound, and CN's pending remote-task count within allowance (L0 gets priority)</div></div>
+      </div>
+      <div style="text-align:center;margin:10px 0;font-family:var(--mono);color:var(--ink-faint)">admitted ↓ &nbsp;&nbsp;&nbsp;&nbsp; not admitted →</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Dispatch to MN worker</div><div class="nd">Merge runs near the SSTables; only metadata crosses the network</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Staging</div><div class="nd">Retries near-data as MN state improves; priority grows with each failed round</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Layer 2 — CN-side gate</div><div class="nd">Bounded cost + free CN worker + sufficient local &amp; global RDMA headroom → all three, or stay staged</div></div>
+      </div>
+      <figcaption style="margin-top:14px">This ordering is deliberate: a short wait for MN capacity is favored over a mistaken CN-side dispatch that could congest the shared fabric for every CN. (§3.2)</figcaption>
+    </figure>
+
+    <pre class="sketch"><span class="cm"># dispatch round (per CN, sketch of §3.2)</span>
+<span class="kw">for</span> task in staged_and_new (highest priority first):
+    <span class="kw">if</span> mn_queue[task.mn] &lt; class_bound(task) and cn_pending &lt; allowance(level=task.level):
+        admit_near_data(task)          <span class="cm"># Layer 1: preferred path</span>
+    <span class="kw">elif</span> task.bounded_cost and cn_worker_free and rdma_headroom(local, global) &gt;= needed:
+        admit_cn_side(task)            <span class="cm"># Layer 2: RDMA-gated fallback</span>
+    <span class="kw">else</span>:
+        task.priority += 1; stage(task) <span class="cm"># wait, don't starve</span></pre>
+
+    <div class="prose">
+      <h3>4 · Completion batching</h3>
+      <p>Every completed compaction needs an incremental metadata (version) update installed before its output is visible. Conventional multithreaded compaction has each completion separately acquire the metadata lock — a source of contention. RLSM's collector instead batches ready completions, applies all their edits under <b>one lock</b>, publishes a single updated view, then releases one remote-task credit per near-data completion and wakes staged tasks — keeping completion and dispatch state consistently ordered.</p>
+      <div class="callout why"><span class="ic">💡</span><div>The ablation in the next tab shows this batching alone contributes a smaller but consistent 5%–15% throughput gain — dispatch placement is the primary lever, batching trims the remaining control-path overhead. (§3.3, §4.2)</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Try it: does the RDMA gate open?</h3>
+      <p>Slide the current shared RDMA usage and watch RLSM's Layer-2 gate react, using the paper's own dual-run finding: CN-side compaction is competitive only when pre-launch bandwidth is below ~2 GB/s, and typically 2.0–2.3× slower above that (Fig. 3), against a fabric hardware ceiling of ~10–12 GB/s (§2.1).</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">RDMA headroom gate</div>
+      <div class="viz-kicker">below the ~2 GB/s threshold, CN-side fallback opens</div>
+      <div class="part-viz">
+        <div>
+          <div class="bar-track" style="height:52px;position:relative">
+            <div class="bar-fill" id="rdmaFill" style="background:linear-gradient(90deg,#2ba084,#1E8F72);width:50%"></div>
+            <div style="position:absolute;left:16.6%;top:0;bottom:0;width:1px;background:#7a2e22;border-left:2px dashed #7a2e22"></div>
+            <div style="position:absolute;left:16.6%;top:-18px;font-family:var(--mono);font-size:10px;color:#7a2e22">2 GB/s gate</div>
+            <div style="position:absolute;left:91.6%;top:0;bottom:0;width:1px;background:#332C24"></div>
+            <div style="position:absolute;left:91.6%;top:-18px;font-family:var(--mono);font-size:10px;color:#332C24">~11 GB/s cap</div>
+          </div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">Shared RDMA in use:</span>
+            <input type="range" min="0" max="12" step="0.1" value="6" id="rdmaRange">
+            <span class="mono" id="rdmaVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">6.0 GB/s</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-rdma="0.5">Idle fabric (0.5 GB/s)</button>
+            <button class="tbtn" data-rdma="3">Typical near-data run (3 GB/s)</button>
+            <button class="tbtn" data-rdma="11">CN-side saturation (11 GB/s)</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">Headroom to cap<b id="rHeadroom">—</b></div>
+            <div class="pstat">Est. CN-side vs near-data<b id="rRatio">—</b></div>
+          </div>
+          <div class="pverdict sub" id="rVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption>Illustrative interpolation of the paper's reported regimes (§2.4, Fig. 3): comparable speed below ~2 GB/s, 2.0–2.3× slower above it, hardware ceiling ~10–12 GB/s (§2.1). Exact continuous values aren't given in the text — the two breakpoints are.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>6 · Beyond this paper's fabric — generalizing the signal</h3>
+      <p>RLSM's authors are explicit that the specific thresholds are deployment-tuned, but the <i>methodology</i> — identify each path's critical resource and gate on it — is meant to generalize. They name <b>CXL-based systems with near-memory compute</b> as one candidate, since one-sided RDMA access without MN CPU involvement (letting CN read remote SSTables without disturbing MN compute) is structurally similar to CXL.mem access without host-CPU involvement on the memory side. In TCP-based or SSD-backed disaggregation, they note protocol-processing CPU and storage I/O would become additional path-critical resources requiring their own signals and thresholds. (§3.4)</p>
+      <div class="callout note"><span class="ic">🧭</span><div><b>For tiering/CXL readers:</b> this is the same critique that motivates comparing promotion/demotion signals across TPP, HeMem, Memtis, and Pond — a resource-placement decision is only as good as the signal it's built on, and CPU/access-frequency proxies can miss the resource that's actually saturated. RLSM's finding — that per-path critical-resource visibility beats a single global proxy — is a data-placement-layer instance of the same argument these tiering systems make at the memory-page layer.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces through the paper's own tables and figures — reading utilization vs. queue, RDMA reduction, ablation arithmetic, and dispatch-ratio stability.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Utilization vs. queue depth at 16 threads (Table 2)</h3>
+      <p style="color:var(--ink-soft)">RLSM and dLSM (near-data) reach nearly identical MN utilization — 92.6% vs 94.8%. Does that mean they perform the same?</p>
+      <ol class="seq">
+        <li><b>Read both queue depths.</b> dLSM's MN queue averages <b>29.2</b>; RLSM's averages <b>1.2</b> — a <b>~24×</b> difference (29.2 ÷ 1.2 ≈ 24.3), despite near-identical utilization.</li>
+        <li><b>Interpretation:</b> dLSM's MN pool is saturated <i>and</i> backlogged — tasks queue up faster than they drain. RLSM's admission control keeps the pool just as busy but without the backlog, by throttling how many tasks are allowed to queue.</li>
+        <li><b>Confirm with write control:</b> RLSM's slowdown/stall counts (4334/1281) are both lower than dLSM's (4691/1756) — fewer backpressure events, consistent with a shorter queue.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> "fully utilized" and "falling behind" are different facts. RLSM's admission controller explicitly reads queue depth, not just utilization — this is the paper's central diagnostic move (§2.2, Table 1/2).</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② How much RDMA pressure RLSM removes (Table 2, 16 threads)</h3>
+      <p style="color:var(--ink-soft)">Compute the peak and average RDMA bandwidth reduction vs. the CN-side baseline (RocksDB_MD).</p>
+      <ol class="seq">
+        <li><b>Peak bandwidth:</b> RocksDB_MD 12.78 GB/s → RLSM 5.52 GB/s. Reduction = (12.78 − 5.52) / 12.78 = <b>56.8%</b> lower peak.</li>
+        <li><b>Average bandwidth:</b> RocksDB_MD 3.74 GB/s → RLSM 1.58 GB/s. Reduction = (3.74 − 1.58) / 3.74 = <b>57.8%</b> lower average.</li>
+        <li><b>Against the fabric's ~10–12 GB/s hardware ceiling (§2.1):</b> RocksDB_MD's peak (12.78) sits essentially <i>at</i> the ceiling; RLSM's peak (5.52) leaves roughly half the fabric's capacity as headroom for foreground traffic.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is the direct mechanism behind RLSM's write-throughput gain: by admitting most tasks near-data and gating the rest on real RDMA headroom, it simply asks far less of the shared fabric.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Do the ablation gains add up to the full-system gain?</h3>
+      <p style="color:var(--ink-soft)">Dispatcher-only improves 21%–36% over dLSM; collector-only improves 5%–15%. Full RLSM improves 31%–53% over the strongest baseline. Roughly consistent?</p>
+      <ol class="seq">
+        <li><b>Low end:</b> 21% (dispatcher) + 5% (collector) = <b>26%</b>, vs. full RLSM's reported low end of <b>31%</b> — close, with the extra few points plausibly from the two mechanisms interacting (less lock contention <i>because</i> dispatch already reduced contended completions).</li>
+        <li><b>High end:</b> 36% + 15% = <b>51%</b>, vs. full RLSM's reported high end of <b>53%</b> — again close but not exactly additive.</li>
+        <li><b>Takeaway:</b> the two mechanisms are largely complementary rather than overlapping, and dispatch placement is clearly the dominant lever (21–36% alone vs. 5–15% for batching).</li>
+      </ol>
+      <div class="callout note"><span class="ic">📎</span><div>The paper itself only claims the two mechanisms are complementary and that dispatch is primary (§4.2) — the near-additivity above is this guide's arithmetic check, not a claim the paper makes directly.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ How stable is the MN dispatch ratio as CN count scales? (Fig. 8)</h3>
+      <p style="color:var(--ink-soft)">Compare the spread of dLSM_dynamic's and RLSM's MN dispatch ratio across 1, 2, and 3 sharing CN nodes.</p>
+      <ol class="seq">
+        <li><b>dLSM_dynamic:</b> 67.5% → 55.3% → 52.3%. Spread = 67.5 − 52.3 = <b>15.2 percentage points</b>, a relative drop of 15.2/67.5 ≈ <b>22.5%</b>.</li>
+        <li><b>RLSM:</b> 70.0% → 70.7% → 69.8%. Spread = 70.7 − 69.8 = <b>0.9 percentage points</b>, a relative variation of roughly <b>1.3%</b>.</li>
+        <li><b>Why it matters:</b> as more CNs share one MN, dLSM_dynamic sees more idle CN cores in aggregate and routes progressively more compaction to the RDMA-bound CN-side path — exactly the failure mode CPU signals are prone to. RLSM's RDMA-headroom gate doesn't care how many CN cores are idle; it cares whether the shared fabric has room, so the ratio barely moves.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this is the clearest evidence in the paper that the CPU signal actively gets <i>worse</i> at scale, while the resource-aware signal stays flat — the core claim of the paper made visible in one figure.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">CN-side compaction shows only 42.6% CPU utilization yet performs worst of the three strategies in Table 1. What's actually limiting it?</div>
+      <details><summary>Show answer</summary><div class="ans">The shared RDMA fabric, not CN compute. CN-side compaction must fetch full SSTable inputs and push outputs back over RDMA for every task; those transfers repeatedly push aggregate bandwidth to the 10–12 GB/s hardware ceiling, so tasks wait on the network while CPU sits idle.<span class="mis">Misconception: that idle CPU means a path is "not the bottleneck." In disaggregation, the bottleneck can be a resource the CPU-utilization metric never touches.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Near-data compaction reaches 94.2% MN utilization with a queue depth of 33.9. A colleague says "94.2% isn't even 100%, so the MN has room for more work." Evaluate that claim.</div>
+      <details><summary>Show answer</summary><div class="ans">Misleading. A queue depth of 33.9 means, on average, ~34 tasks are already waiting for a free worker — the pool is effectively saturated and backlogged, not "6% free." Admitting more work would only grow the queue further. That's exactly why RLSM's admission controller gates on queue depth against a task-class bound, not on "is utilization under 100%."<span class="mis">Misconception: treating utilization headroom (100% − util) as available capacity. A long queue means the pool is already oversubscribed regardless of the utilization number.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">As more CNs share one MN, dLSM_dynamic's MN dispatch ratio falls (67.5% → 52.3%). Explain the mechanism, in terms of what CPU-aware scheduling actually observes.</div>
+      <details><summary>Show answer</summary><div class="ans">With more CNs, the aggregate pool of "some CN core is idle somewhere" grows, even though the shared RDMA fabric hasn't grown at all. CPU-aware scheduling sees more idle CN capacity and routes more compaction to CN-side execution — exactly the resource that's shared and finite, RDMA bandwidth, gets more contended just as the scheduler is sending it more traffic.<span class="mis">Misconception: that more compute nodes automatically means more "room" for compute-heavy tasks. The fabric they all share doesn't scale with CN count, so CPU-driven placement gets worse, not better, as the cluster grows.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">The dual-run diagnostic (Fig. 3) shows CN-side compaction is competitive only when pre-launch RDMA usage is below ~2 GB/s. If current usage is 1.5 GB/s and a task is bounded-cost with a free CN worker, should RLSM's Layer 2 gate open?</div>
+      <details><summary>Show answer</summary><div class="ans">Yes — 1.5 GB/s is below the ~2 GB/s threshold where CN-side becomes roughly time-competitive with near-data, and the other two Layer-2 conditions (bounded cost, free CN worker) are already satisfied. All three conditions of §3.2's CN-side fallback gate hold, so the task is admissible for CN-side execution.<span class="mis">Misconception: that the RDMA gate is the only condition. Layer 2 requires bounded cost and worker availability too — low RDMA usage alone doesn't automatically admit a task.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why does RLSM's completion collector apply many completions under one lock instead of letting each completion lock and publish independently, as conventional compaction does?</div>
+      <details><summary>Show answer</summary><div class="ans">Conventional per-completion locking means N completions cause N separate lock acquisitions, each contending with foreground and other compaction threads. Batching collapses that to one lock acquisition per batch — the metadata edits for all ready completions are applied together, then a single updated view is published, cutting lock contention on the control path.<span class="mis">Misconception: that batching makes results visible later and is therefore strictly worse for correctness or freshness. It changes only the granularity of publication, not correctness — and the ablation shows it's a net throughput win (5%–15%).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Under a 90% read-heavy mixed workload, RLSM, dLSM, dLSM_dynamic, and RocksDB_MD all achieve comparable throughput (Fig. 9). Doesn't this undercut RLSM's value?</div>
+      <details><summary>Show answer</summary><div class="ans">No — it's expected and consistent with RLSM's design target. RLSM optimizes compaction <i>placement under write pressure</i>. At a 90% read ratio, foreground writes no longer saturate the system, so compaction pressure (and hence the cost of misplacing it) drops, and placement strategy matters less. The four schemes converge because the resource contention RLSM is built to manage simply isn't present at that point.<span class="mis">Misconception: that a good scheduler should show gains everywhere. RLSM is explicitly a write-intensive-workload optimization; comparable performance under read-heavy load is the paper's own evidence that it isn't degrading reads, not a shortfall.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 7 · medium</span>
+      <div class="qtext">RLSM's near-data admission allowance is "level-aware," giving L0 compaction tasks higher priority. Why single out L0?</div>
+      <details><summary>Show answer</summary><div class="ans">L0 is the latency-critical top level of the LSM-tree — if L0 compaction falls behind, L0 files accumulate quickly and foreground writes hit their configured SSTable limit sooner, triggering stalls. Giving L0 tasks a higher admission allowance keeps that latency-critical path open even when overall MN admission is being throttled for other levels.<span class="mis">Misconception: that all compaction levels are interchangeable for scheduling purposes. Backlog at different levels has very different consequences for foreground write stalls.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 8 · easy</span>
+      <div class="qtext">Why doesn't RLSM just permanently add more compaction workers to the MN's pool to fix the near-data bottleneck?</div>
+      <details><summary>Show answer</summary><div class="ans">That would relieve the immediate bottleneck but re-couple memory and compute provisioning — the exact tight coupling memory disaggregation is meant to break, reducing elasticity and cost efficiency. Instead, RLSM controls how many tasks are <i>admitted</i> into the existing finite MN pool, which is scalable without touching MN hardware provisioning.<span class="mis">Misconception: that a resource bottleneck should always be solved by adding more of that resource. In a disaggregated system, adding MN compute has an architectural cost the paper explicitly wants to avoid (§2.2).</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Twelve questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What problem is RLSM actually solving?<span class="chev">▾</span></summary><div class="a">Where each LSM compaction task should execute in a disaggregated store: on the compute node (CN-side, over RDMA) or near the data on the memory node (near-data). It replaces CPU-utilization-based placement with placement gated by each path's actual bottleneck resource — RDMA bandwidth for CN-side, MN service capacity for near-data.</div></details>
+      <details><summary><span class="q">Q2</span>Why is CPU utilization the wrong signal here?<span class="chev">▾</span></summary><div class="a">Because in disaggregated memory the compaction paths are bound by resources CPU utilization doesn't measure: CN-side compaction is bound by shared RDMA fabric bandwidth (a 10–12 GB/s hardware ceiling), and near-data compaction is bound by MN queue backlog, which utilization alone doesn't expose. CPU-aware scheduling (dLSM_dynamic) still lands at only ~50% of near-data throughput.</div></details>
+      <details><summary><span class="q">Q3</span>What exactly is "near-data" compaction?<span class="chev">▾</span></summary><div class="a">Running the SSTable merge on an MN-side worker, using local reads/writes to storage that's already on that node. Only the resulting metadata (version) update crosses the network back to the CN — no bulk SSTable transfer.</div></details>
+      <details><summary><span class="q">Q4</span>What are the two layers of RLSM's dispatcher?<span class="chev">▾</span></summary><div class="a">Layer 1 tries near-data admission first, gated on MN queue depth against a task-class bound and the CN's pending remote-task allowance (level-aware, favoring L0). Layer 2, tried only if Layer 1 fails, gates CN-side fallback on bounded task cost, a free local CN worker, and sufficient local and global RDMA headroom.</div></details>
+      <details><summary><span class="q">Q5</span>What happens to a task that fails both gates?<span class="chev">▾</span></summary><div class="a">It's staged: the dispatcher repeatedly retries near-data admission as MN conditions improve, and each failed round both adds delay (letting in-flight tasks finish and free capacity) and raises the task's own staging priority — preventing indefinite starvation while still favoring near-data.</div></details>
+      <details><summary><span class="q">Q6</span>What does the completion collector actually do?<span class="chev">▾</span></summary><div class="a">It receives both CN-side and near-data completions, batches ready ones, applies all their metadata edits under a single lock instead of one lock per completion, publishes one updated view, then releases one remote-task credit per near-data completion and wakes staged tasks.</div></details>
+      <details><summary><span class="q">Q7</span>How much does each mechanism contribute?<span class="chev">▾</span></summary><div class="a">The dispatcher (near-data admission + RDMA-gated fallback) alone improves throughput 21%–36% over dLSM. The completion collector alone adds a smaller 5%–15%. Combined, full RLSM reaches the reported 31%–53% over the strongest baseline — dispatch placement is the primary lever.</div></details>
+      <details><summary><span class="q">Q8</span>Does RLSM hurt read performance?<span class="chev">▾</span></summary><div class="a">Not measurably. Under mixed readrandomwriterandom workloads, RLSM and the three baselines achieve comparable throughput at low write pressure (90% reads), since compaction placement matters less once writes stop saturating the system. RLSM's gains are concentrated in write-heavy regimes.</div></details>
+      <details><summary><span class="q">Q9</span>Is this specific to RDMA, or does the idea generalize?<span class="chev">▾</span></summary><div class="a">The paper frames the underlying methodology — identify the path-critical resource per execution path, gate on it — as generalizable, explicitly naming CXL-based systems with near-memory compute as a candidate. It also notes that TCP-based or SSD-backed disaggregation would need different signals (protocol-processing CPU, storage I/O) in place of RDMA bandwidth.</div></details>
+      <details><summary><span class="q">Q10</span>How is RLSM evaluated?<span class="chev">▾</span></summary><div class="a">On CloudLab r6525 nodes (AMD EPYC 7543, 256 GB DRAM, Mellanox ConnectX-6 100 Gbps RDMA NICs) in a 3CN–1MN topology, using RocksDB's db_bench with 20-byte keys, 400-byte values, and 100M fillrandom operations at 4/8/16 foreground threads per CN, against RocksDB_MD, dLSM, and dLSM_dynamic baselines.</div></details>
+      <details><summary><span class="q">Q11</span>Why is the MN's compaction pool configured smaller than the CN's?<span class="chev">▾</span></summary><div class="a">In the evaluation, MN thread settings are half the CN-side values (CN: 4 persistent + up to 16 on-demand threads; MN: half of both). This mirrors the target setting where compute is elastic on CNs but each MN shard exposes only finite near-data service capacity — exactly the constraint RLSM's admission control is built to respect rather than paper over with more MN threads.</div></details>
+      <details><summary><span class="q">Q12</span>What's left as future/related work in this space?<span class="chev">▾</span></summary><div class="a">The paper positions itself against two related lines: disaggregated-storage systems that mainly optimize foreground lookups/transactions (RDMA-aware indexes, caching, fault tolerance), and LSM compaction-management work that changes where or how compaction runs (near-data, remote, decomposed, service-style) without resolving which resource signal should drive dynamic placement — the gap RLSM fills.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, results at a glance, and where each number and connection came from.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>RLSM</b><span>The paper's system: a disaggregated LSM-based KV store with critical-resource-aware compaction placement.</span></div>
+      <div class="term-def"><b>Near-data compaction</b><span>Compaction executed on an MN-side worker, avoiding bulk SSTable transfer over RDMA.</span></div>
+      <div class="term-def"><b>CN-side compaction</b><span>Compaction executed on the compute node, fetching and returning full SSTables over RDMA.</span></div>
+      <div class="term-def"><b>Critical resource</b><span>The specific resource that actually bounds a given execution path's throughput — RDMA bandwidth for CN-side, MN service capacity for near-data.</span></div>
+      <div class="term-def"><b>Throttled dispatcher</b><span>RLSM's two-layer scheduler: near-data admission control, then RDMA-gated CN-side fallback.</span></div>
+      <div class="term-def"><b>Completion collector</b><span>Batches compaction completions under one lock, releases credits, wakes staged tasks.</span></div>
+      <div class="term-def"><b>Remote-task credit</b><span>A token representing permission for one outstanding near-data task from a CN; released on completion.</span></div>
+      <div class="term-def"><b>MN dispatch ratio</b><span>The fraction of compaction tasks placed on the MN (near-data) rather than the CN.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>LSM-tree / SSTable</b><span>Write-buffering tree structure and its immutable flushed files; see Start Here #1.</span></div>
+      <div class="term-def"><b>CN / MN</b><span>Compute Node (runs engine) / Memory Node (stores SSTables) in disaggregated deployment.</span></div>
+      <div class="term-def"><b>RDMA headroom</b><span>Available shared fabric bandwidth below the hardware ceiling, measured from real task timings.</span></div>
+      <div class="term-def"><b>Queue depth</b><span>Number of tasks waiting for a free compaction-pool worker; distinguishes "busy" from "backlogged."</span></div>
+      <div class="term-def"><b>Write slowdown / stall</b><span>LSM backpressure mechanisms triggered when SSTables accumulate faster than compaction clears them.</span></div>
+      <div class="term-def"><b>dLSM / dLSM_dynamic</b><span>Prior near-data-compaction LSM index, and its CPU-utilization-based dynamic scheduler extension — RLSM's baselines.</span></div>
+      <div class="term-def"><b>RocksDB_MD</b><span>A RocksDB-based CN-side compaction baseline used in evaluation.</span></div>
+      <div class="term-def"><b>Level-aware admission</b><span>Admission allowance that favors latency-critical L0 compaction tasks.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What RLSM buys (vs. the strongest baseline)</div>
+      <div class="viz-kicker">from 4/8/16-foreground-thread runs, 3CN–1MN topology</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Write throughput<small>vs. dLSM</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="42"><span>+31% to +53%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Dispatcher alone<small>ablation</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="28"><span>+21% to +36%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Collector alone<small>ablation</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="10"><span>+5% to +15%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Peak RDMA cut<small>16 threads</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="57"><span>−56.8% (12.78→5.52 GB/s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">CN-side / CPU-aware<small>vs. near-data</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="50"><span>~50% only</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ +60%</p>
+      <figcaption><b>Placement dominates the gain:</b> the dispatcher alone recovers most of the improvement; batching trims the rest by reducing control-path lock contention. (§2, §4.1, §4.2)</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>LSM-tree internals and compaction policies <span class="diff easy">easy</span></h4><div class="meta">explainer · 30–45 min</div><p>How SSTables, levels, and compaction fit together. Search "RocksDB compaction explained" or Luo &amp; Carey's LSM survey — foundation for everything RLSM schedules.</p></div>
+    <div class="read-item reveal"><h4>RDMA one-sided operations <span class="diff med">medium</span></h4><div class="meta">explainer · 20–30 min</div><p>Why RDMA avoids remote CPU involvement, and why it's still a shared, capacity-limited fabric. Search "RDMA one-sided verbs explained."</p></div>
+
+    <div class="subhead">Related papers (from the paper's own references)</div>
+    <div class="read-item reveal"><h4>dLSM: An LSM-Based Index for Memory Disaggregation <span class="diff med">medium</span></h4><div class="meta">Wang, Wang, Kadam, Özsu, Aref · ICDE · 2023</div><p>RLSM's strongest baseline — the native near-data-compaction design the paper measures 31%–53% improvement against.</p></div>
+    <div class="read-item reveal"><h4>Optimizing LSM-based indexes for disaggregated memory <span class="diff med">medium</span></h4><div class="meta">Wang, Gao, Wang, Kadam, Özsu, Aref · VLDB Journal · 2024</div><p>Source of the CPU-utilization-based dynamic scheduler, dLSM_dynamic, that RLSM directly targets.</p></div>
+    <div class="read-item reveal"><h4>SILK: Preventing Latency Spikes in LSM Key-Value Stores <span class="diff med">medium</span></h4><div class="meta">Balmau et al. · USENIX ATC · 2019</div><p>Compaction scheduling for latency-spike prevention in a monolithic setting — the single-node analogue of the placement problem RLSM tackles cross-node.</p></div>
+    <div class="read-item reveal"><h4>Hailstorm: Disaggregated Compute and Storage for Distributed LSM-based Databases <span class="diff hard">hard</span></h4><div class="meta">Bindschaedler, Goel, Zwaenepoel · ASPLOS · 2020</div><p>An earlier disaggregated-LSM design that offloads compaction work; RLSM cites it among systems that change <i>where</i> compaction runs without resolving the placement-signal question.</p></div>
+    <div class="read-item reveal"><h4>Clio: A Hardware-Software Co-Designed Disaggregated Memory System <span class="diff hard">hard</span></h4><div class="meta">Guo, Shan, Luo, Huang, Zhang · ASPLOS · 2022</div><p>Cited for the RDMA-heavy contention problem in disaggregated memory that motivates gating CN-side traffic in the first place.</p></div>
+    <div class="read-item reveal"><h4>An Introduction to the Compute Express Link (CXL) Interconnect <span class="diff med">medium</span></h4><div class="meta">Das Sharma, Blankenship, Berger · ACM Computing Surveys · 2024</div><p>Cited directly in RLSM's discussion (§3.4) as the reference point for generalizing the resource-modeling methodology to CXL-based near-memory compute.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card">
+      <h3 style="font-size:1.05rem">Provenance of the numbers and framing above</h3>
+      <p style="font-size:.95rem"><b>From the paper directly:</b> all Table 1/Table 2 figures, the 31%–53% headline result (§1, §4.1), the ~50% CN-side/CPU-aware ratio (§2.1, §2.3), the 2.0–2.3× dual-run slowdown and ~2 GB/s threshold (§2.4, Fig. 3), the 10–12 GB/s fabric ceiling (§2.1), the ablation ranges 21%–36% and 5%–15% (§4.2), the MN dispatch ratio series 67.5/55.3/52.3% and 70.0/70.7/69.8% (§4.3, Fig. 8), the evaluation setup (§4), and the CXL/TCP generalization discussion (§3.4).</p>
+      <p style="font-size:.95rem;margin-bottom:0"><b>This guide's framing (not in the paper):</b> the normalized "relative to near-data = 100%" bar chart, all analogies, the peer-CN "loading dock / highway" and "toll booth" imagery, the additivity check in Worked Example ③ (explicitly flagged inline), the RDMA-gate interactive's continuous interpolation between the paper's two reported breakpoints, and the closing connection to TPP/HeMem/Memtis/Pond-style tiering signals in the "How It Works" discussion callout.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Lou, Wei, Zhang, Li &amp; Xu, "RLSM: A Disaggregated LSM-Based Key-Value Store with Resource-Aware Compaction" (HotStorage '26)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 60;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- RDMA HEADROOM GATE EXPLORER ---- */
+  var FABRIC_CAP = 11, GATE = 2;
+  function setRdma(v){
+    var range = document.getElementById('rdmaRange'); if(!range) return;
+    v = Math.max(0, Math.min(12, v));
+    range.value = v;
+    document.getElementById('rdmaVal').textContent = v.toFixed(1) + ' GB/s';
+    var fill = document.getElementById('rdmaFill');
+    var headroom = Math.max(0, FABRIC_CAP - v);
+    document.getElementById('rHeadroom').textContent = headroom.toFixed(1) + ' GB/s';
+    var verd = document.getElementById('rVerdict');
+    if(v <= GATE){
+      fill.style.width = Math.min(100,(v/12)*100) + '%';
+      fill.style.background = 'linear-gradient(90deg,#2ba084,#1E8F72)';
+      document.getElementById('rRatio').textContent = '~1.0–1.2×';
+      verd.className = 'pverdict opt';
+      verd.textContent = '✓ Gate open — below ~2 GB/s, the dual-run diagnostic found CN-side roughly competitive with near-data. Layer 2 may admit fallback.';
+    } else {
+      fill.style.width = Math.min(100,(v/12)*100) + '%';
+      fill.style.background = 'linear-gradient(90deg,#c85a49,#B5473A)';
+      document.getElementById('rRatio').textContent = '~2.0–2.3× slower';
+      verd.className = 'pverdict sub';
+      verd.textContent = '✗ Gate closed — above ~2 GB/s, CN-side compaction is typically 2.0–2.3× slower than near-data. Task stays near-data or waits staged.';
+    }
+  }
+  var rdmaRange = document.getElementById('rdmaRange');
+  if(rdmaRange){
+    rdmaRange.addEventListener('input', function(){ setRdma(parseFloat(this.value)); });
+    document.querySelectorAll('[data-rdma]').forEach(function(b){ b.addEventListener('click', function(){ setRdma(parseFloat(b.dataset.rdma)); }); });
+    setRdma(6);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A5FCB">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
