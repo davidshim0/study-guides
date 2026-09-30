@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Decide Locally, Reconcile Later — Amazon Bedrock's Workload Management System, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --dram:#2C6E8C; --dram-soft:#DCE9F2;      /* blue = admission control / bounded staleness */
+  --ltram:#6B4FA0; --ltram-soft:#EDE3F5;    /* purple = CRIS / routing machinery */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = synchronous baseline / failure */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,110,140,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,160,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(107,79,160,.05) 31px,rgba(107,79,160,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:20ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:720px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:100px;display:flex;align-items:center;justify-content:center;margin-bottom:12px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:130px;height:82px}
+.analogy h3{font-size:1.18rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.95rem;color:var(--ink-soft);margin-bottom:.7em}
+.analogy .breaks{font-size:.87rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:9px;margin-top:2px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:230px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:158px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.9rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,110,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,160,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Answer from what's <span class="swash">on hand</span>, not what's <span class="swash" style="color:var(--optane)">far away</span></h1>
+    <p class="lede">Millions of inference requests a minute, accelerator capacity scattered unevenly across 30+ regions, token costs that aren't known until they're spent. This is the plain-English story of <strong>WLM</strong>, the workload-management system behind Amazon Bedrock.</p>
+    <div class="hero-meta">
+      <span>📄 Raichura, Perianayagam, Pokkunuri, Jain — SOSP '26</span>
+      <span>🎓 Some distributed-systems basics assumed — primers cover them</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🌐</div>
+      <p>Decide from what's <span class="ro">LOCAL and cached</span>, never block a request on what's <span class="wo">DISTANT and synchronous</span> — then reconcile the difference continuously.<br><em style="font-size:.9rem">Bounded inconsistency, corrected in the background, backstopped by defense in depth.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then seven building blocks</h2>
+      <p class="sub">The acronyms first, then short primers on the mechanisms WLM composes. Skip anything already familiar.</p>
+    </div>
+
+    <div class="card">
+      <h3>Quick glossary</h3>
+      <div class="gloss">
+        <div class="term-def"><b>WLM</b><span>Workload Management System — Bedrock's admission/routing/scheduling layer.</span></div>
+        <div class="term-def"><b>FM</b><span>Foundation model — the large model being served.</span></div>
+        <div class="term-def"><b>CRIS</b><span>Cross-Region Intelligent Spillover — picks the execution region.</span></div>
+        <div class="term-def"><b>RPM / TPM</b><span>Requests-per-minute / tokens-per-minute quota limits.</span></div>
+        <div class="term-def"><b>EMA</b><span>Exponential moving average — the classifier's adaptive baseline.</span></div>
+        <div class="term-def"><b>AIMD</b><span>Additive-increase/multiplicative-decrease — concurrency-limit control loop.</span></div>
+        <div class="term-def"><b>SFQ</b><span>Stochastic fair queueing — hashes customers into round-robin queues.</span></div>
+        <div class="term-def"><b>DRR</b><span>Deficit round-robin — gives each priority level a guaranteed dispatch share.</span></div>
+        <div class="term-def"><b>TTFT</b><span>Time to first token — latency until streaming output begins.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> admission control / bounded staleness</span>
+      <span><i style="background:var(--honey-deep)"></i> traffic classification / anomalous</span>
+      <span><i style="background:var(--ltram)"></i> CRIS / routing machinery</span>
+      <span><i style="background:var(--optane)"></i> synchronous baseline / failure mode</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Rate limiting with token buckets<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>token bucket</b> holds an allowance that refills continuously at a fixed rate; each request drains tokens equal to its cost, and is admitted only if enough remain. Unlike a fixed one-minute window, continuous refill has no "reset" moment, so it can't be gamed into a burst near two windows' worth of traffic at the boundary.</p>
+          <div class="ready"><b>Now you're ready:</b> WLM checks two buckets per request — RPM and TPM — and the tricky part is that TPM cost (output tokens) isn't known until generation finishes.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Multi-writer state and consistent hashing<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>If many machines must update one shared counter, letting all of them write creates a hotspot. <b>Consistent hashing</b> deterministically maps each key (here, a quota) to a small, stable subset of writers — every machine computes the same mapping independently, and the mapping barely changes as the fleet grows.</p>
+          <div class="ready"><b>Now you're ready:</b> WLM uses consistent hashing to pick which few admission-control instances are responsible for each customer's quota — not to place data, but to select writers.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Prompt / KV caching in LLM serving<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Transformer inference caches the key-value state for a prompt's prefix so a later request sharing that prefix skips recomputing it — a <b>prompt cache</b>. This cache lives on whatever accelerator served the original request, so it's regional: move the request, lose the cache, and pay to rebuild it.</p>
+          <div class="ready"><b>Now you're ready:</b> this is why WLM treats "which region serves this request" as a caching decision, not just a load-balancing one.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Exponential moving averages<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An <b>EMA</b> is a running average that weights recent observations more heavily, smoothing out noise while still tracking a slow trend — unlike a fixed threshold, it moves with the workload's own diurnal shape.</p>
+          <div class="ready"><b>Now you're ready:</b> WLM's classifier compares current token/request rate to an EMA baseline, not to a fixed cap — the same absolute rate can be normal at 2pm and anomalous at 2am.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>AIMD congestion control<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The classic TCP idea: grow a limit slowly and steadily when things go well (<b>additive increase</b>), but cut it sharply the moment there's a sign of trouble (<b>multiplicative decrease</b>). This asymmetry keeps the system near capacity without regularly overshooting it.</p>
+          <div class="ready"><b>Now you're ready:</b> WLM's scheduler discovers each hosting layer's current sustainable concurrency the same way — no static capacity number needed.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Fair queueing and priority scheduling<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Stochastic fair queueing (SFQ)</b> hashes tenants into a fixed number of round-robin queues so no single customer can starve the rest. <b>Deficit round-robin (DRR)</b> extends this across priority classes, giving each a guaranteed dispatch share so lower priority is delayed, not starved.</p>
+          <div class="ready"><b>Now you're ready:</b> WLM layers both — SFQ for per-customer fairness, DRR across five service-tier/classification priority levels.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Bounded staleness vs. synchronous consistency<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Consulting a single global authority before every decision guarantees correctness but adds a network round trip to every request. <b>Bounded staleness</b> instead decides from local or cached state and reconciles the true global state on a schedule, accepting a temporary, quantifiable amount of error in exchange for speed.</p>
+          <div class="ready"><b>Now you're ready:</b> this trade-off, plus layered fallbacks ("defense in depth") to contain the temporary error, is WLM's central design choice.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>WLM in a nutshell</h2>
+      <p class="sub">Two principles, five cooperating subsystems, and why coordination stays off the request path.</p>
+    </div>
+    <div class="prose">
+      <p>Bedrock serves millions of inference requests per minute across 30+ regions, but accelerator capacity for any given model sits in only a subset of them, unevenly. A request's true cost isn't known at admission — output length is revealed only as generation streams out. Under these constraints, exact global coordination is too slow: a cross-region round trip alone costs <b>60–170 ms</b> in production — and synchronous admission checks in a controlled three-region test saw medians up to <b>211 ms</b> in the farthest region — against a <b>10 ms</b> admission-control latency budget.</p>
+      <p>WLM's answer is two principles. First, <b>decouple ingress from execution</b>: a request lands in whichever region is nearest, but <span class="mem-chip chip-ucp">CRIS</span> may execute it elsewhere, subject to geography and model placement, with prompt-cache locality as a first-class routing constraint rather than an afterthought. Second, <b>favor bounded inconsistency over synchronous coordination</b>: <span class="mem-chip chip-hi">admission control</span> decides from locally cached quota state, reconciling consumption every 2–5 seconds through a globally replicated store; routing weights refresh off the request path from asynchronously collected capacity signals.</p>
+      <p>Five subsystems implement this: admission control, traffic classification, cross-region routing (CRIS), request scheduling, and an orchestrator that sequences them, propagates metadata, and — when any subsystem is unavailable — <b>fails open</b>, substituting the best local decision rather than failing inference.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Local, cached decisions beat synchronous global ones when cross-region RTT (60–170 ms) — and synchronous admission latency of up to 211 ms in the farthest region — dwarf the latency budget (10 ms).</li>
+        <li><b>Bounded staleness</b> means quantifiable, bounded temporary error — not unbounded drift.</li>
+        <li>Overshoot during divergence is capped at <b>N×</b> the quota, where N is the small, stable set of responsible instances (consistent hashing keeps N small).</li>
+        <li>Traffic classification labels <em>rate of change</em>, not absolute volume — it protects against sudden shifts, not steady-state demand (that's admission control's job).</li>
+        <li>CRIS orders decisions strictly: availability &gt; prompt-cache locality &gt; latency/utilization — no blended score.</li>
+        <li><b>Fail-open</b> everywhere: a failed subsystem drops its own protection, not inference availability.</li>
+        <li>Under WLM's sustained-overload tests, both designs' final-phase admitted load stayed within 1.1% of quota — not a proof of equivalence under all workloads or failures.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Distance stops mattering</div>
+      <div class="viz-kicker">median admission latency vs. distance from the authority region</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> bounded-staleness (local decision)</span>
+        <span><i style="background:var(--optane)"></i> synchronous (single authority)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 320" role="img" aria-label="Latency by region for bounded-staleness vs synchronous admission">
+        <line x1="70" y1="20" x2="70" y2="260" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="260" x2="700" y2="260" stroke="#D8C8AC" stroke-width="1.4"/>
+        <text x="70" y="278" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Region A</text>
+        <text x="385" y="278" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Region B</text>
+        <text x="700" y="278" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Region C</text>
+        <text x="385" y="298" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">distance from authority →</text>
+        <text x="22" y="145" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 22,145)">median latency</text>
+        <line x1="70" y1="243" x2="700" y2="243" stroke="#C27D14" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.7"/>
+        <text x="700" y="236" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">10 ms budget</text>
+        <polyline fill="none" stroke="#2C6E8C" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" points="70,248 385,247 700,247"/>
+        <circle cx="70" cy="248" r="5" fill="#fff" stroke="#2C6E8C" stroke-width="2.4"/>
+        <circle cx="385" cy="247" r="5" fill="#fff" stroke="#2C6E8C" stroke-width="2.4"/>
+        <circle cx="700" cy="247" r="5" fill="#fff" stroke="#2C6E8C" stroke-width="2.4"/>
+        <text x="700" y="228" text-anchor="end" font-family="Fraunces" font-size="13" font-weight="600" fill="#2C6E8C">bounded-staleness: 1–2 ms everywhere</text>
+        <polyline fill="none" stroke="#C0563B" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" points="70,250 385,150 700,40"/>
+        <circle cx="70" cy="250" r="5" fill="#fff" stroke="#C0563B" stroke-width="2.4"/>
+        <circle cx="385" cy="150" r="5" fill="#fff" stroke="#C0563B" stroke-width="2.4"/>
+        <circle cx="700" cy="40" r="5" fill="#fff" stroke="#C0563B" stroke-width="2.4"/>
+        <text x="76" y="266" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">~2 ms</text>
+        <text x="391" y="146" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">~60 ms</text>
+        <text x="706" y="36" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">~211 ms</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> where the authority actually sits, synchronous admission is fine (~2 ms). Everywhere else it inherits the round trip to that authority — up to 211 ms, 20× the budget. Bounded-staleness stays under budget in every region because it never leaves the region to decide. (Curve shape illustrative; labeled points are §7's measured medians.)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">ingress → decide → route → schedule → execute, with async correction underneath</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Admission</div><div class="nd">Local token-bucket check against cached quota state</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-lru"><div class="nt">Classify</div><div class="nd">EMA compares current rate to the customer's own baseline</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">CRIS</div><div class="nd">Picks an execution region by availability, cache locality, then load</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Schedule</div><div class="nd">SFQ fairness + DRR priority + AIMD concurrency at the destination</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Reconcile (async)</div><div class="nd">Quota store every 2–5s; routing weights every 5 min</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-lru"><div class="nt">Defense in depth</div><div class="nd">Fairness, shedding, circuit breakers contain any transient excess</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about WLM</h2>
+      <p class="sub">Each stands alone. Every card names where the picture stops holding.</p>
+    </div>
+    <div class="analogy-grid">
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="34" height="46" rx="4" fill="#DCE9F2" stroke="#2C6E8C" stroke-width="2.5"/>
+          <rect x="60" y="30" width="34" height="46" rx="4" fill="#DCE9F2" stroke="#2C6E8C" stroke-width="2.5"/>
+          <rect x="100" y="30" width="20" height="46" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2.5"/>
+          <path d="M40 22 q0 -10 30 -10 q30 0 30 10" stroke="#332C24" stroke-width="1.8" fill="none"/>
+        </svg></div>
+        <span class="term">Admission · bounded staleness</span>
+        <h3>Neighborhood ATMs, one bank ledger</h3>
+        <p>Each ATM lets you withdraw from a local cash reserve instantly; the bank reconciles the shared ledger overnight. Occasionally two ATMs both let you overdraw before the ledger catches up — bounded by how many ATMs exist, not unlimited.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real bank eventually calls a debt collector; WLM just throttles future requests until the negative balance is repaid through refill.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 q30 -30 50 -10 q20 20 50 -10" stroke="#C27D14" stroke-width="2.5" fill="none"/>
+          <path d="M20 60 q30 5 50 5 q30 0 50 -5" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3" fill="none"/>
+        </svg></div>
+        <span class="term">Classification · EMA baseline</span>
+        <h3>A rolling forecast, not an almanac</h3>
+        <p>A weather forecaster compares today to the recent rolling trend, not to a fixed historical average — a hot day in August isn't "anomalous" the way the same temperature in January would be. WLM's classifier compares current rate to each customer's own recent EMA, so the same request volume can be normal or anomalous depending on when it arrives.</p>
+        <div class="breaks"><b>Where it breaks:</b> a forecaster has years of data; a new ingress region has none, so WLM defaults new traffic to "anomalous" until a baseline forms.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M15 70 h110" stroke="#9A8E7C" stroke-width="3"/>
+          <path d="M15 50 h60" stroke="#6B4FA0" stroke-width="3"/>
+          <circle cx="75" cy="50" r="5" fill="#6B4FA0"/>
+          <path d="M85 50 q20 -15 40 -15" stroke="#6B4FA0" stroke-width="2" stroke-dasharray="4 3" fill="none"/>
+          <text x="115" y="32" font-family="monospace" font-size="8" fill="#6B4FA0">full only if worth it</text>
+        </svg></div>
+        <span class="term">CRIS · damped weight changes</span>
+        <h3>GPS that only reroutes when it's worth it</h3>
+        <p>A good GPS won't reroute you off a familiar highway to save thirty seconds — the value of staying on a known road (no missed exit, no confusion) outweighs a marginal gain. CRIS moves routing weights gradually and skips updates when the benefit doesn't justify abandoning warm prompt caches.</p>
+        <div class="breaks"><b>Where it breaks:</b> GPS reroutes for you personally; CRIS's routing weight is a shared setting for a whole key-space, so a change affects many customers' cache locality at once.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="16" fill="none" stroke="#2C6E8C" stroke-width="3"/>
+          <circle cx="95" cy="48" r="16" fill="none" stroke="#9A8E7C" stroke-width="3" stroke-dasharray="4 3"/>
+          <path d="M61 48 h18" stroke="#332C24" stroke-width="2.5"/>
+        </svg></div>
+        <span class="term">Scheduling · shard leader lease</span>
+        <h3>A relay baton, not a handoff</h3>
+        <p>A relay runner who goes silent doesn't hand off the baton — the next runner simply starts once the silence has lasted long enough to be sure. A shard leader renews its lease every 200 ms; after five missed renewals (1 s), another instance takes over and rebuilds the queue from callers still waiting.</p>
+        <div class="breaks"><b>Where it breaks:</b> the new "runner" doesn't know the full queue instantly — membership is only complete once every waiting caller has re-polled, about a second later.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="60" width="100" height="14" rx="4" fill="#DCE9F2" stroke="#2C6E8C" stroke-width="2"/>
+          <rect x="20" y="40" width="70" height="14" rx="4" fill="#FBEACB" stroke="#C27D14" stroke-width="2"/>
+          <rect x="20" y="20" width="35" height="14" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Scheduling · DRR priority</span>
+        <h3>Priority boarding, not a locked gate</h3>
+        <p>Priority boarding lets first class through first, but economy still boards — just later. DRR gives every priority tier a guaranteed dispatch share, so Batch and anomalous traffic wait behind Provisioned Throughput and standard On-Demand rather than being rejected outright.</p>
+        <div class="breaks"><b>Where it breaks:</b> a flight has one boarding order; WLM can also <em>preempt</em> — bump an already-running low-priority Batch request off the accelerator, which no airline does to a seated passenger.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M15 70 l20 -8 l20 6 l20 -14 l20 10 l20 -22" stroke="#6B4FA0" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg></div>
+        <span class="term">Concurrency · AIMD</span>
+        <h3>Cruise control that nudges, then brakes</h3>
+        <p>Adaptive cruise control eases the throttle up gradually when the road is clear, but brakes hard the moment the car ahead slows. WLM's concurrency limit grows a small percentage per accepted request but drops multiplicatively the instant the hosting layer throttles or latency rises.</p>
+        <div class="breaks"><b>Where it breaks:</b> cruise control reacts to one sensor; WLM's loop only probes upward when there's already enough traffic and completed requests to trust the signal.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Subsystem by subsystem, with the paper's formulas and real parameters.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Request flow</h3>
+      <p>A request is authenticated at ingress, then passes through four cooperating subsystems in dependency order, spanned by an orchestrator that propagates context and applies fallbacks.</p>
+    </div>
+    <div class="flow-row" style="margin:20px 0">
+      <div class="node n-hi"><div class="nt">① Admission</div><div class="nd">reject before wasting work</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="node n-lru"><div class="nt">② Classify</div><div class="nd">label standard/anomalous</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="node n-ucp"><div class="nt">③ CRIS</div><div class="nd">pick execution region</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="node n-rule"><div class="nt">④ Scheduler</div><div class="nd">fairness, priority, dispatch</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Admission control &amp; distributed quota</h3>
+      <p>Every request checks two continuously-refilled token buckets — RPM and TPM — keyed by (customer, model, scope, tier). The TPM deduction is an estimate; streaming requests report cumulative usage and a final reconciliation repays or collects the difference.</p>
+      <p>To let many instances collectively enforce one quota without a storage hotspot, each quota is assigned — via consistent hashing — to a small, stable subset of <b>N</b> admission-control instances. Only they read/write that quota's shared record, via optimistic concurrency control against DynamoDB, every 2–5 s with jitter.</p>
+      <pre class="sketch"><span class="cm"># fast path — every request, target p99 &lt; 10 ms</span>
+<span class="kw">if</span> RPM_bucket.has_capacity() <span class="kw">and</span> TPM_bucket.has_capacity(estimate):
+    deduct(estimate); admit()
+<span class="kw">else</span>:
+    reject()
+
+<span class="cm"># background path — every 2-5s, per responsible instance</span>
+read latest replicated consumption
+merge local observed usage + refills
+write back with optimistic concurrency
+refresh local cache</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why the overshoot is bounded by N, not the fleet:</b> before reconciliation, each of the N responsible instances can independently admit up to its own view of the bucket. Worst case, admitted rate reaches <b>N× the quota</b> — subsetting is what keeps N small instead of equal to the whole fleet.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Traffic classification</h3>
+      <p>Two independent EMA-based classifiers — token rate and request rate — each compare current demand to the customer's own recent baseline (α = 0.01 per active minute). A request is <b>anomalous</b> if either exceeds its threshold (token: 2.0×, request: 1.5×), combined with logical OR because missing a real burst is costlier than one false positive.</p>
+      <div class="callout note"><span class="ic">📈</span><div>The EMA window is tuned to roughly the time the hosting layer needs to add capacity — so classification catches demand changing <em>faster than capacity can follow</em>, not demand that's merely large. A gradual ramp may never be flagged, by design.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Cross-Region Intelligent Spillover (CRIS)</h3>
+      <p>For region <i>r</i>, headroom below a target utilization is:</p>
+      <pre class="sketch"><span class="hl">H_r = max(0, C_r · U_target − L_r)</span>   <span class="cm"># C_r = capacity, L_r = observed load</span></pre>
+      <p>Global (movable) traffic is distributed toward headroom, steered away from pressured regions; geographically constrained traffic is distributed within its scope by capacity alone, since it has no alternative. Priority is fixed, not blended: <b>availability &gt; prompt-cache locality &gt; latency/utilization</b>.</p>
+      <p>Weights are computed off the request path every 5 minutes per ingress region, then served from a local cache. For cache-sensitive requests, a sticky key derived from the prompt prefix is mapped via <b>weighted consistent hashing</b>, so related requests keep landing in the same region while weights still control the overall split. When a region must exit the eligible set, normalization is direction-constrained — residual weight only flows toward regions whose target was already increasing — so a region whose target fell can't be pushed back up by the rebalancing math.</p>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Scheduling: fairness, priority, concurrency, shedding</h3>
+      <p>At the destination, <b>SFQ</b> hashes customers into fixed queues for fairness; <b>DRR</b> gives five priority levels (pr10 Provisioned Throughput → pr150 Batch, with anomalous On-Demand between standard On-Demand and Flex) a guaranteed dispatch share, so lower tiers wait rather than starve. Higher-priority arrivals can <b>preempt</b> a running Batch request.</p>
+      <p>Concurrency limits adapt via AIMD:</p>
+      <pre class="sketch"><span class="hl">C(t+1) = C(t) + ceil(α · C(t))</span>   <span class="cm"># accepted → grow ~2.7%/step, α=0.0266</span>
+<span class="hl">C(t+1) = C(t) · β</span>              <span class="cm"># throttled/slow → cut, β∈[0.85,0.95] by severity</span></pre>
+    </div>
+    <figure class="viz reveal">
+      <div class="viz-title">Adaptive concurrency: probe up, cut hard</div>
+      <div class="viz-kicker">illustrative AIMD sawtooth using production α, β</div>
+      <svg class="full" viewBox="0 0 700 200" role="img" aria-label="AIMD sawtooth pattern for concurrency limit over time">
+        <line x1="50" y1="20" x2="50" y2="168" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="50" y1="168" x2="660" y2="168" stroke="#D8C8AC" stroke-width="1.4"/>
+        <polyline fill="none" stroke="#2C6E8C" stroke-width="2.8" stroke-linejoin="round" points="50,140 120,100 190,70 190,70 250,110 320,80 380,55 380,55 430,95 500,65 560,40 560,40 610,85 650,60"/>
+        <text x="60" y="185" font-family="JetBrains Mono" font-size="10" fill="#6E6456">time →</text>
+        <text x="140" y="60" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">throttle → ×β cut</text>
+        <text x="380" y="40" font-family="JetBrains Mono" font-size="10" fill="#2C6E8C">steady +α growth</text>
+      </svg>
+      <figcaption>Each accepted request nudges the limit up by ~2.7%; a throttle or latency spike drops it 5–15% at once (severity-scaled), leaving bounds around provisioned capacity as guardrails.</figcaption>
+    </figure>
+    <p class="prose" style="max-width:74ch">When queues exceed depth despite this, the scheduler <b>sheds</b> anomalous before standard, and opportunistic tiers before either — after a delay, in case pressure is transient.</p>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces using the paper's real parameters and measurements.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The N× overshoot bound (Table 2)</h3>
+      <p style="color:var(--ink-soft)">Two-region topology, N = 6 responsible instances; a 1-second burst finishes before reconciliation can propagate. What's admitted?</p>
+      <ol class="seq">
+        <li><b>Worst case:</b> each of the 6 instances can independently admit up to one full bucket before learning what the others admitted → ceiling = 6 buckets.</li>
+        <li><b>Measured at the ceiling:</b> offering 6 buckets in 1 s yields <b>5.92</b> admitted (98.7% of the ceiling) — nearly every independent instance used its full local allowance.</li>
+        <li><b>Below the ceiling:</b> offering 3 buckets yields exactly <b>3.00</b> admitted — bounded staleness tracks real demand when demand is under the bound.</li>
+        <li><b>Synchronous baseline, same burst:</b> stays near <b>1.01–1.02</b> buckets — every request consults the same authority, so there's nothing to diverge.</li>
+        <li><b>Cost of the overshoot:</b> excess becomes a negative balance; for a one-minute bucket, repaying a worst-case N× burst takes up to (N − 1) minutes of throttled refill — it borrows against future allowance, not long-run quota.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> subsetting to N instances (via consistent hashing) is what turns "unbounded overshoot" into "N× for one window" — the whole design hinges on N staying small.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② CRIS headroom in a healthy vs. saturated region</h3>
+      <p style="color:var(--ink-soft)">U_target = 0.8. Region X: capacity 1,000, load 650. Region Y: capacity 500, load 480. How much global traffic does each draw?</p>
+      <ol class="seq">
+        <li><b>Region X:</b> H = max(0, 1000×0.8 − 650) = max(0, 800 − 650) = <b>150</b> headroom units — draws global spillover.</li>
+        <li><b>Region Y:</b> H = max(0, 500×0.8 − 480) = max(0, 400 − 480) = <b>max(0, −80) = 0</b> — the clamp means an already-pressured region draws zero global traffic.</li>
+        <li><b>Geographically constrained traffic</b> bound for Region Y still lands there regardless — it has nowhere else to go, which is exactly why CRIS computes its distribution separately from global traffic.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The max(0, ·) clamp is doing real work: it's the difference between "send less" and "send none," and it's what protects narrow-scope traffic from being crowded out by movable traffic chasing the last bit of headroom.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ AIMD concurrency: five good steps, one bad one</h3>
+      <p style="color:var(--ink-soft)">Start C₀ = 1000, α = 0.0266, then a throttle event with β = 0.9.</p>
+      <ol class="seq">
+        <li><b>Step 1:</b> C₁ = 1000 + ⌈0.0266×1000⌉ = 1000 + 27 = <b>1027</b>.</li>
+        <li><b>Step 2:</b> C₂ = 1027 + ⌈0.0266×1027⌉ = 1027 + 28 = <b>1055</b>.</li>
+        <li><b>After 5 accepted steps:</b> C₅ ≈ <b>1150</b> — roughly +15% over five accepted decisions, additive and steady.</li>
+        <li><b>Throttle hits:</b> C₆ = 1150 × 0.9 = <b>1035</b> — one bad signal erases most of that growth in a single step.</li>
+        <li><b>Why asymmetric:</b> overshoot costs queueing, rejection, and lost cache hits; undershoot only costs temporary idle capacity — the loop is built to prefer the cheaper mistake.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Prompt-cache locality: what routing preserves</h3>
+      <p style="color:var(--ink-soft)">Public-benchmark numbers from a full-day run with 2,048+ token prefixes.</p>
+      <ol class="seq">
+        <li><b>Reuse rate:</b> 99.78% of repeats hit a warm cache — an upper bound on routing-induced locality loss (0.222% failed, possibly from eviction, not just movement).</li>
+        <li><b>Prefix-dependent latency:</b> falls 45%, from 33.9 to 18.5 ms per thousand prefix tokens, when the cache is warm.</li>
+        <li><b>Median client-observed TTFT:</b> 1,583 ms → 1,413 ms, a 10.7% cut, from that same warm-cache effect.</li>
+        <li><b>p99 TTFT:</b> 8,687 ms → 3,397 ms, a 61% cut — the tail benefits far more than the median, consistent with cache misses being the source of the worst outcomes.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this is the concrete cost CRIS is protecting against every time it chooses to keep a request in a warmer, farther region over a cooler, closer one.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Why doesn't WLM just query a single global quota authority for every request?</div>
+      <details><summary>Show answer</summary><div class="ans">Cross-region RTT runs 60–170 ms in production, while the admission-control latency budget is 10 ms — even typical neighboring-region RTTs (~10 ms) are comparable to the whole budget, and cross-continent RTTs exceed it by an order of magnitude or more.<span class="mis">Misconception: that correctness requires synchronous consultation. In WLM's sustained-overload tests, local decisions plus background reconciliation kept final-phase admitted load within 1.1% of quota — not a general proof of equivalence under all workloads or failures.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">A quota has N = 9 responsible instances across three regions. What's the theoretical worst-case admitted volume for a 1-second burst that completes before reconciliation, in units of one bucket?</div>
+      <details><summary>Show answer</summary><div class="ans">Up to <b>9</b> buckets — each of the 9 instances can independently admit close to a full bucket before any of them learns what the others did. The measured value was 8.65 of 9, close to the theoretical ceiling.<span class="mis">Misconception: that more instances always mean more inconsistency risk without bound. It's bounded exactly by N, which is why consistent hashing keeps N small and configurable per quota.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why does traffic classification use an EMA baseline instead of a fixed request-rate cap?</div>
+      <details><summary>Show answer</summary><div class="ans">A fixed cap can't distinguish a customer's normal peak-hour traffic from a genuine sudden change — it would either flag routine diurnal peaks or miss real bursts at off-peak baselines. An EMA tracks each customer's own recent trend, so the same absolute rate is judged against what's normal <i>for that customer, right now</i>.<span class="mis">Misconception: that classification limits how much traffic a customer can send. It only affects scheduling priority under contention — absolute volume is admission control's job.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">CRIS's priority order is fixed (availability &gt; cache locality &gt; latency/utilization) rather than a single blended score. What does fixing the order buy, and what does it cost?</div>
+      <details><summary>Show answer</summary><div class="ans">It makes conflicts resolvable without case-by-case tuning: CRIS generally prefers to accept higher latency to preserve a warm cache — subject to eligibility, the destination's queue-delay tolerance, declines, and terminal queue bounds — and abandons that cache once availability is at stake — no weighting coefficients to retune as traffic shifts. The cost is inflexibility: a blended score could in principle find a better tradeoff point for some workload, but fixed order avoids the fragility of getting those weights wrong at global scale.<span class="mis">Misconception: that a smarter, unified score would strictly dominate. Fixed priority trades some theoretical optimality for predictable, debuggable behavior under conflicting signals.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">A shard leader's lease is 1 second, renewed every 200 ms, and failover triggers after 5 missed renewals. Why not fail over after just 1 missed renewal?</div>
+      <details><summary>Show answer</summary><div class="ans">Failing over too eagerly risks displacing a leader that's still alive but briefly delayed (e.g., a GC pause or transient network blip), which pauses dispatch and can trigger repeated leadership churn. Waiting for 5 missed renewals trades a bit of extra stall-on-failure time for much better stability against false positives.<span class="mis">Misconception: that faster failover is always better. There's a real tradeoff between mean-time-to-recovery and churn from false failovers.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">When the replicated quota store becomes unavailable, admission control keeps deciding from local state rather than rejecting requests. What exactly stops being true during that time, and what still bounds the damage?</div>
+      <details><summary>Show answer</summary><div class="ans">Cross-instance agreement on quota consumption stops being true — each responsible instance enforces only its own local view, so the effective ceiling rises to N× the configured limit instead of the true limit. What bounds the damage: N is still small and fixed by consistent hashing, per-customer fairness and adaptive concurrency at the scheduler still cap how much of that excess actually reaches execution, and once the store returns, buffered updates reconcile and convergence resumes automatically.<span class="mis">Misconception: that "fails open" means no protection at all. It means one layer's protection weakens while other layers (fairness, shedding, circuit breakers) keep operating.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">Why does a new ingress region default an unfamiliar customer's traffic to "anomalous" instead of "standard"?</div>
+      <details><summary>Show answer</summary><div class="ans">Classification baselines are regional and not replicated, so a new ingress region has no history for that customer. Defaulting to anomalous is the conservative choice because a false negative during cold start could expose other customers to an unobserved spike, while a false positive only lowers priority during contention — it never rejects the request outright.<span class="mis">Misconception: that "anomalous" means blocked or throttled. It only affects scheduling priority when the destination region is contended.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What does "bounded inconsistency" actually guarantee?<span class="chev">▾</span></summary><div class="a">Temporary divergence between independent instances' views of shared state, confined to a known window (the reconciliation interval, or N× the quota for admission), followed by deterministic convergence once background reconciliation runs. It is not unlimited drift.</div></details>
+      <details><summary><span class="q">Q2</span>Why is admission decoupled from routing instead of one combined decision?<span class="chev">▾</span></summary><div class="a">They fail independently and serve different purposes: admission enforces a customer's budget, classification labels demand changes, and CRIS picks where to run. Combining them into one call would save a hop but couple their failure modes — if one part of a merged call failed, both protections would be lost together.</div></details>
+      <details><summary><span class="q">Q3</span>Why can't fixed-window rate limiting replace token buckets here?<span class="chev">▾</span></summary><div class="a">Fixed windows allow bursts up to nearly 2× the intended rate across an adjacent window boundary. Continuous refill has no boundary to exploit.</div></details>
+      <details><summary><span class="q">Q4</span>Does classification ever reject a request?<span class="chev">▾</span></summary><div class="a">No. The label (standard/anomalous) only affects scheduling priority, and only when the destination region is actually contended. A misclassified request is delayed, never dropped, by this subsystem.</div></details>
+      <details><summary><span class="q">Q5</span>Why does CRIS compute separate distributions for geographically constrained vs. global traffic?<span class="chev">▾</span></summary><div class="a">Because their alternatives are asymmetric — global traffic can move elsewhere under pressure, constrained traffic cannot. A single utilization-based split would let movable traffic crowd out capacity that constrained traffic has no alternative for.</div></details>
+      <details><summary><span class="q">Q6</span>What happens when a declined dispatch attempt occurs at the destination?<span class="chev">▾</span></summary><div class="a">The router tries the next candidate region, paying one additional cross-region round trip and possibly losing prompt-cache locality — the visible cost of routing on stale or inaccurate weights.</div></details>
+      <details><summary><span class="q">Q7</span>Why does adaptive concurrency grow additively but shrink multiplicatively?<span class="chev">▾</span></summary><div class="a">Overshoot causes queueing, rejection, retries, and lost cache hits — expensive. Undershoot only idles accelerators temporarily until the next increase — cheap. The asymmetry biases the loop toward the cheaper mistake.</div></details>
+      <details><summary><span class="q">Q8</span>Is Batch traffic ever guaranteed capacity?<span class="chev">▾</span></summary><div class="a">No — it's opportunistic, using capacity that would otherwise be idle, and can be preempted the moment higher-priority demand needs it. Before WLM's work-conserving preemption, Batch was capped at ~15% of hosting capacity; after, it used 70–100% of otherwise-idle capacity.</div></details>
+      <details><summary><span class="q">Q9</span>What's the actual failure mode if admission control itself is entirely unreachable?<span class="chev">▾</span></summary><div class="a">Requests are admitted rather than failed, and nothing enforces the quota limit until admission control returns — this is the one case where the N× bound doesn't apply, because it depends on admission control still running at all.</div></details>
+      <details><summary><span class="q">Q10</span>Why keep prompt-cache locality as a routing concern rather than a hosting-layer concern?<span class="chev">▾</span></summary><div class="a">Because the decision of <i>where</i> to route a request determines whether its cache is reusable at all — hosting can only serve what's already local. Making it a first-class routing constraint (not an afterthought) is what lets CRIS trade a little latency for avoiding expensive prefix recomputation.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results, and provenance</h2>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>WLM</b><span>Workload Management System — Bedrock's five-subsystem serving layer.</span></div>
+      <div class="term-def"><b>Bounded inconsistency</b><span>Temporary, quantifiable divergence from global state, corrected by scheduled reconciliation.</span></div>
+      <div class="term-def"><b>Defense in depth</b><span>Layered fallbacks (fairness, shedding, circuit breakers) that contain the consequences of stale or divergent decisions.</span></div>
+      <div class="term-def"><b>Fail-open</b><span>A failed management subsystem substitutes the best local decision rather than blocking inference.</span></div>
+      <div class="term-def"><b>CRIS</b><span>Cross-Region Intelligent Spillover — selects an execution region by availability, cache locality, then load.</span></div>
+      <div class="term-def"><b>Headroom (H_r)</b><span>max(0, C_r·U_target − L_r) — capacity remaining below a region's target utilization.</span></div>
+      <div class="term-def"><b>Quota key</b><span>(customer, model, scope, service tier) — the granularity at which RPM/TPM buckets are tracked.</span></div>
+      <div class="term-def"><b>Consistent hashing (as writer selection)</b><span>Deterministically assigns each quota to a small, stable subset of enforcing instances.</span></div>
+    </div>
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>EMA</b><span>Exponential moving average — the classifier's adaptive per-customer baseline.</span></div>
+      <div class="term-def"><b>AIMD</b><span>Additive-increase/multiplicative-decrease concurrency control.</span></div>
+      <div class="term-def"><b>SFQ / DRR</b><span>Stochastic fair queueing (per-customer fairness) / Deficit round-robin (per-priority dispatch shares).</span></div>
+      <div class="term-def"><b>Sticky-routing key</b><span>A key derived from the prompt prefix, used with weighted consistent hashing to preserve cache affinity.</span></div>
+      <div class="term-def"><b>Circuit breaker</b><span>Temporarily removes a failing destination region from CRIS's candidate set.</span></div>
+      <div class="term-def"><b>Orchestration</b><span>Sequences the four subsystems, propagates metadata, and applies fail-open fallbacks.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What WLM measures in production</div>
+      <div class="viz-kicker">selected §7 results · higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Prompt-cache reuse<small>≥2048-tok prefix, 5h</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="99.94"><span>99.94%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">p99 TTFT cut<small>warm vs cold cache</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="61"><span>−61% (8687→3397ms)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Prefix-latency cut<small>per 1k prefix tokens</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="45"><span>−45% (33.9→18.5ms)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Batch utilization<small>of otherwise-idle capacity</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="100"><span>70–100% (was ~15% capped)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Quota accuracy<small>sustained overload, final phase</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="98.9"><span>within 1.1% of quota</span></div></div></div>
+      </div>
+      <figcaption>All values are §7's reported numbers; bar length is a plain 0–100% scale, not a common unit across rows.</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes</div>
+    <div class="read-item reveal">
+      <h4>Paper facts vs. this guide's framing</h4>
+      <p><b>From the paper:</b> all figures, formulas (headroom, AIMD, token-bucket math), Table 2 values, latency measurements (§7.1–7.5), and architectural claims are drawn directly from Raichura et al., "Taming Inference Workloads at Global Scale" (SOSP '26). Diagrams here (latency-vs-distance figure, AIMD sawtooth, flow nodes) are original visualizations of those numbers, not reproductions of the paper's own figures.</p>
+      <p style="margin-top:10px"><b>This guide's framing (not paper claims):</b> the "bounded staleness resembles relaxed consistency" connection below, and all analogies, are this guide's interpretation for a systems audience, not statements from the paper.</p>
+    </div>
+    <div class="read-item reveal">
+      <h4>A note for readers of OS memory-tiering work</h4>
+      <p>WLM's core trade — decide from local/cached state, reconcile asynchronously, bound the error with a small enforcing subset — parallels patterns in tiered-memory systems: NUMA/CXL-pooled memory access often accepts relaxed consistency for latency, and hot/cold page migration (as in TPP- or HeMem-style tiering) makes movement decisions balancing locality benefit against migration cost, much as CRIS weighs prompt-cache locality against routing benefit. The quota-reconciliation-as-negative-balance mechanism is also structurally similar to credit-based flow control used in some CXL.mem link-layer designs. These are this guide's connections, not claims made by the paper.</p>
+    </div>
+
+    <div class="subhead">Related work (from the paper, §9)</div>
+    <div class="read-item reveal"><h4>Token buckets &amp; distributed rate limiting <span class="diff easy">easy</span></h4><div class="meta">Tanenbaum &amp; Wetherall; Raghavan et al. (SIGCOMM '07); Google Doorman</div><p>WLM differs by accounting both requests and tokens, with token cost unknown until generation completes.</p></div>
+    <div class="read-item reveal"><h4>Breakwater — overload control via server feedback <span class="diff med">medium</span></h4><div class="meta">Cho et al., OSDI '20</div><p>Controls overload from server-side signals; WLM's classifier instead compares each customer's own history to flag demand changes for priority, not admission.</p></div>
+    <div class="read-item reveal"><h4>Maglev — consistent-hashing load balancer <span class="diff med">medium</span></h4><div class="meta">Eisenbud et al., NSDI '16</div><p>Preserves connection affinity under backend churn; CRIS preserves prompt-cache affinity under regional capacity churn — a similar mechanism protecting a different kind of state.</p></div>
+    <div class="read-item reveal"><h4>PagedAttention / Prompt Cache <span class="diff hard">hard</span></h4><div class="meta">Kwon et al. SOSP '23; Gim et al. MLSys '24</div><p>Make KV/prompt state reusable within a cluster; WLM's routing policy tries to keep that reuse possible across regions, coupling global routing to an inference-specific recomputation cost.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Raichura, Perianayagam, Pokkunuri, Jain, "Taming Inference Workloads at Global Scale" (SOSP '26)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
