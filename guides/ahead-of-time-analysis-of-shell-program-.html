@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<!-- SaSh field guide — Ahead-of-Time Analysis of Shell Program Effects (Lazarek et al., SOSP'26).
+     Semantic colors: teal = SaSh / correct detection (the star performer) · amber = catastrophic bug (rm -rf disaster)
+     · indigo = SaSh's symbolic-execution machinery · terracotta = ShellCheck / naive baseline (the weaker tool). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Catching the rm -rf Before It Runs — SaSh, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#DB8A2E; --honey-deep:#B36A0F; --honey-soft:#FAE7C7;
+  --dram:#1F8C74; --dram-soft:#D9F0E9;
+  --ltram:#5B4FC4; --ltram-soft:#E7E4FA;
+  --optane:#BF5A3E; --optane-soft:#F7DFD3;
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,140,116,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,79,196,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(219,138,46,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(91,79,196,.05) 31px,rgba(91,79,196,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(219,138,46,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:20ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5B4FC4)}
+.bf-hi{background:linear-gradient(90deg,#2ba38c,#1F8C74)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#BF5A3E)}
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#DB8A2E} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8981d6}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,140,116,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,79,196,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(219,138,46,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Finding the <span class="swash">rm -rf /*</span> <span class="swash" style="color:var(--honey)">before it runs</span></h1>
+    <p class="lede">Shell scripts quietly delete home directories, wipe drives, and brick systems — not from malice, but from an empty variable or a failed <code>cd</code>. This is the plain-English story of <strong>SaSh</strong>, a system that symbolically runs your script ahead of time and flags the disaster before you do.</p>
+    <div class="hero-meta">
+      <span>📄 "Ahead-of-Time Analysis of Shell Program Effects" · Lazarek et al.</span>
+      <span>🎓 Basic shell scripting assumed — the primers cover the rest</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🐚</div>
+      <p>Warn only about behavior that's <span class="ro">dangerous even in the program's own best case</span> — not <span class="wo">every theoretically possible failure</span>.<br><em style="font-size:.9rem">Optimism is what keeps the signal-to-noise ratio usable.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then the fundamentals</h2>
+      <p class="sub">The paper's key acronyms up front, then eight primers on the concepts SaSh builds on. Skip anything already familiar.</p>
+    </div>
+
+    <div class="card" style="background:var(--paper-2)">
+      <h3 style="font-size:1.1rem">Quick glossary — acronyms you'll see everywhere</h3>
+      <div class="gloss">
+        <div class="term-def"><b>SaSh</b><span>The paper's system: symbolically executes a shell script ahead of time and reports likely bugs.</span></div>
+        <div class="term-def"><b>AST</b><span>Abstract Syntax Tree — the parsed structure of the script SaSh walks over.</span></div>
+        <div class="term-def"><b>POSIX</b><span>The standard defining shell/Unix behavior — cd, rm, variable expansion, etc. all follow it.</span></div>
+        <div class="term-def"><b>IFS</b><span>Internal Field Separator — the characters (space/tab/newline) that split expansion results into words.</span></div>
+        <div class="term-def"><b>SMT (solver)</b><span>Satisfiability Modulo Theories — the constraint solver (Z3) that checks whether a bug condition is reachable.</span></div>
+        <div class="term-def"><b>FS model</b><span>SaSh's symbolic filesystem — a flat map from paths to states (file/dir/deleted × read/unread).</span></div>
+        <div class="term-def"><b>C1–C4</b><span>The paper's four core challenges: execution model, environment/opaque commands, expansion, path explosion.</span></div>
+        <div class="term-def"><b>LLM</b><span>Large Language Model — compared against SaSh in the evaluation (GPT-5.6 Sol, Qwen 3.5).</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:20px">
+      <span><i style="background:var(--dram)"></i> SaSh (correct detection)</span>
+      <span><i style="background:var(--honey)"></i> catastrophic bug (rm -rf disaster)</span>
+      <span><i style="background:var(--ltram)"></i> SaSh's symbolic machinery</span>
+      <span><i style="background:var(--optane)"></i> ShellCheck (the weaker baseline)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Why the shell is uniquely dangerous<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Almost every shell command can fail without stopping the script — no exceptions, no crashes, just quiet continuation with whatever state resulted. That's flexible, but it means a script can sail through an error state (like an empty variable) straight into something catastrophic, like deleting <code>/*</code>.</p>
+          <div class="ready"><b>Now you're ready:</b> SaSh's entire job is to notice these "quiet continuations" that lead somewhere bad, before the script actually runs.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Word expansion, in one sentence<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Before the shell runs a command, it rewrites the raw text: <code>~</code> becomes your home directory, <code>$VAR</code> becomes a value, <code>$(cmd)</code> becomes that command's output, <code>*.txt</code> becomes matching filenames — and then the result gets split into separate words wherever $IFS characters (usually spaces) appear. This whole process is called <b>expansion</b>.</p>
+          <div class="ready"><b>Now you're ready:</b> Expansion is dynamic and largely unknowable ahead of time — SaSh's whole "abstract expansion domain" (§5) exists to reason about it anyway, approximately.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Field splitting — the classic bug source<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>If a variable's value contains a space, e.g. <code>X="my path/"</code>, then <code>rm $X</code> (unquoted) doesn't pass one path — the shell splits it on the space, and <code>rm</code> receives two separate arguments: <code>my</code> and <code>path/</code>. Quoting (<code>rm "$X"</code>) prevents this.</p>
+          <div class="ready"><b>Now you're ready:</b> "Dangerous word split" is one of SaSh's eight misbehavior classes — it directly targets this exact failure mode.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Symbolic execution, briefly<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Instead of running a program with one concrete input, symbolic execution runs it with a <i>symbol</i> standing for "any possible value," tracking constraints on that symbol as it flows through the program. At the end, a solver checks which outcomes are actually reachable.</p>
+          <div class="ready"><b>Now you're ready:</b> SaSh runs the whole shell script this way — $HOME, $1, command outputs, and more all start as unconstrained symbols.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>External commands are opaque binaries<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A shell script is mostly glue: <code>rm</code>, <code>mv</code>, <code>cd</code>, <code>cat</code> are separate compiled programs the shell can't see inside. To reason about what they do, you either run them for real (too late, too risky) or you know their behavior some other way.</p>
+          <div class="ready"><b>Now you're ready:</b> SaSh's answer is hand-written <b>specifications</b> — small pre/post-condition triples per command (§4.1) — that stand in for actually executing the binary.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Optimistic vs. pessimistic analysis<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A pessimistic analysis flags anything that <i>could possibly</i> go wrong in some environment — which, for shell, is nearly every line, since almost any command could fail for some malicious input. A useful analysis instead asks: does this go wrong even under favorable, everyday conditions?</p>
+          <div class="ready"><b>Now you're ready:</b> This is SaSh's central design choice — "optimistic symbolic execution" (§3.2) — and it's what keeps false positives at zero across the evaluation.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Path explosion, quickly<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Every conditional command introduces a branch (did it succeed or fail?). String a few dozen commands together and the number of distinct execution paths grows exponentially — exploring all of them is infeasible for any real-sized script.</p>
+          <div class="ready"><b>Now you're ready:</b> SaSh's "risk-directed exploration" (§6) exists specifically to avoid exhaustively walking this tree — it picks the branch most likely to be dangerous and explores that first.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>A bug vs. a "misbehavior"<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Because the shell tolerates so many error states silently, most real shell bugs aren't crashes — they're perfectly legal executions with unwanted effects: an unintended deletion, a silent overwrite, a command that was always going to fail.</p>
+          <div class="ready"><b>Now you're ready:</b> SaSh defines eight such <b>misbehavior classes</b> (Tab. 1) — from critical-path deletion to bad control flow — and checks for all of them at once.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>SaSh in a nutshell</h2>
+      <p class="sub">The problem, the trick that makes it tractable, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>Shell scripts run with almost no safety net: a failed <code>cd</code>, an empty variable, or an unquoted expansion can turn an innocuous-looking <code>rm -rf "$DIR/"*</code> into a system-destroying <code>rm -rf /*</code>. These bugs are severe, often irreversible, and mostly invisible to syntactic linters like ShellCheck — which caught only <b>36.2%</b> of a documented set of 116 real-world bugs, and can be defeated by trivial rewordings.</p>
+      <p><strong>SaSh</strong> instead symbolically executes the script itself. It tracks unknown values — environment variables, command outputs, user input — as symbols, and simulates each external command's effect using a small hand-written <span class="mem-chip chip-ucp">specification</span> (pre/post-conditions over a symbolic filesystem model). To handle the shell's dynamic word expansion without exploding the state space, it approximates every expansion result down to just three facts: a concrete prefix, a concrete suffix, and a range on how many fields it might split into.</p>
+      <p>The key design choice is <b>optimism</b>: SaSh assumes commands either fully succeed or fully fail (no fine-grained partial failure), and — except for irreversible destructive effects — only flags behavior that's dangerous under the program's <i>own</i> best-case conditions, not under some adversarial environment. That's what keeps it from drowning developers in "this could theoretically fail" noise. A final optimization, <b>risk-directed exploration</b>, steers the search toward branches containing destructive commands, so SaSh reaches deeply buried bugs (like one 342 lines from its root cause) in seconds instead of never.</p>
+      <p><strong>The payoff:</strong> across 61 real buggy programs with 116 documented bugs, SaSh finds <b>115 (99.1%)</b> with <b>zero false positives</b> — against ShellCheck's 42 (36.2%). Applied in the wild for three weeks, it has already surfaced <b>104 new bugs</b> in 50 open-source projects including PyTorch, Kubernetes, and vLLM.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🐚 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Most real shell bugs are <b>misbehaviors</b> — legal executions with unwanted effects — not crashes.</li>
+        <li><b>Optimistic symbolic execution</b> (assume success outside explicit branches; flag only what fails even ideally) is what keeps false positives at zero.</li>
+        <li>Opaque external commands are modeled with hand-written <b>specification triples</b> over a flat, non-hierarchical filesystem model.</li>
+        <li>Word expansion is approximated by an <b>abstract domain</b>: concrete prefix + concrete suffix + a field-count range — enough to catch dangerous splits without full enumeration.</li>
+        <li><b>Risk-directed exploration</b> prioritizes branches containing destructive commands, finding deeply buried bugs fast.</li>
+        <li>Result: 115/116 (99.1%) documented bugs found, 0 false positives, vs. ShellCheck's 36.2% — plus 104 new real-world bugs.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The Steam updater bug, end to end</div>
+      <div class="viz-kicker">a failed cd, an empty variable, and a catastrophic rm -rf</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> ideal (cd succeeds)</span>
+        <span><i style="background:var(--honey)"></i> the bug (cd fails)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="Branch diagram of the Steam updater bug">
+        <rect x="290" y="14" width="180" height="46" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.4"/>
+        <text x="380" y="32" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">cd "${0%/*}"</text>
+        <text x="380" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">(inside a subshell)</text>
+        <line x1="380" y1="60" x2="200" y2="100" stroke="#1F8C74" stroke-width="2"/>
+        <line x1="380" y1="60" x2="560" y2="100" stroke="#DB8A2E" stroke-width="2"/>
+        <text x="255" y="86" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">success</text>
+        <text x="500" y="86" font-family="JetBrains Mono" font-size="10" fill="#b36a0f">failure</text>
+        <rect x="100" y="100" width="200" height="46" rx="8" fill="var(--dram-soft)" stroke="#9fd2c7" stroke-width="1.4"/>
+        <text x="200" y="122" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">echo $PWD runs</text>
+        <text x="200" y="136" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">STEAMROOT = /opt/steam</text>
+        <rect x="460" y="100" width="200" height="46" rx="8" fill="var(--honey-soft)" stroke="#EFD9AC" stroke-width="1.4"/>
+        <text x="560" y="122" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">echo never runs</text>
+        <text x="560" y="136" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">STEAMROOT = ""</text>
+        <line x1="200" y1="146" x2="200" y2="180" stroke="#1F8C74" stroke-width="2"/>
+        <line x1="560" y1="146" x2="560" y2="180" stroke="#DB8A2E" stroke-width="2"/>
+        <rect x="100" y="180" width="200" height="46" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.4"/>
+        <text x="200" y="200" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">rm -rf "$STEAMROOT/"*</text>
+        <text x="200" y="216" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">→ /opt/steam/*</text>
+        <rect x="460" y="180" width="200" height="46" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.4"/>
+        <text x="560" y="200" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">rm -rf "$STEAMROOT/"*</text>
+        <text x="560" y="216" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">→ /*</text>
+        <line x1="200" y1="226" x2="200" y2="252" stroke="#1F8C74" stroke-width="2"/>
+        <line x1="560" y1="226" x2="560" y2="252" stroke="#DB8A2E" stroke-width="2"/>
+        <rect x="100" y="252" width="200" height="34" rx="8" fill="var(--dram-soft)" stroke="#9fd2c7" stroke-width="1.4"/>
+        <text x="200" y="273" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">✓ assertion holds — no warning</text>
+        <rect x="460" y="252" width="200" height="34" rx="8" fill="var(--honey-soft)" stroke="#EFD9AC" stroke-width="1.4"/>
+        <text x="560" y="273" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">✗ assertion violated — BUG</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> both branches run the same final <code>rm -rf</code>, but the failure branch has silently rewritten $STEAMROOT to empty, redirecting the deletion from "the updater's own directory" to "the entire filesystem." SaSh's SMT solver proves this second path is reachable and that its assertion ("don't delete critical paths") is unsatisfiable — that's the warning. (Paper, Fig. 2–4, §2)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">parse → model effects & expansion → search smartly → check → report</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Shell tolerates errors silently; ShellCheck only catches syntax patterns</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Symbolic engine (§3)</div><div class="nd">Optimistic interpreter tracks unknowns as symbols, forks on real branches</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Effect model (§4)</div><div class="nd">Command specs + flat filesystem model capture what rm/mv/cd actually do</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Expansion (§5)</div><div class="nd">Abstract domain: prefix + suffix + field-count range, not full enumeration</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Risk-directed search (§6)</div><div class="nd">Prioritize branches containing destructive commands</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Report</div><div class="nd">SMT-checked assertions → 115/116 bugs, 0 false positives</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about SaSh</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with where the picture breaks down.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M30 70 q40 -50 80 0" stroke="#1F8C74" stroke-width="2.5" fill="none"/>
+          <circle cx="30" cy="70" r="5" fill="#1F8C74"/><circle cx="110" cy="70" r="5" fill="#DB8A2E"/>
+          <path d="M70 20 v14 M64 30 l6 6 l6 -6" stroke="#5B4FC4" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <text x="70" y="86" text-anchor="middle" font-family="monospace" font-size="9" fill="#9A8E7C">walk the bridge first</text>
+        </svg></div>
+        <span class="term">The core idea · Simulate before you run</span>
+        <h3>Walking a rope bridge blindfolded</h3>
+        <p>Before you cross a rickety bridge, you'd rather have someone walk it first, symbolically, and tell you exactly which plank is rotten. SaSh does this for shell scripts: it "walks" the program's logic with an SMT solver standing in for reality, so it can tell you <i>which line</i> deletes everything before you ever run it.</p>
+        <div class="breaks"><b>Where it breaks:</b> the walker only checks the planks SaSh has a specification for (70% of observed invocations) — for unmodeled commands, it optimistically assumes the bridge is fine there too.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="40" rx="6" fill="#E7E4FA" stroke="#5B4FC4" stroke-width="2"/>
+          <text x="70" y="46" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">"rm deletes its</text>
+          <text x="70" y="58" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">arguments"</text>
+          <path d="M20 78 h100" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="3 3"/>
+          <text x="70" y="90" text-anchor="middle" font-family="monospace" font-size="8" fill="#9A8E7C">(never opens rm's source)</text>
+        </svg></div>
+        <span class="term">Command specs · Not reading the binary</span>
+        <h3>A one-line movie synopsis</h3>
+        <p>You don't need to read a director's shooting script to know a movie's plot — a one-line synopsis ("the hero saves the town") is enough for most purposes. SaSh treats <code>rm</code>, <code>mv</code>, <code>cd</code> the same way: instead of understanding their C source, it uses a short specification — "if given a file, it deletes it" — sufficient for bug-finding.</p>
+        <div class="breaks"><b>Where it breaks:</b> synopses lose nuance a full script has. SaSh's specs are hand-written by experts and only cover common invocation shapes — an unusual flag combination falls outside every synopsis, and gets no coverage.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="20" width="30" height="56" rx="4" fill="#DCEFE9" stroke="#1F8C74" stroke-width="2"/>
+          <rect x="55" y="20" width="30" height="56" rx="4" fill="#F7DFD3" stroke="#BF5A3E" stroke-width="2" stroke-dasharray="4 3"/>
+          <rect x="92" y="20" width="30" height="56" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <text x="33" y="86" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">file</text>
+          <text x="70" y="86" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">dir</text>
+          <text x="107" y="86" text-anchor="middle" font-family="monospace" font-size="8" fill="#6E6456">deleted</text>
+        </svg></div>
+        <span class="term">The filesystem model · Flat, not a tree</span>
+        <h3>A hotel's key-card log, not its floor plan</h3>
+        <p>A hotel's front desk doesn't need a 3D floor plan to know "room 214 is occupied" — a flat log of room→status suffices. SaSh's filesystem model is the same: no directory hierarchy, no nesting — just a flat map from each path to a state (file/dir/deleted, read/unread). Simple, but enough to catch "you deleted something you never read."</p>
+        <div class="breaks"><b>Where it breaks:</b> a flat log can't tell you a room's floor collapsed and took three rooms below it — the model has no notion of one path containing another, so certain structural bugs (like deleting a parent implicitly emptying children) aren't directly modeled.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="24" width="30" height="18" rx="3" fill="#fff" stroke="#332C24" stroke-width="1.6"/>
+          <text x="35" y="37" text-anchor="middle" font-family="monospace" font-size="8">us</text>
+          <rect x="55" y="24" width="12" height="18" rx="2" fill="#E7E4FA" stroke="#5B4FC4" stroke-width="1.6"/>
+          <text x="61" y="37" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">x</text>
+          <rect x="72" y="24" width="30" height="18" rx="3" fill="#fff" stroke="#332C24" stroke-width="1.6"/>
+          <text x="87" y="37" text-anchor="middle" font-family="monospace" font-size="8">/usr</text>
+          <text x="60" y="60" text-anchor="middle" font-family="monospace" font-size="8" fill="#9A8E7C">1–∞ fields, prefix "us", suffix "/usr"</text>
+        </svg></div>
+        <span class="term">Expansion · Approximating the unknowable</span>
+        <h3>A redacted document you can still reason about</h3>
+        <p>A heavily redacted memo still tells you something — "the memo starts with 'CONFIDENTIAL' and ends with a signature, and has between 2 and 5 paragraphs" — even with the middle blacked out. SaSh's abstract domain for expansion does exactly this to <code>$1/usr</code>: keep the known prefix and suffix, blank out the unknown middle, and track a range for how many words it could split into.</p>
+        <div class="breaks"><b>Where it breaks:</b> if $IFS itself (the redaction rule) is unknown, even this approximation fails — SaSh gives up and substitutes a fully unconstrained symbol, warning that it couldn't reason precisely.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="30" fill="none" stroke="#5B4FC4" stroke-width="2.2"/>
+          <path d="M70 48 l0 -22" stroke="#DB8A2E" stroke-width="2.4" stroke-linecap="round"/>
+          <path d="M70 48 l16 8" stroke="#332C24" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="70" cy="48" r="3.4" fill="#332C24"/>
+        </svg></div>
+        <span class="term">Risk-directed exploration · Follow the smoke</span>
+        <h3>A firefighter following the smoke, not the floor plan</h3>
+        <p>A firefighter entering a burning building doesn't search room-by-room in floor-plan order — they follow the smoke toward where the fire is most likely to be. SaSh does the same across a script's branches: at every <code>if</code>, it scores each side by whether it literally contains a destructive command (like <code>rm</code>) and explores that side first.</p>
+        <div class="breaks"><b>Where it breaks:</b> smoke can mislead — a branch that looks safe (no destructive commands mentioned) can still call a function that calls <code>rm</code> indirectly, which the local, syntactic risk score can miss until later, non-prioritized exploration reaches it.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="36" width="42" height="30" rx="4" fill="#DCEFE9" stroke="#1F8C74" stroke-width="2"/>
+          <text x="37" y="55" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">SaSh</text>
+          <rect x="82" y="36" width="42" height="30" rx="4" fill="#F7DFD3" stroke="#BF5A3E" stroke-width="2" stroke-dasharray="3 2"/>
+          <text x="103" y="55" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">check</text>
+          <path d="M60 51 h20" stroke="#9A8E7C" stroke-width="1.6" marker-end="url(#arr)"/>
+        </svg></div>
+        <span class="term">SaSh vs. linters · Semantics vs. pattern-matching</span>
+        <h3>A doctor's exam vs. a symptom checklist</h3>
+        <p>A paper checklist ("does the patient have a fever? a cough?") catches only what it explicitly lists — rephrase the symptom slightly and it misses it. A doctor's actual exam reasons about the underlying physiology and catches variations no checklist anticipated. ShellCheck is the checklist (syntactic patterns); SaSh is the exam (semantic execution) — which is why moving one slash in the Steam bug defeats ShellCheck but not SaSh.</p>
+        <div class="breaks"><b>Where it breaks:</b> exams are slower than checklists — SaSh's median analysis is far slower than ShellCheck's instant syntax scan, though still far faster than an LLM's.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key mechanisms rebuilt as diagrams.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Four challenges (C1–C4)</h3>
+      <p>Analyzing shell ahead-of-time runs into four compounding difficulties: <b>(C1)</b> almost any command can fail without halting execution, so naively warning on every possible failure floods developers with noise; <b>(C2)</b> commands are opaque binaries that read and write global environment/filesystem state; <b>(C3)</b> word expansion is highly dynamic and its results are, in general, unboundable; <b>(C4)</b> every command implicitly branches on success/failure, so paths explode exponentially even in moderate-length scripts (the Steam updater has 83 explicit branch points across 450 lines).</p>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Optimistic symbolic execution (§3)</h3>
+      <p>SaSh's engine has three cooperating pieces: the <span class="mem-chip chip-ucp">interpreter</span> walks the AST over symbolic state; the <span class="mem-chip chip-ucp">expander</span> turns words into symbolic strings (calling back into the interpreter for command substitution); the <b>assertion checker</b> encodes accumulated constraints in SMT and reports unsatisfiable ones as bugs.</p>
+      <p>Two optimism choices keep this tractable: commands are treated as succeeding or failing <i>atomically</i> (not partially), and — except for irreversible destructive effects — SaSh only reports what's dangerous under the program's <b>own</b> successful conditions, not under an adversarial environment. Explicit control-flow (<code>if</code>, <code>&amp;&amp;</code>, <code>case</code>) still forks both branches, which is where real bugs like Steam's failed <code>cd</code> get discovered.</p>
+      <div class="callout note"><span class="ic">🌱</span><div><b>Concretely:</b> for <code>cmd1 &amp;&amp; cmd2</code>, SaSh forks into a success state (cmd1 succeeded, cmd2 runs) and a failure state (cmd1 failed, cmd2 skipped) — exactly the fork that exposes STEAMROOT="" in the Steam bug.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Command specifications & the filesystem model (§4)</h3>
+      <p>Each modeled command maps to a specification triple: a <b>usage assertion</b> (violated ⇒ bug), a <b>success postcondition</b>, and a <b>failure postcondition</b>. SaSh's library currently covers <b>13,425 of 19,150 (70%)</b> observed invocation shapes; unmodeled commands fall back to an empty specification (optimistically assumed harmless), so SaSh degrades gracefully instead of crashing on unfamiliar tools.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Reading rm's specification</div>
+      <div class="viz-kicker">usage assertion → success/failure postconditions</div>
+      <pre class="sketch">⟦<span class="hl">rm -rf "$STEAMROOT/"*</span>⟧ ≜
+  <span class="kw">usage:</span>   𝑥"$STEAMROOT/"* ⊑ (dir ∨ file_read)   <span class="cm">// must be a dir, or an already-read file</span>
+  <span class="kw">success:</span> 𝑥"$STEAMROOT/"* ↦ deleted             <span class="cm">// on success, mark it deleted</span>
+  <span class="kw">failure:</span> ⊤                                  <span class="cm">// no-op, per optimistic model</span>
+
+<span class="cm">// when $STEAMROOT = "", the expanded target becomes "/*":</span>
+<span class="cm">// usage assertion asks the solver: can "/*" ever be safely deleted?</span>
+<span class="cm">// solver says NO (it's a critical path) → SaSh reports the bug</span></pre>
+      <figcaption>This is the exact mechanism behind §2's walkthrough: the specification's usage assertion, once the solver shows it's unsatisfiable on the failed-<code>cd</code> path, <i>is</i> the bug report. (Paper, Fig. 8, §4.1)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · The abstract expansion domain (§5)</h3>
+      <p>Rather than enumerate every possible expansion outcome, SaSh reduces each symbolic string to three facts: a concrete prefix, a concrete suffix, and a range on the number of resulting fields. For <code>$1/usr</code>, that's prefix = "" (unknown $1), suffix = "/usr", field-count ∈ [1,∞] — enough to notice that if $1 splits into multiple words, <code>rm $1/usr</code> could delete something other than intended.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Symbolic string: what survives the approximation</div>
+      <div class="viz-kicker">prefix · symbolic variable · suffix · field-count range</div>
+      <svg class="full" viewBox="0 0 700 150" role="img" aria-label="Abstract expansion domain diagram">
+        <rect x="40" y="40" width="90" height="50" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.4"/>
+        <text x="85" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">prefix</text>
+        <text x="85" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">(concrete)</text>
+        <rect x="150" y="40" width="120" height="50" rx="8" fill="var(--ltram-soft)" stroke="#bcbfe8" stroke-width="1.4"/>
+        <text x="210" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">x (symbol)</text>
+        <text x="210" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">unknown value</text>
+        <rect x="290" y="40" width="90" height="50" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.4"/>
+        <text x="335" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">suffix</text>
+        <text x="335" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">"/usr"</text>
+        <rect x="410" y="40" width="180" height="50" rx="8" fill="var(--honey-soft)" stroke="#EFD9AC" stroke-width="1.4"/>
+        <text x="500" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">field count ∈ [1,∞]</text>
+        <text x="500" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">could split into many words</text>
+        <text x="350" y="118" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">everything else about the true value is discarded — on purpose</text>
+      </svg>
+      <figcaption>This is the whole abstract domain: a <code>Symstr</code> is either a fully concrete string, or exactly these four fields. It's coarse by design — precise enough to catch dangerous splits, coarse enough to stay tractable. (Paper, Fig. 9, §5.1)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · Risk-directed exploration &amp; other optimizations (§6)</h3>
+      <p>Before full symbolic execution, SaSh runs a fast targeted pass: at every branch, it scores each side by counting literal, pre-expansion commands with a destructive specification, and explores only the higher-scoring side. It also merges equivalent forked states and filters trivially-satisfiable assertions before ever calling the solver, cutting overhead. A fixed time budget is split across these stages (risk-directed ≤ 1/3, symbolic execution up to 1/2, the rest to solving).</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: how much time budget does SaSh need?</div>
+      <div class="viz-kicker">drag the time budget — watch bugs found across three configurations (Fig. 11 data)</div>
+      <div class="part-viz">
+        <div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">time budget:</span>
+            <input type="range" min="0" max="100" value="0" id="budgetRange">
+            <span class="mono" id="budgetVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">1.0s</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-set="0">1 second</button>
+            <button class="tbtn" data-set="55">~5 seconds</button>
+            <button class="tbtn" data-set="100">60 seconds</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">Base (no opts)<b id="pBase">—</b></div>
+            <div class="pstat">No risk-direction<b id="pNoRisk">—</b></div>
+            <div class="pstat">Full SaSh<b id="pFull">—</b></div>
+          </div>
+          <div class="pverdict sub" id="pVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>What you'll find:</b> at 1s, dropping risk-direction actually finds <i>more</i> bugs (98) than full SaSh (97) — the two other optimizations alone are already fast. But full SaSh keeps climbing to 115/116 by 60s, while "no risk-direction" saturates lower, at 111, by 40s: risk-direction is what reaches the deepest bugs. Endpoints are exact paper figures; the curve between them is interpolated for illustration. (Paper, Fig. 11, §7.3)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four real calculations from the paper's evaluation, carried through in full.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The Steam updater: depth, branches, and detection time</h3>
+      <p style="color:var(--ink-soft)">The full updater is 450 lines with 83 explicit branch points between the STEAMROOT assignment (line 2) and the dangerous rm (line 345) — 342 lines apart. How does SaSh still find the bug in seconds?</p>
+      <ol class="seq">
+        <li><b>Naive exploration is hopeless:</b> 83 binary branches means up to 2⁸³ possible paths — far beyond exhaustive search.</li>
+        <li><b>Risk-directed exploration prunes aggressively:</b> at each branch, SaSh keeps only the side whose region contains a destructive command (like <code>rm</code>), collapsing the search dramatically.</li>
+        <li><b>The rm branch is always kept</b> — it's the line containing the destructive command — so the targeted pass reaches line 345's forked states (both cd-succeeds and cd-fails) directly.</li>
+        <li><b>Result:</b> SaSh reports "Line 345: Deletion of /* due to empty $STEAMROOT" in <b>4.8 seconds</b> on the full 450-line program — and produces no such warning on the fixed version, in a similar time.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🐚</span><div><b>Insight:</b> the "2 to 450 lines" gap is exactly what risk-directed exploration is for — it turns an intractable path-explosion problem into a few-second analysis by refusing to waste time on branches that can't be dangerous.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Specification coverage: 70% by the numbers</h3>
+      <p style="color:var(--ink-soft)">Across the evaluation, SaSh observes 19,150 distinct command invocations. How much of the real world does its specification library actually cover?</p>
+      <ol class="seq">
+        <li><b>Specified invocations:</b> 13,425 out of 19,150.</li>
+        <li><b>As a fraction:</b> 13,425 ÷ 19,150 ≈ <b>70.1%</b>.</li>
+        <li><b>The remaining 30%</b> (≈5,725 invocations) fall back to an empty specification — SaSh optimistically assumes they're benign rather than guessing.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is why SaSh still finds 115/116 documented bugs despite only modeling 70% of invocations: bugs concentrate around a small set of high-risk, well-specified commands (<code>rm</code>, <code>mv</code>, <code>cd</code>), not the long tail.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ SaSh vs. ShellCheck: the exact detection gap</h3>
+      <p style="color:var(--ink-soft)">SaSh identifies 115 of 116 documented bugs; ShellCheck identifies 42. On semantically-equivalent variants of those 42 bugs, ShellCheck identifies zero. What's the gap in percentages?</p>
+      <ol class="seq">
+        <li><b>SaSh's rate:</b> 115 ÷ 116 = <b>99.1%</b>.</li>
+        <li><b>ShellCheck's rate on originals:</b> 42 ÷ 116 = <b>36.2%</b>.</li>
+        <li><b>On the 42 syntactic variants</b> (same bugs, reworded): SaSh still finds 42/42 = <b>100%</b>; ShellCheck finds 0/42 = <b>0%</b>.</li>
+        <li><b>The gap widens, not narrows,</b> once syntax changes — proof that ShellCheck's checks are pattern-matches, not semantic reasoning.</li>
+      </ol>
+      <div class="callout note"><span class="ic">🌱</span><div>Even ShellCheck's fix-recognition is imperfect: of the 42 bugs it identifies, it still (incorrectly) warns on 7 of their fixed versions — SaSh has zero false positives across the entire benchmark.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ LLMs are slower and less reliable — and comments make it worse</h3>
+      <p style="color:var(--ink-soft)">GPT-5.6 Sol finds 87.0–91.3% of bugs on original programs across three trials, dropping to 64.3–69.6% after adding benign explanatory comments. How much does that cost, and how does it compare in time?</p>
+      <ol class="seq">
+        <li><b>Bugs missed, original:</b> out of 115 SaSh-detectable bugs, GPT-5.6 Sol misses 10–15 per trial (13% average miss rate).</li>
+        <li><b>Bugs missed, commented:</b> misses jump to 35–41 per trial (roughly 32% average miss rate) — a ~24% average drop in find-rate from comments alone.</li>
+        <li><b>Median time:</b> 54.5× slower than SaSh on originals, 81.2× slower once commented (more tokens to process).</li>
+        <li><b>Qwen 3.5 (9B), a laptop-scale model,</b> fares far worse: just 2.6–12.2% of bugs found originally, dropping further with comments.</li>
+      </ol>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>The key finding:</b> non-behavioral changes (comments that don't alter what the script does) measurably degrade LLM bug-finding, while SaSh's semantic analysis is unaffected — it never even looks at comments.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one names the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A script runs <code>rm "$USER_FILE"</code> where $USER_FILE could, for some malicious environment, equal "/". Does SaSh flag this?</div>
+      <details><summary>Show answer</summary><div class="ans">Not necessarily. SaSh's optimistic model only flags what's dangerous under the program's own everyday, successful conditions — not every conceivable malicious environment. If nothing in the program's own logic forces $USER_FILE toward "/", SaSh won't warn just because it's theoretically possible; that would flag nearly every script.<span class="mis">Misconception: that SaSh is a security tool searching for adversarial inputs. It's a bug-finder tuned for everyday, high-signal mistakes — not a threat model against malicious environments (except for irreversible destructive effects, where it does check "may occur").</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 2 · easy</span>
+      <div class="qtext">Why does <code>rm $X</code> (unquoted) behave differently from <code>rm "$X"</code> (quoted) when $X = "my path/"?</div>
+      <details><summary>Show answer</summary><div class="ans">Field splitting. Unquoted, the expanded value is split on $IFS characters (space by default), so <code>rm $X</code> receives two arguments: <code>my</code> and <code>path/</code>. Quoted, the whole string is passed as one argument. SaSh's abstract domain tracks exactly this via the field-count range — an unquoted variable with unknown content gets field-count [1,∞], flagging the possible split.<span class="mis">Misconception: that quotes are just style. They change how many arguments a command receives — the root cause of SaSh's "dangerous word split" misbehavior class.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">In the Steam bug, why does SaSh need to fork into two states at the <code>&amp;&amp;</code> rather than just picking the "likely" outcome?</div>
+      <details><summary>Show answer</summary><div class="ans">Because the bug only manifests on the <i>failure</i> path (cd fails → STEAMROOT=""), and that's exactly the branch a "pick the likely outcome" heuristic would probably skip. SaSh forks both explicit-control-flow branches so it can check every reachable state's assertions — this is necessary, not optional, for correctness on this exact bug class.<span class="mis">Misconception: that SaSh only explores "normal" execution. It explores both branches of every explicit conditional; the optimism is about not exploring implicit failure modes outside conditionals, not about skipping conditionals themselves.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 4 · medium</span>
+      <div class="qtext">A specification triple has a usage assertion, success postcondition, and failure postcondition. For <code>rm -rf $p</code>, the failure postcondition is ⊤ (a no-op). Why?</div>
+      <details><summary>Show answer</summary><div class="ans">Because of SaSh's optimistic execution model: if a command fails, SaSh assumes it had no effect at all (rather than partially deleting some of its arguments) — that avoids exploring the combinatorially many partial-failure states a multi-argument rm could have. It trades some precision for tractability, consistent with treating command outcomes as all-or-nothing.<span class="mis">Misconception: that "⊤ for failure" means rm can't fail. It means SaSh doesn't model what a partial/fine-grained failure would do — it only tracks whether the command succeeded wholesale or not.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">SaSh's filesystem model tracks a "read/unread" bit per path. What misbehavior class does this enable, and why is it needed?</div>
+      <details><summary>Show answer</summary><div class="ans">Data loss detection. If a command's postcondition overwrites or deletes a path that's still marked "unread" (i.e., nothing has consumed its contents yet), that's a strong signal of silent data loss — e.g. two sequential <code>mv a x.txt; mv b x.txt</code> overwrites the first move's target before anything read it. Without the read bit, SaSh couldn't distinguish "this overwrite is fine because we already used the old data" from "this overwrite just destroyed something."<span class="mis">Misconception: that any overwrite is suspicious. Only overwriting/deleting unread targets is flagged — the model deliberately allows normal read-then-overwrite patterns.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">The second Debian debootstrap bug (deleting a user-supplied target directory under <code>--print-debs</code>) is the one bug SaSh misses. Why, given SaSh's approach?</div>
+      <details><summary>Show answer</summary><div class="ans">The bug depends on developer <i>intent</i>, not on any violated invariant SaSh checks by default: deleting a user-supplied path is, in general, completely normal and desired behavior for many scripts — flagging every such deletion by default would flood users with false positives. SaSh could be configured to treat positional-parameter-derived paths as critical, but chooses not to, to preserve its zero-false-positive track record.<span class="mis">Misconception: that missing this bug is a technical limitation of symbolic execution. It's a deliberate precision/recall tradeoff — the underlying mechanism (marking a path critical) already exists, it's just not turned on by default.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">Why does risk-directed exploration only look at commands "appearing literally in the region AST pre-expansion"? What class of bug might this miss?</div>
+      <details><summary>Show answer</summary><div class="ans">Scoring pre-expansion, on the literal AST, is cheap — it's a syntactic scan, not a symbolic-execution pass, so it can run fast enough to prioritize before the expensive engine even starts. The tradeoff: a branch that calls a function (or expands a variable) which indirectly invokes <code>rm</code> won't score as risky at the syntactic level, even though it's just as dangerous — that danger is only discovered later, once full (non-prioritized) symbolic execution reaches it.<span class="mis">Misconception: that risk-directed exploration is SaSh's only line of defense. It's a fast first pass to find bugs quickly; full symbolic execution still runs afterward and can catch what the syntactic risk score missed, given enough time budget.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 8 · easy</span>
+      <div class="qtext">SaSh unrolls loops a fixed number of times (three, by default) unless the iteration count is statically known. Why not just fully unroll every loop?</div>
+      <details><summary>Show answer</summary><div class="ans">A loop over a dynamically-sized, unknown collection (e.g. iterating over glob results) has no static bound — fully unrolling it is impossible in general. Capping at a small fixed number (three) trades completeness for tractability: SaSh explores enough iterations to catch most real bugs (which tend to manifest early or with a fixed pattern) without risking infinite unrolling.<span class="mis">Misconception: that SaSh always finds loop-related bugs regardless of iteration count. A bug that only manifests on, say, the 10th iteration could be missed under the default cap of three.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Twelve questions newcomers ask most.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Does SaSh actually run the shell script?<span class="chev">▾</span></summary><div class="a">No. SaSh symbolically interprets the parsed AST itself — it never invokes a real shell or executes real external binaries. Command effects are simulated via hand-written specifications, so analysis is entirely side-effect-free on the host system.</div></details>
+      <details><summary><span class="q">Q2</span>What exactly counts as a "misbehavior" vs. a normal error?<span class="chev">▾</span></summary><div class="a">Misbehaviors are legal, non-crashing executions with unwanted effects: deleting a critical path, a dangerous word split, silent data loss, a command guaranteed to fail, IO mismatches, a missing command, identifier misuse, or degenerate control flow (Tab. 1). They differ from linter "code smells" because they're defined semantically over possible executions, not syntactic patterns.</div></details>
+      <details><summary><span class="q">Q3</span>Why does SaSh assume commands succeed by default?<span class="chev">▾</span></summary><div class="a">Because almost any command <i>could</i> fail in some environment, and reasoning about every fine-grained failure mode is both intractable (combinatorial partial failures) and uninformative (nearly every script would get flagged). SaSh only explores failure explicitly at conditional control constructs (if, &&, ||, case) — where the developer already anticipated failure.</div></details>
+      <details><summary><span class="q">Q4</span>How does SaSh know what <code>rm</code>, <code>mv</code>, or <code>cd</code> do?<span class="chev">▾</span></summary><div class="a">Via hand-written specification triples (usage assertion, success postcondition, failure postcondition) that domain experts wrote by hand. SaSh currently has specs covering 70% of observed real-world invocation shapes; the paper notes that scaling this via crowd-sourcing or automated synthesis from man pages is future work.</div></details>
+      <details><summary><span class="q">Q5</span>What happens with a command SaSh has no specification for?<span class="chev">▾</span></summary><div class="a">SaSh falls back to an empty specification — no usage assertion, no effect on the filesystem model — consistent with its optimistic model. This lets SaSh analyze scripts that call tools it doesn't know about, at the cost of missing bugs that live entirely inside those unmodeled commands.</div></details>
+      <details><summary><span class="q">Q6</span>How does SaSh handle the shell's word expansion without exploding?<span class="chev">▾</span></summary><div class="a">It maps every expansion result to an abstract domain of just four pieces: a concrete prefix, a concrete suffix, a symbolic variable for the unknown middle, and a range on the number of resulting fields. This is coarse but sufficient to catch dangerous splits and critical-path deletions without enumerating every possible concrete outcome.</div></details>
+      <details><summary><span class="q">Q7</span>What is risk-directed exploration, concretely?<span class="chev">▾</span></summary><div class="a">A fast pre-pass that, at every conditional branch, computes a risk score (the count of literal commands in that branch with a destructive specification) and explores only the higher-scoring side. It's what lets SaSh find bugs 342 lines deep in a 450-line script within seconds instead of never.</div></details>
+      <details><summary><span class="q">Q8</span>Why does SaSh beat ShellCheck so decisively on "variants"?<span class="chev">▾</span></summary><div class="a">Because ShellCheck matches syntactic patterns — moving a slash, or renaming a comment character, is enough to dodge its checks entirely (0/42 on variants). SaSh reasons about the underlying semantics of execution, so a trivial rewording that preserves behavior still triggers the same warning (42/42 on variants).</div></details>
+      <details><summary><span class="q">Q9</span>Are LLMs a viable replacement for SaSh?<span class="chev">▾</span></summary><div class="a">The paper's experiments say no, for now: GPT-5.6 Sol misses 9–13% of bugs SaSh catches and runs ~55–81× slower; a laptop-scale model (Qwen 3.5, 9B) misses 88–97%. Both degrade further when benign comments are added — a non-behavioral change that shouldn't matter but does, unlike SaSh's semantic analysis.</div></details>
+      <details><summary><span class="q">Q10</span>Does SaSh ever produce false positives?<span class="chev">▾</span></summary><div class="a">Zero, across the entire documented-bug benchmark: when SaSh is run on the fixed version of every buggy program, it does not warn about the now-resolved bug. This discriminative power comes directly from the optimistic model — it only reports what's provably inconsistent or dangerous, not merely "possible."</div></details>
+      <details><summary><span class="q">Q11</span>What does SaSh not handle?<span class="chev">▾</span></summary><div class="a">It doesn't interpret <code>trap</code> at all (signal handlers can fire at arbitrary points), handles <code>eval</code>/<code>.</code> only with fully concrete arguments, omits a few orthogonal POSIX features (shift, times, most set options besides -e/-u), and unrolls loops only a bounded number of times by default (three) unless the iteration count is statically known.</div></details>
+      <details><summary><span class="q">Q12</span>What's left for future work?<span class="chev">▾</span></summary><div class="a">The paper flags scaling the specification library (crowd-sourcing or automated synthesis from man pages / NLP), and — implicitly — extending coverage of unmodeled commands, deeper handling of function calls under ambiguous binding, and refining risk scoring beyond syntactic, pre-expansion command counts.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>SaSh</b><span>The paper's system: an optimistic symbolic-execution engine that analyzes shell programs ahead of their execution.</span></div>
+      <div class="term-def"><b>Optimistic symbolic execution</b><span>SaSh's execution model: commands succeed/fail atomically, and (mostly) only behavior dangerous under the program's own successful path is flagged.</span></div>
+      <div class="term-def"><b>Misbehavior</b><span>A legal, non-crashing shell execution with unwanted effects. SaSh checks for eight classes (Tab. 1).</span></div>
+      <div class="term-def"><b>Specification triple</b><span>A command's modeled behavior: usage assertion, success postcondition, failure postcondition — over the symbolic filesystem.</span></div>
+      <div class="term-def"><b>Symbolic filesystem model</b><span>A flat map from paths to (file/dir/deleted) × (read/unread) — non-hierarchical, but sufficient for bug-finding.</span></div>
+      <div class="term-def"><b>Abstract expansion domain (Symstr)</b><span>SaSh's approximation of expansion results: concrete prefix + symbolic middle + concrete suffix + a field-count range.</span></div>
+      <div class="term-def"><b>Risk-directed exploration</b><span>A fast pre-pass prioritizing branches containing destructive commands, so deep bugs are found within the time budget.</span></div>
+      <div class="term-def"><b>Semantic assertion</b><span>A logical constraint checked by the SMT solver; unsatisfiable ⇒ SaSh reports a bug.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>AST</b><span>Abstract Syntax Tree — the parsed program structure SaSh's interpreter walks.</span></div>
+      <div class="term-def"><b>IFS</b><span>Internal Field Separator — the characters that determine word/field boundaries during expansion.</span></div>
+      <div class="term-def"><b>Path condition</b><span>Constraints describing which environment/inputs are consistent with reaching a given symbolic state.</span></div>
+      <div class="term-def"><b>State merging</b><span>Combining equivalent forked states to avoid redundant exploration of behaviorally-identical branches.</span></div>
+      <div class="term-def"><b>Assertion filtering</b><span>Discarding trivially-satisfiable assertions before invoking the solver, to reduce per-call overhead.</span></div>
+      <div class="term-def"><b>ShellCheck</b><span>The industry-standard syntactic shell linter used as SaSh's primary baseline; catches 36.2% of the documented bugs.</span></div>
+      <div class="term-def"><b>Koala benchmark suite</b><span>119 diverse, correct real-world shell scripts used to measure SaSh's complete-analysis runtime.</span></div>
+      <div class="term-def"><b>Time budget allocation</b><span>SaSh's heuristic split of a fixed analysis budget across risk-directed exploration, full symbolic execution, and solving.</span></div>
+    </div>
+
+    <div class="callout note reveal" style="max-width:74ch">
+      <span class="ic">🔗</span>
+      <div><b>For the memory-tiering reader:</b> SaSh's core bet — that ahead-of-time, effect-aware analysis beats reactive, pattern-based checking — echoes a tension familiar from OS memory management: reactive tiering policies (TPP, HeMem, Memtis) react to observed access patterns after the fact, the same way ShellCheck reacts to observed syntax after the fact. SaSh's optimistic symbolic execution is closer in spirit to profile-guided or ahead-of-time page classification — predicting an effect's consequence before committing to it, rather than migrating/evicting and correcting later.</div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">SaSh vs. ShellCheck, by the numbers</div>
+      <div class="viz-kicker">61 programs · 116 documented bugs · 19 syntactic variants (42 bugs)</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">SaSh · originals<small>bugs found</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="99.1"><span>115/116 (99.1%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">ShellCheck · originals<small>bugs found</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="36.2"><span>42/116 (36.2%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">SaSh · variants<small>bugs found</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="100"><span>42/42 (100%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">ShellCheck · variants<small>bugs found</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="1"><span>0/42 (0%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Spec coverage<small>of invocations</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="70"><span>13,425/19,150 (70%)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 100%</p>
+      <figcaption><b>Zero false positives throughout.</b> In the wild over three weeks, SaSh also found 104 new bugs across 50 open-source projects, with 27 fixes already accepted at time of writing. (Paper §7.1–§7.4)</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes</div>
+    <div class="callout note">
+      <span class="ic">📋</span>
+      <div><b>Paper facts</b> (grounded directly in the text): all bug counts, percentages, timings, and quotations above are from Lazarek, Lamprou, Kapetanakis, Narsipur, Zhao, Zheng, Greenberg, Kallas & Vasilakis, "Ahead-of-Time Analysis of Shell Program Effects," SOSP 2026 — specifically §2 (Steam walkthrough), §3–§6 (system design), §7 (evaluation), Tab. 1/3/4, and Fig. 2/4/8/9/11.<br><br>
+      <b>This guide's framing</b> (not in the paper): all analogies (rope bridge, hotel key-card log, redacted memo, firefighter, doctor's exam), the memory-tiering connection note, and the interactive time-budget explorer's interpolation between exact endpoints are original explanatory scaffolding, clearly distinguished from the paper's own claims.</div>
+    </div>
+
+    <div class="subhead">Related work (from the paper's §8)</div>
+    <div class="read-item reveal"><h4>ShellCheck <span class="diff easy">easy</span></h4><div class="meta">Holen · shellcheck.net · ongoing</div><p>The industry-standard syntactic shell linter — SaSh's primary point of comparison throughout the evaluation.</p></div>
+    <div class="read-item reveal"><h4>KLEE: Unassisted and Automatic Generation of High-Coverage Tests <span class="diff hard">hard</span></h4><div class="meta">Cadar, Dunbar, Engler · OSDI 2008</div><p>Symbolic + concrete execution over LLVM bytecode with system-call-level modeling — the closest general-purpose ancestor to SaSh's engine.</p></div>
+    <div class="read-item reveal"><h4>ABASH: Finding Bugs in Bash Scripts <span class="diff med">medium</span></h4><div class="meta">Mazurak, Zdancewic · PLAS 2007</div><p>Prior work on arity reasoning for shell arguments with partial expansion support — narrower in scope than SaSh's full symbolic model.</p></div>
+    <div class="read-item reveal"><h4>Rehearsal: A Configuration Verification Tool for Puppet <span class="diff med">medium</span></h4><div class="meta">Shambaugh, Weiss, Guha · PLDI 2016</div><p>Source of the flat-map filesystem model idea that SaSh's non-hierarchical FS model builds on.</p></div>
+    <div class="read-item reveal"><h4>The Koala Benchmarks for the Shell <span class="diff med">medium</span></h4><div class="meta">Lamprou et al. · USENIX ATC 2025</div><p>119 correct, diverse real-world shell scripts used to measure how long SaSh needs for complete (not just bug-finding) analysis.</p></div>
+    <div class="read-item reveal"><h4>Executable Formal Semantics for the POSIX Shell <span class="diff hard">hard</span></h4><div class="meta">Greenberg, Blatt · POPL 2019</div><p>Formal shell semantics work underlying the precision of SaSh's interpreter for core constructs.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Lazarek, Lamprou, Kapetanakis, Narsipur, Zhao, Zheng, Greenberg, Kallas &amp; Vasilakis, "Ahead-of-Time Analysis of Shell Program Effects" (SOSP 2026)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- TIME-BUDGET EXPLORER (Fig. 11 data) ---- */
+  // anchors: [time_seconds, bugs_found]; values beyond the last anchor hold flat (saturated)
+  var cfg = {
+    base:    {anchors:[[1,82],[60,97]],  el:'pBase'},
+    norisk:  {anchors:[[1,98],[40,111]], el:'pNoRisk'},
+    full:    {anchors:[[1,97],[60,115]], el:'pFull'}
+  };
+  function bugsAt(anchors, t){
+    var lt = Math.log10(Math.max(t,1));
+    for(var i=0;i<anchors.length-1;i++){
+      var a=anchors[i], b=anchors[i+1];
+      if(t<=a[0]) return a[1];
+      if(t>=b[0]) continue;
+      var la=Math.log10(a[0]), lb=Math.log10(b[0]);
+      var frac=(lt-la)/(lb-la);
+      return Math.round(a[1] + frac*(b[1]-a[1]));
+    }
+    return anchors[anchors.length-1][1];
+  }
+  function tFromSlider(v){ // v in [0,100] -> t in [1,60] on log scale
+    var l1=Math.log10(1), l2=Math.log10(60);
+    return Math.pow(10, l1 + (l2-l1)*(v/100));
+  }
+  var budgetRange = document.getElementById('budgetRange');
+  function setBudget(v){
+    v = Math.max(0, Math.min(100, v));
+    budgetRange.value = v;
+    var t = tFromSlider(v);
+    document.getElementById('budgetVal').textContent = (t<10? t.toFixed(1) : Math.round(t)) + 's';
+    Object.keys(cfg).forEach(function(k){
+      var n = bugsAt(cfg[k].anchors, t);
+      document.getElementById(cfg[k].el).textContent = n + '/116';
+    });
+    var verd = document.getElementById('pVerdict');
+    var full = bugsAt(cfg.full.anchors, t), nr = bugsAt(cfg.norisk.anchors, t);
+    if(t < 2){ verd.className='pverdict sub'; verd.textContent = 'At very tight budgets, skipping risk-direction can win — the other two optimizations alone are already fast.'; }
+    else if(full >= 113){ verd.className='pverdict opt'; verd.textContent = '✓ Full SaSh has essentially saturated — this is close to the 115/116 ceiling.'; }
+    else { verd.className='pverdict sub'; verd.textContent = 'Full SaSh is still climbing past "no risk-direction" (saturated at '+nr+') — risk-direction pays off with more budget.'; }
+  }
+  if(budgetRange){
+    budgetRange.addEventListener('input', function(){ setBudget(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setBudget(parseInt(b.dataset.set,10)); }); });
+    setBudget(0);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5B4FC4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
