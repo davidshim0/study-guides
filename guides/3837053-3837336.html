@@ -368,8 +368,8 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         <div class="term-def"><b>LLM</b><span>Large Language Model — the transformer being served.</span></div>
         <div class="term-def"><b>KV-cache</b><span>Stored key/value attention vectors for already-processed tokens.</span></div>
         <div class="term-def"><b>HBM</b><span>High Bandwidth Memory — the GPU's own on-package memory.</span></div>
-        <div class="term-def"><b>DRAM</b><span>CPU-side memory; here, a transient buffer for KV-cache in transit.</span></div>
-        <div class="term-def"><b>TTFT</b><span>Time To First Token — prefill latency, what this paper optimizes.</span></div>
+        <div class="term-def"><b>DRAM</b><span>CPU-side memory; modeled as a full storage/cache tier in the Section 3 simulator, but treated as a transient transfer buffer in the Section 4 policy.</span></div>
+        <div class="term-def"><b>TTFT</b><span>Time To First Token — prefill latency; motivates the problem, though the paper's formal SLOs are service throughput and P95 prefill latency.</span></div>
         <div class="term-def"><b>TTLT</b><span>Time To Last Token — full generation latency (out of scope here).</span></div>
         <div class="term-def"><b>SLO</b><span>Service-Level Objective — a throughput or latency target to satisfy.</span></div>
         <div class="term-def"><b>P95</b><span>95th-percentile (tail) latency — the slow 5% of requests.</span></div>
@@ -437,8 +437,8 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
       <details class="primer">
         <summary><span class="pnum">8</span>The roofline model — why recompute time ignores storage<span class="chev">▾</span></summary>
         <div class="body">
-          <p>A <b>roofline model</b> estimates compute time from the model's FLOP cost divided by the GPU's peak throughput (adjusted by utilization efficiency, MFU/η). Recomputation time therefore depends only on the <b>model and the GPU</b> — never on which storage tier anything sits in. Restoration time depends only on <b>storage and interconnect</b> bandwidth — never on GPU compute power. Two independent clocks, racing.</p>
-          <div class="ready"><b>Now you're ready:</b> because these two times are governed by disjoint hardware, they can be computed independently and compared live — exactly what the policy in Section 4 does.</div>
+          <p>A <b>roofline model</b> estimates compute time from the model's FLOP cost divided by the GPU's peak throughput (adjusted by utilization efficiency, MFU/η). Recomputation time therefore depends only on the <b>model and the GPU</b> — never on which storage tier anything sits in. Restoration time depends on <b>storage and interconnect</b> bandwidth <b>and on tier capacities and block placement</b> — whether a block still fits in HBM or DRAM before it has to be pulled from disk — never on GPU compute power. Two mostly independent clocks, racing.</p>
+          <div class="ready"><b>Now you're ready:</b> because these two times are governed by largely disjoint hardware, they can be computed independently and compared live — exactly what the policy in Section 4 does.</div>
         </div>
       </details>
     </div>
@@ -455,14 +455,14 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     </div>
     <div class="prose">
       <p>When a KV-cache block has been evicted to disk, an inference engine has two ways to get it back: <span class="mem-chip chip-lru">restore</span> it over the storage/interconnect path, or <span class="mem-chip chip-hi">recompute</span> it from scratch on the GPU. Existing systems pick one policy — a fixed threshold on time or token count — and hard-code it. The paper's core finding: across <b>1,764</b> hardware configurations (6 GPUs × 6 interconnects × 7 DRAM configs × 7 storage devices), restoration time varies by <b>2–3 orders of magnitude</b> at a fixed context length, while recomputation time depends only on the GPU and model. A threshold tuned for one deployment is simply wrong for the next.</p>
-      <p>Their fix is a small <span class="mem-chip chip-ucp">I/O-aware policy</span> that, for every restore request, measures the GPU's current recompute throughput <code>X</code> and the storage tier's current restore throughput <code>Y</code>, then computes how many of the request's blocks to reassign from restore to recompute so that <b>both paths finish at the same time</b> — no idle GPU waiting on a slow disk, no idle disk bandwidth while the GPU churns. The allocation is then checked against throughput and tail-latency SLOs; if neither path alone can satisfy both, the policy falls back to a best-effort split that minimizes the worst violation.</p>
+      <p>Their fix is a small <span class="mem-chip chip-ucp">I/O-aware policy</span> that, for every restore request, measures the GPU's current recompute throughput <code>X</code> and the storage tier's current restore throughput <code>Y</code>, then computes how many of the request's blocks to reassign from restore to recompute so that <b>both paths finish at the same time</b> — no idle GPU waiting on a slow disk, no idle disk bandwidth while the GPU churns. The resulting allocation is then checked against throughput and tail-latency SLOs; if the GPU's and storage tier's current capabilities can't jointly satisfy both constraints, the policy falls back to a best-effort split that minimizes the worst violation.</p>
       <p><strong>The payoff:</strong> up to <b>10×</b> improvement in SLO-success rate over static restore-only or recompute-only policies, at an average decision cost of just <b>5.07 µs</b> — negligible next to the millisecond-to-hour restoration times it's arbitrating between.</p>
     </div>
 
     <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
       <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
       <ul style="margin:0;padding-left:20px;color:#6e4a09">
-        <li>Restoration time depends on storage/interconnect; recomputation time depends on GPU/model — two independent clocks.</li>
+        <li>Restoration time depends on storage/interconnect (and tier capacity/placement); recomputation time depends on GPU/model — two largely independent clocks.</li>
         <li>Across 1,764 configs, restoration time spans 2–3 orders of magnitude at fixed context length; a static threshold can't generalize.</li>
         <li>The policy reassigns <code>k</code> cache-hit blocks from restore to recompute so <code>T_c ≈ T_s</code> (both paths finish together).</li>
         <li>Allocation is validated against tail-latency (P95) and throughput SLOs; infeasible cases fall back to a best-effort minimum-violation split.</li>
@@ -512,7 +512,7 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         <text x="100" y="347" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#fff">recompute</text>
         <text x="330" y="347" text-anchor="start" font-family="JetBrains Mono" font-size="11" fill="#6E6456">split by policy → ~1.8 min (up to 10× faster)</text>
       </svg>
-      <figcaption><b>Read it top to bottom:</b> on the H200, restore starts cheap (data still in HBM/DRAM) but crosses above recompute once context spills to disk — recomputation stays essentially flat because it never touches storage at all. On the slower A5000, the two paths track each other closely across the whole range — restoring and recomputing cost about the same, so either is a viable choice. A fixed threshold tuned for one GPU is the wrong answer for the other. (Shapes matched to paper Fig. 2; case-study numbers, §3.)</figcaption>
+      <figcaption><b>Read it top to bottom:</b> on the H200, restore starts cheap (data still in HBM/DRAM) but crosses above recompute once context spills to disk — recomputation remains relatively low on the H200 across this range (its underlying compute model is still quadratic in the number of blocks, but that growth is dwarfed by the interconnect/storage bottleneck once data spills to disk, so the line is not truly flat). On the slower A5000, the two paths track each other closely across the whole range — restoring and recomputing cost about the same, so either is a viable choice. A fixed threshold tuned for one GPU is the wrong answer for the other. (Shapes matched to paper Fig. 2; case-study numbers, §3.)</figcaption>
     </figure>
 
     <!-- CONCEPT MAP -->
@@ -645,7 +645,7 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
       <p>The simulator models one GPU with <span class="mem-chip chip-hi">HBM</span>, one <span class="mem-chip chip-ucp">CPU DRAM</span> tier, and one <span class="mem-chip chip-lru">disk/SSD</span> tier, connected by a single interconnect. Model weights first claim HBM space (2 bytes/parameter at bf16); only what's left is available for KV-cache:</p>
       <pre class="sketch">Effective_HBM = Capacity_HBM − 2P            <span class="cm"># P = parameter count; weights reserved first</span>
 KVC_Space_HBM = floor(Effective_HBM / S_block)  <span class="cm"># S_block ≈ 2MB for 16-token Llama-3 blocks</span></pre>
-      <p>Restoration is charged piece-wise across tiers, bandwidth-limited by whichever is slower — the tier itself or the interconnect:</p>
+      <p>Restoration is charged piece-wise across tiers, bandwidth-limited by whichever is slower — the tier itself or the interconnect — and by whether the block still fits in a faster tier before spilling to the next one down:</p>
       <pre class="sketch">effective_bw(DRAM) = min(β_dram, β_link)
 effective_bw(disk)  = min(β_disk,  β_link)</pre>
     </div>
@@ -801,13 +801,13 @@ r·T_c ≤ 1  and  r·T_s ≤ 1        <span class="cm"># throughput / no resour
     <div class="prob reveal">
       <span class="ptag hard">Problem 4 · hard</span>
       <div class="qtext">Recomputation time is essentially constant across the 1,764 hardware configurations for a fixed GPU, while restoration time varies by 2–3 orders of magnitude at the same context length. Explain the asymmetry using the paper's two formulas.</div>
-      <details><summary>Show answer</summary><div class="ans">t_compute = N²·T_block·t̂ depends only on N (blocks), T_block, and t̂ = F_token/(Φ_peak·η) — all fixed once you pick a model and GPU, with zero dependence on storage hardware. Restoration time, by contrast, is gated by min(β_tier, β_link), and both storage bandwidth and interconnect bandwidth vary enormously across real hardware (6 interconnects × 7 storage devices in the study) — so restoration inherits all of that variance while recomputation inherits none of it.<span class="mis">Misconception: that "I/O overhead" scales with the same factors as compute. They're governed by entirely disjoint hardware, which is exactly why they can — and must — be measured and compared independently rather than assumed proportional.</span></div></details>
+      <details><summary>Show answer</summary><div class="ans">t_compute = N²·T_block·t̂ depends only on N (blocks), T_block, and t̂ = F_token/(Φ_peak·η) — all fixed once you pick a model and GPU, with zero dependence on storage hardware. Restoration time, by contrast, is gated by min(β_tier, β_link) and by tier capacities/placement (whether a block fits in a faster tier before spilling down), and both storage bandwidth and interconnect bandwidth vary enormously across real hardware (6 interconnects × 7 storage devices in the study) — so restoration inherits all of that variance while recomputation inherits none of it.<span class="mis">Misconception: that "I/O overhead" scales with the same factors as compute. They're governed by largely disjoint hardware, which is exactly why they can — and must — be measured and compared independently rather than assumed proportional.</span></div></details>
     </div>
 
     <div class="prob reveal">
       <span class="ptag medium">Problem 5 · medium</span>
       <div class="qtext">Why does the paper focus on prefill (TTFT) latency specifically, rather than the full request latency (TTLT)?</div>
-      <details><summary>Show answer</summary><div class="ans">Restoring or recomputing KV-cache only affects the prefill phase — turning the input context into usable attention state before generation begins. Decode (token-by-token generation afterward) is assumed unchanged across policies, since it doesn't touch the offloaded KV-cache. Measuring TTLT would blend in decode latency that has nothing to do with the restore-vs-recompute decision, diluting the signal.<span class="mis">Misconception: that any latency SLO is a fair evaluation metric here. Only phases actually affected by the policy under test should be measured, or the comparison gets noisy.</span></div></details>
+      <details><summary>Show answer</summary><div class="ans">Restoring or recomputing KV-cache only affects the prefill phase — turning the input context into usable attention state before generation begins. Decode (token-by-token generation afterward) does read from the KV-cache too, but the paper's model assumes decode latency stays unchanged across the compared policies, since restoration and recomputation only change <i>how</i> the prefill-time KV-cache gets built, not what decode does with it afterward. Measuring TTLT would blend in decode latency that has nothing to do with the restore-vs-recompute decision, diluting the signal.<span class="mis">Misconception: that any latency SLO is a fair evaluation metric here. Only phases actually affected by the policy under test should be measured, or the comparison gets noisy.</span></div></details>
     </div>
 
     <div class="prob reveal">
