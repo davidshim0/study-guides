@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<!-- Context Matters field guide — Context Propagation for eBPF (Machado, Amaro, Matos, Paulo, Esteves; eBPF'26).
+     Source ground truth: the 3-page position paper "Context Matters: Expanding the Potential of eBPF".
+     Semantic colors: amber = context tag / application intent · teal = kernel I/O stack layers the tag must cross ·
+     indigo = eBPF machinery (maps, verifier, kfuncs) · terracotta = where context is lost today (async boundary, size-based guessing). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Context Matters — Teaching eBPF to Remember Why, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98A2B; --honey-deep:#A8651B; --honey-soft:#FBE4C0;
+  --dram:#1E8A6F; --dram-soft:#D8EEE6;      /* teal  = kernel I/O stack / the tag's journey        */
+  --ltram:#5750A8; --ltram-soft:#E6E3F5;    /* indigo = eBPF machinery (maps, verifier, kfuncs)     */
+  --optane:#B24A34; --optane-soft:#F4DDD2;  /* terracotta = context lost today / guesswork baseline */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,138,111,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(87,80,168,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,138,43,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(87,80,168,.05) 31px,rgba(87,80,168,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,138,111,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(87,80,168,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,138,43,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>eBPF'26 Workshop · A Field Guide</span>
+    <h1>Giving I/O requests a memory of <span class="swash">why</span>, not just <span class="swash" style="color:var(--optane)">what</span></h1>
+    <p class="lede">Two threads write to the same file. By the time their data reaches disk, the kernel has merged, batched, and reordered it until nobody — not even eBPF — can say whose intent survives. This is the plain-English story of a proposal to give eBPF a way to carry application context all the way down the I/O stack.</p>
+    <div class="hero-meta">
+      <span>📄 "Context Matters: Expanding the Potential of eBPF" · Machado et al.</span>
+      <span>🎓 Position/vision paper — no prototype shipped yet</span>
+      <span>⏱ ~15 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🏷️</div>
+      <p>Attach a <span class="ro">CONTEXT TAG</span> to a request at its origin, and carry it through every kernel layer and async boundary — instead of guessing it back later from <span class="wo">size and timing</span>.<br><em style="font-size:.9rem">Right now, the kernel only remembers "what" happened to a block. It forgets "why."</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then ten ideas the paper assumes you know</h2>
+      <p class="sub">First the acronyms, so nothing below is opaque. Then the primers — collapsed, tap any to open. Read in order the first time, or jump to whatever looks unfamiliar.</p>
+    </div>
+
+    <div class="card" style="margin-top:8px">
+      <h3>Quick glossary</h3>
+      <div class="gloss">
+        <div class="term-def"><b>eBPF</b><span>Extended Berkeley Packet Filter — sandboxed, verifier-checked programs the kernel JIT-compiles and runs at hook points, without writing a custom kernel module.</span></div>
+        <div class="term-def"><b>VFS</b><span>Virtual File System — the kernel layer that presents a uniform interface over different filesystems (ext4, xfs, …).</span></div>
+        <div class="term-def"><b>BIO</b><span>Block I/O — the layer where reads/writes become block-layer requests sent to the storage device (often aggregating several writes into one).</span></div>
+        <div class="term-def"><b>kworker</b><span>A generic kernel worker thread that runs deferred work — notably flushing dirty page-cache pages to disk — detached from whichever thread originally wrote them.</span></div>
+        <div class="term-def"><b>WAL</b><span>Write-Ahead Log — a database's sequential commit log (e.g. Postgres), an example of a latency-critical write stream worth distinguishing from housekeeping I/O.</span></div>
+        <div class="term-def"><b>COW</b><span>Copy-on-Write — a filesystem technique where a "write" actually allocates a new block instead of overwriting in place, multiplying one logical write into several physical ones.</span></div>
+        <div class="term-def"><b>cgroup</b><span>Control group — a Linux mechanism for grouping processes to apply resource limits/priorities (e.g. IOCost) at task-group granularity.</span></div>
+        <div class="term-def"><b>kfunc</b><span>A kernel function explicitly exposed for eBPF programs to call, extending what BPF bytecode can do beyond its built-in helpers.</span></div>
+        <div class="term-def"><b>sched_ext</b><span>A recent mainline Linux subsystem letting eBPF programs implement entire CPU schedulers — proof that "modify the kernel to support eBPF natively" is a viable, shipped path.</span></div>
+        <div class="term-def"><b>QoS</b><span>Quality of Service — differentiated treatment (priority, bandwidth) for different request classes.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:20px">
+      <span><i style="background:var(--honey-deep)"></i> the context tag / application intent</span>
+      <span><i style="background:var(--dram)"></i> the kernel I/O stack the tag must cross</span>
+      <span><i style="background:var(--ltram)"></i> eBPF machinery (maps, verifier, kfuncs)</span>
+      <span><i style="background:var(--optane)"></i> where context is lost today</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What eBPF actually is<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>eBPF lets you load small, sandboxed programs into the kernel at runtime, attached to specific hook points (syscall entry, network packet arrival, scheduler decisions, …). A verifier statically checks the program can't crash or escape its sandbox before it's JIT-compiled to native code.</p>
+          <p>Originally for observation (tracing, packet filtering), eBPF increasingly <i>acts</i> — shaping CPU scheduling, storage, and memory management directly, not just watching them.</p>
+          <div class="ready"><b>Now you're ready:</b> this paper is about extending what eBPF can carry with it as it acts along the storage path — specifically, application-level meaning.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>The Linux I/O stack, top to bottom<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A write from an application descends through several distinct kernel layers: the <b>syscall</b> boundary, the <b>VFS</b> (generic file interface), the filesystem (here <b>ext4</b>), and finally the <b>block I/O (BIO)</b> layer, which issues block-layer requests to the device — often aggregating several smaller writes into one larger request.</p>
+          <p>eBPF can attach a trace point at each of these layers independently — but each layer today sees the request in isolation, with no memory of what happened one layer up.</p>
+          <div class="ready"><b>Now you're ready:</b> "context propagation" means carrying one tag through all four of these layers, not re-deriving it at each one.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>The page cache and asynchronous writeback<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A normal buffered write doesn't go to disk immediately — it lands in the <b>page cache</b> as a "dirty" page, and the kernel flushes dirty pages to disk later, in the background, via <b>kworker</b> threads.</p>
+          <p>This is good for performance (batching, merging) but it means the thread that issued the write is long gone by the time the actual disk I/O happens — a different thread (a kworker) does the real work, with no record of who asked for it.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the paper's central obstacle. Anything keyed to "the issuing thread" breaks the moment writeback happens asynchronously.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>eBPF maps and task storage<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>eBPF <b>maps</b> are key-value stores eBPF programs use to exchange data with user space or across hook points. <b>Task storage maps</b> let you attach metadata to a specific kernel task (thread), read back later from another eBPF program.</p>
+          <p>This works fine as long as the same task is still involved. It breaks across the writeback boundary (a kworker, not the original task, issues the real I/O) and can't distinguish two different application-level requests handled by the <i>same</i> thread.</p>
+          <div class="ready"><b>Now you're ready:</b> maps are the paper's starting point, and its first argument is precisely that they "are not enough" on their own.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>cgroups and I/O priority classes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Linux already lets you attach some context to I/O: a process's <b>cgroup</b> membership, or its I/O priority class (e.g. via IOCost). Both are genuine, existing forms of "context" the kernel carries.</p>
+          <p>But both operate at coarse granularity — per task or per cgroup, not per individual request — and offer a limited vocabulary (a handful of priority tiers), not arbitrary application-level meaning like "this is a foreground write for tenant X's checkout transaction."</p>
+          <div class="ready"><b>Now you're ready:</b> the paper isn't proposing something from nothing — it's arguing the existing mechanisms are too coarse and too narrow, and proposing finer, richer, per-request tags.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Why size/timing correlation is tempting — and fragile<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Without a native tag, you might try to reconstruct context after the fact: "ten consecutive 4 KiB writes probably produced this one 40 KiB block request." Sizes and timing can suggest which syscalls fed which block request.</p>
+          <p>But this is a guess, not a guarantee — multiple unrelated requests of the exact same size can appear around the same time from unrelated kworker threads, and there's no way to tell them apart from size and timing alone.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's motivating experiment is built specifically to expose this failure, using an unrelated 40 KiB request from a different kworker as the counter-example.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Journaling and copy-on-write: one write, many writes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A single application-level write doesn't always become a single kernel-level write. Journaling filesystems may write the data <i>and</i> a journal/metadata record; copy-on-write filesystems allocate new blocks rather than overwriting.</p>
+          <p>So the mapping from "one syscall" to "kernel writes" can be one-to-many, not one-to-one — any context tag has to survive being split across several physical writes, not just carried along a single path.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper names this "semantic ambiguity" as one of three cross-cutting challenges any design must handle.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Distributed tracing — the userspace precedent<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Systems like Google's <b>Dapper</b>, <b>Jaeger</b>, and <b>Zipkin</b> solve an analogous problem across networked services: a single user request is tagged with a trace ID at its entry point, and that ID is propagated across every service boundary it crosses, so you can reconstruct the whole request's path afterward.</p>
+          <p>The paper's proposal is the same idea, one layer down — propagating a tag not across network service boundaries, but across kernel I/O layers and asynchronous boundaries like page-cache writeback.</p>
+          <div class="ready"><b>Now you're ready:</b> if distributed tracing already solved this for service meshes, the open question is what's different about doing it <i>inside</i> the kernel.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">9</span>Why "modify the kernel for eBPF" isn't crazy: sched_ext<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>sched_ext</b> is a real precedent: Linux's core scheduler subsystem was modified specifically so eBPF programs could implement entire custom CPU schedulers, and that work is now part of mainline Linux.</p>
+          <p>This matters because one of the paper's two proposed directions is exactly this pattern — extend the kernel's core data structures to natively carry a context tag, sacrificing some portability for richer semantics.</p>
+          <div class="ready"><b>Now you're ready:</b> when the paper proposes "modifying eBPF and the kernel" as one design direction, it's pointing at a path that has already succeeded once, for a different subsystem.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">10</span>Why storage optimizations usually live in user space today<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Databases and key-value stores already do exactly this kind of context-aware optimization themselves — e.g. distinguishing latency-critical foreground writes from background compaction/housekeeping (as in LSM-tree stores), or tuning their own write-ahead log flushing.</p>
+          <p>They do it in user space because the kernel gives them no way to express "this write matters more" below the syscall boundary. That forces every application to reinvent similar logic, non-portably, rather than the kernel offering it generically.</p>
+          <div class="ready"><b>Now you're ready:</b> the payoff the paper is chasing is moving these already-proven application-level optimizations into the kernel, where they'd work for any application, not just the one that implemented them.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Context propagation in a nutshell</h2>
+      <p class="sub">The problem, the motivating experiment that exposes it, and the proposal that follows.</p>
+    </div>
+    <div class="prose">
+      <p>eBPF can trace an I/O request across the <b>syscall</b>, <b>VFS</b>, <b>ext4</b>, and <b>BIO</b> layers with thread-level context. But once writes land in the page cache, they may be merged and later flushed by <b>kworker</b> threads unrelated to the issuing thread — and a single thread may itself be serving several logically distinct requests (different clients, different transactions) that the kernel can't tell apart. Existing mechanisms (task storage maps, cgroups, I/O priority classes) are either tied to a task that may no longer be the one doing the real work, or too coarse-grained and too narrow in vocabulary to express application-level meaning.</p>
+      <p>The paper's motivating experiment makes this concrete: two threads each issue five sequential 4 KiB writes to the same file (<b>P1</b>), sleep long enough for the kernel to flush dirty pages (<b>P2</b>), then each issue one final write before one thread calls <code>fsync</code> (<b>P3</b>). Trying to infer which BIO request came from which thread using size alone is unreliable — an unrelated 40 KiB request from a different kworker (kworker 166) is indistinguishable by size from the application's own merged 40 KiB request. Most of the trace — syscall, VFS, and ext4 — is visible to plain eBPF; write buffers are hashed at those layers and matched against the BIO segment's contents, which eBPF cannot read directly, so only that last step needs a custom kernel module. That match reveals the true picture: writes from <i>both</i> threads end up merged into a single final block request, attributed in the trace to only one of them.</p>
+      <p>The proposal: extend eBPF so a <b>context tag</b> — a request identifier, priority class, or arbitrary application-defined label — can be attached at the point a request originates, and read back by any eBPF program at any lower layer, surviving asynchronous boundaries like page-cache writeback, without hand-rolled per-layer reconstruction or custom kernel modules.</p>
+      <p><strong>The payoff, if built:</strong> application-aware optimizations currently confined to user space — observability with true root-cause attribution, per-request I/O scheduling instead of per-task, and workload-specific tuning like prefetching for scans but not random access — become possible generically, inside the kernel, for any application.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🏷️ Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>eBPF can already trace <b>thread-level</b> context through syscall → VFS → ext4 → BIO — but loses it across <b>async boundaries</b> like page-cache writeback.</li>
+        <li>eBPF <b>maps</b> and task storage aren't enough: writeback decouples requests from the issuing thread, and one thread can serve several distinct requests.</li>
+        <li><b>cgroups / I/O priority</b> are real but too coarse (task/group-level) and too narrow (a handful of classes, not arbitrary meaning).</li>
+        <li><b>Size/timing correlation</b> after the fact is unreliable — demonstrated by an unrelated same-size kworker request in the paper's own experiment.</li>
+        <li>Proposal: a <b>context tag</b> attached at the origin, propagated through every layer and async boundary, readable anywhere — without custom kernel modules.</li>
+        <li>Two design directions: <b>modify eBPF/the kernel natively</b> (precedent: sched_ext) vs. a <b>transparent middleware layer</b> (more portable, harder correlation problem).</li>
+        <li>Three cross-cutting challenges: <b>safety</b> (verifier/kernel integrity), <b>performance</b> (critical I/O path), <b>semantic ambiguity</b> (journaling/COW split one write into many).</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">two threads, three phases, and the point where context is lost</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> thread A's writes</span>
+        <span><i style="background:var(--honey-deep)"></i> thread B's writes</span>
+        <span><i style="background:var(--optane)"></i> where attribution is lost today</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 340" role="img" aria-label="Two threads writing through the kernel stack, merging at the page cache, and losing attribution at the async boundary">
+        <text x="40" y="26" font-family="JetBrains Mono" font-size="11" fill="#6E6456">syscall</text>
+        <text x="40" y="76" font-family="JetBrains Mono" font-size="11" fill="#6E6456">VFS / ext4</text>
+        <text x="40" y="126" font-family="JetBrains Mono" font-size="11" fill="#6E6456">page cache</text>
+        <text x="40" y="196" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">async boundary</text>
+        <text x="40" y="256" font-family="JetBrains Mono" font-size="11" fill="#6E6456">kworker</text>
+        <text x="40" y="306" font-family="JetBrains Mono" font-size="11" fill="#6E6456">BIO (block_rq_issue)</text>
+
+        <rect x="180" y="10" width="110" height="22" rx="5" fill="#D8EEE6" stroke="#1E8A6F" stroke-width="1.5"/><text x="235" y="25" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#16463e">thread A: 5×4KiB</text>
+        <rect x="470" y="10" width="110" height="22" rx="5" fill="#FBE4C0" stroke="#A8651B" stroke-width="1.5"/><text x="525" y="25" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">thread B: 5×4KiB</text>
+
+        <line x1="235" y1="34" x2="235" y2="64" stroke="#1E8A6F" stroke-width="2.4"/>
+        <line x1="525" y1="34" x2="525" y2="64" stroke="#A8651B" stroke-width="2.4"/>
+        <rect x="180" y="64" width="400" height="24" rx="5" fill="#fff" stroke="#D8C8AC"/>
+        <text x="380" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">VFS → ext4 (still per-thread, traceable with eBPF)</text>
+
+        <line x1="235" y1="88" x2="235" y2="112" stroke="#1E8A6F" stroke-width="2.4"/>
+        <line x1="525" y1="88" x2="525" y2="112" stroke="#A8651B" stroke-width="2.4"/>
+        <rect x="180" y="112" width="400" height="30" rx="5" fill="#fff" stroke="#D8C8AC"/>
+        <text x="380" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">dirty pages accumulate, sleep through P2 flush window</text>
+
+        <line x1="380" y1="142" x2="380" y2="180" stroke="#B24A34" stroke-width="2" stroke-dasharray="5 4"/>
+        <text x="440" y="164" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">issuing thread is gone —</text>
+        <text x="440" y="178" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">kworker takes over</text>
+
+        <rect x="180" y="184" width="400" height="30" rx="5" fill="#F4DDD2" stroke="#B24A34" stroke-width="1.5"/>
+        <text x="380" y="203" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">kworker flushes — no native record of A or B</text>
+
+        <line x1="380" y1="214" x2="380" y2="242" stroke="#B24A34" stroke-width="2.4"/>
+        <rect x="180" y="242" width="400" height="26" rx="5" fill="#fff" stroke="#D8C8AC"/>
+        <text x="380" y="259" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">kworker 166: an unrelated 40 KiB request (same size!)</text>
+
+        <line x1="380" y1="268" x2="380" y2="284" stroke="#B24A34" stroke-width="2.4"/>
+        <rect x="150" y="284" width="460" height="34" rx="5" fill="#E6E3F5" stroke="#5750A8" stroke-width="1.7"/>
+        <text x="380" y="304" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#3a409a">final block_rq_issue, attributed to thread B (21719) — but content-hashed to hold A + B</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> thread A and B's writes are traceable with plain eBPF down through ext4. Once they hit the page cache and sleep through a flush window, a kworker — not either thread — does the real writeback, with no native link back to A or B. A same-size unrelated request (kworker 166) shows size-matching is unreliable; only a custom content-hashing kernel module reveals that the final BIO request, credited to thread B alone, actually carries both threads' data. (Paper, §1 and Fig. 1)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → why existing tools fall short → proposal → two paths → shared challenges</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Application intent is invisible below the syscall; it's lost across async boundaries</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-lru"><div class="nt">Not enough</div><div class="nd">Maps/task storage tied to a task that may vanish; cgroups/priority too coarse</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Proposal</div><div class="nd">A context tag, attached at origin, propagated through every layer and async boundary</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Direction A</div><div class="nd">Modify eBPF + kernel natively (task storage, kfuncs, wrap kworker dispatch) — precedent: sched_ext</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Direction B</div><div class="nd">Transparent middleware service behind a stable API — more portable, harder correlation problem</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Shared challenges</div><div class="nd">Safety, performance on the critical path, semantic ambiguity (journaling/COW)</div></div>
+      </div>
+    </figure>
+
+    <div class="callout why"><span class="ic">💡</span><div><b>Why this matters beyond storage (this guide's extrapolation, not the paper's claim):</b> the same references this paper cites for eBPF acting on the kernel include memory-management examples — FetchBPF (customizable prefetch policies) and cache_ext (customizing the page cache) — which arguably face an analogous problem: a page-cache or page-fault decision has no visibility into <i>why</i> a page was touched. The paper itself only cites these works as evidence that eBPF is acting on kernels, not as instances of its context-propagation problem. For readers working on OS-managed memory tiering (DRAM/NVM placement, CXL), the missing ingredient may be similar — application-level intent that doesn't survive past the point a request enters the kernel — but that link is this guide's own framing, not the paper's.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Seven everyday pictures</div>
+      <h2>How to think about context propagation</h2>
+      <p class="sub">Each picture stands alone — read them in any order. Every card ends with an honest note about where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="44" width="34" height="24" rx="3" fill="#D8EEE6" stroke="#1E8A6F" stroke-width="2.5"/>
+          <rect x="24" y="16" width="14" height="14" rx="2" fill="#FBE4C0" stroke="#A8651B" stroke-width="2"/>
+          <path d="M34 30 v14" stroke="#A8651B" stroke-width="2"/>
+          <rect x="80" y="70" width="34" height="14" rx="3" fill="#F4DDD2" stroke="#B24A34" stroke-width="2"/>
+          <path d="M45 68 q30 -6 46 2" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3" fill="none"/>
+        </svg></div>
+        <span class="term">The core idea · A tag that survives the trip</span>
+        <h3>Baggage tags at a sorting hub</h3>
+        <p>An airline tag survives being thrown onto a conveyor, sorted by machine, and reloaded onto a different plane — because the tag is physically attached to the bag, not remembered separately by the person who checked it in. A kernel write has no such tag today: once it's queued in the page cache and later flushed by a kworker, nothing travels <i>with</i> it to say which application, thread, or request it came from.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real bag tag is unique and unambiguous. A proposed context tag must also survive being <i>split</i> — one write can fan out into several physical writes (journaling, COW) — which no physical luggage tag has to handle.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="44" height="28" rx="3" fill="#D8EEE6" stroke="#1E8A6F" stroke-width="2.5"/>
+          <rect x="76" y="20" width="44" height="28" rx="3" fill="#FBE4C0" stroke="#A8651B" stroke-width="2.5"/>
+          <path d="M42 48 q28 14 0 28 M98 48 q-28 14 0 28" stroke="#9A8E7C" stroke-width="2" fill="none"/>
+          <rect x="48 " y="74" width="44" height="14" rx="3" fill="#F4DDD2" stroke="#B24A34" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Where it's lost · BIO merging</span>
+        <h3>Two kitchen tickets, one delivery tray</h3>
+        <p>Table 4's order and table 7's order are cooked separately, but if the kitchen is slow, a runner might stack both onto one tray for a single trip to the pass. The tray itself carries no memory of which items go where — a server has to already know. The BIO layer is that tray: ten small writes from two different threads can be merged into one 40 KiB block request, and nothing about the request itself says whose data is whose.</p>
+        <div class="breaks"><b>Where it breaks:</b> a server usually still remembers verbally which plate is whose. The kernel has no equivalent memory at all — that's precisely the gap the paper is trying to close.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="40" r="20" fill="#E6E3F5" stroke="#5750A8" stroke-width="2.5"/>
+          <text x="45" y="45" text-anchor="middle" font-family="monospace" font-size="10" fill="#3a409a">TID</text>
+          <path d="M65 40 h20" stroke="#5750A8" stroke-width="2" stroke-dasharray="3 3"/>
+          <rect x="88" y="26" width="34" height="28" rx="3" fill="#fff" stroke="#D8C8AC" stroke-width="2"/>
+          <text x="105" y="44" text-anchor="middle" font-family="monospace" font-size="9" fill="#6E6456">req?</text>
+        </svg></div>
+        <span class="term">Why maps aren't enough · One task, many requests</span>
+        <h3>One reporter, two bylines</h3>
+        <p>Task-storage maps key context to a thread ID — like filing every article under a reporter's name. That works if one reporter writes one story at a time. But a single thread can be serving two unrelated application requests in interleaved fashion (two different clients' transactions), just like one reporter might be juggling two stories — filing everything under "the reporter" loses which paragraph belongs to which story.</p>
+        <div class="breaks"><b>Where it breaks:</b> real bylines are usually one-to-one with an article; the analogy is honest about the failure mode (task-level granularity is too coarse) but a thread isn't literally forbidden from single-tasking — it's just that nothing stops it from interleaving, and current tools don't distinguish the case.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="48" r="10" fill="#D8EEE6" stroke="#1E8A6F" stroke-width="2"/>
+          <circle cx="70" cy="48" r="10" fill="#FBE4C0" stroke="#A8651B" stroke-width="2"/>
+          <circle cx="110" cy="48" r="10" fill="#F4DDD2" stroke="#B24A34" stroke-width="2"/>
+          <path d="M40 48 h20 M80 48 h20" stroke="#332C24" stroke-width="2.5" stroke-linecap="round"/>
+          <rect x="24" y="30" width="12" height="6" rx="2" fill="#5750A8"/>
+          <rect x="64" y="30" width="12" height="6" rx="2" fill="#5750A8"/>
+        </svg></div>
+        <span class="term">The proven precedent · Trace-ID propagation</span>
+        <h3>A relay race baton</h3>
+        <p>In distributed tracing (Dapper, Jaeger, Zipkin), a request gets a trace ID at the front door, and every service it touches hands that ID to the next one, like runners passing a baton — so afterward you can reconstruct the whole race, leg by leg, service by service. The paper proposes exactly this baton-passing, one level down, inside the kernel, between syscall/VFS/ext4/BIO instead of between microservices.</p>
+        <div class="breaks"><b>Where it breaks:</b> a relay baton is handed off deliberately, runner to runner, by design. Kernel layers today hand off <i>data</i> without any equivalent deliberate act — the "baton" (context tag) doesn't exist yet to be passed; this analogy describes the goal, not the current reality.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 L45 30 L70 70 Z" fill="none" stroke="#1E8A6F" stroke-width="2.5"/>
+          <path d="M70 70 L95 34 L120 70 Z" fill="none" stroke="#B24A34" stroke-width="2.5" stroke-dasharray="4 3"/>
+          <text x="45" y="84" text-anchor="middle" font-family="monospace" font-size="8" fill="#1f5b51">size 9</text>
+          <text x="95" y="84" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">size 9?</text>
+        </svg></div>
+        <span class="term">Why the workaround fails · Size-based guessing</span>
+        <h3>Guessing who walked through from a footprint size</h3>
+        <p>If you only measure shoe-print size, you can't tell two different people with the same shoe size apart — you need something unique to each of them, like a name tag. The paper's own experiment hits exactly this: an unrelated 40 KiB block request from kworker 166 has the same size as the application's genuinely merged 40 KiB request, so size-based correlation alone can't tell them apart.</p>
+        <div class="breaks"><b>Where it breaks:</b> footprints are at least tied to something physical (a specific shoe); block request sizes are tied to nothing unique at all — this analogy actually understates how fragile the workaround is.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="20" width="16" height="16" rx="2" fill="#D8EEE6" stroke="#1E8A6F" stroke-width="2"/>
+          <rect x="30" y="40" width="16" height="16" rx="2" fill="#D8EEE6" stroke="#1E8A6F" stroke-width="2"/>
+          <path d="M46 28 h20 M46 48 h20" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="70" y="30" width="40" height="30" rx="3" fill="#E6E3F5" stroke="#5750A8" stroke-width="2.5"/>
+          <text x="90" y="48" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">×2</text>
+        </svg></div>
+        <span class="term">The hidden multiplier · Journaling / COW</span>
+        <h3>One shipment, repacked into two boxes</h3>
+        <p>You ship one order, but the warehouse's process means it goes out as a data box and a separate paperwork box — one logical shipment, two physical parcels. Journaling filesystems do this to writes: one application write can become a data write <i>and</i> a journal/metadata write; copy-on-write filesystems allocate fresh blocks instead of overwriting, multiplying further.</p>
+        <div class="breaks"><b>Where it breaks:</b> shipment splitting is usually predictable (always exactly two boxes); the paper is explicit that this "semantic ambiguity" is workload- and filesystem-dependent and not a fixed multiplier — any context-tag scheme must handle a variable one-to-many mapping, not a known constant.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="30" width="92" height="20" rx="4" fill="#FBE4C0" stroke="#A8651B" stroke-width="2"/>
+          <text x="70" y="44" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">"Engineer" (cgroup)</text>
+          <circle cx="40" cy="70" r="8" fill="#D8EEE6" stroke="#1E8A6F" stroke-width="2"/>
+          <circle cx="70" cy="70" r="8" fill="#F4DDD2" stroke="#B24A34" stroke-width="2"/>
+          <circle cx="100" cy="70" r="8" fill="#E6E3F5" stroke="#5750A8" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Why coarse context isn't enough · cgroups / IO priority</span>
+        <h3>Same job title, very different projects</h3>
+        <p>A company org chart tells you someone's job title ("engineer") but not which specific project, client, or deadline they're working on right now. cgroups and I/O priority classes are the job titles of the kernel: real, useful, but coarse — they say which group a task belongs to, not which individual request, from which tenant, with which urgency, is in flight.</p>
+        <div class="breaks"><b>Where it breaks:</b> a job title is usually stable for months; an I/O priority class can be reconfigured per workload — the coarseness is about <i>granularity</i> (group vs. request), not about being static, so don't stretch the analogy into "cgroups never change."</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">The motivating experiment, why today's tools fall short, the proposal's three requirements, and the two design directions the paper weighs against each other.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The motivating experiment, precisely</h3>
+      <p>Two application threads issue sequential 4 KiB writes to the same file across three phases. In <b>P1</b>, each thread issues five 4 KiB writes concurrently. In <b>P2</b>, both threads sleep long enough that the kernel flushes dirty pages from the page cache. In <b>P3</b>, each thread issues one final write, and then one thread (labeled <b>21719</b> in the trace) calls <code>fsync</code>.</p>
+      <p>eBPF can trace thread-level context through syscall, VFS, ext4, and BIO. The trouble starts once writes are buffered: they may be merged and flushed asynchronously by kworker threads, and a naive attempt to correlate the resulting BIO request (<code>block_rq_issue</code>) with the writes that produced it — by matching sizes (ten 4 KiB writes ≈ one 40 KiB BIO request) — is unreliable, because <i>unrelated</i> 40 KiB BIO requests can appear from other kworkers at the same time.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Why size-matching fails</div>
+      <div class="viz-kicker">two 40 KiB requests, only one of them "ours"</div>
+      <svg class="full" viewBox="0 0 700 180" role="img" aria-label="Two same-size BIO requests, one genuinely from the application, one an unrelated kworker request">
+        <rect x="40" y="30" width="280" height="40" rx="6" fill="#D8EEE6" stroke="#1E8A6F" stroke-width="2"/>
+        <text x="180" y="54" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#16463e">block_rq_issue · 40 KiB (application's, merged A+B)</text>
+        <rect x="380" y="30" width="280" height="40" rx="6" fill="#F4DDD2" stroke="#B24A34" stroke-width="2" stroke-dasharray="5 4"/>
+        <text x="520" y="54" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#9a3a22">block_rq_issue · 40 KiB (kworker 166, unrelated)</text>
+        <text x="350" y="110" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#6E6456">Same size. Same layer. No eBPF-visible field distinguishes them.</text>
+        <text x="350" y="140" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">Only a custom kernel module hashing block contents can tell them apart today.</text>
+      </svg>
+      <figcaption>Both requests are 40 KiB and arrive close in time. Nothing eBPF can read at the BIO layer today distinguishes "our" merged write from an unrelated one — exposing exactly why context must be carried, not reconstructed. (Paper, §1, Fig. 1)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Why existing eBPF mechanisms fall short</h3>
+      <table class="tbl">
+        <thead><tr><th>Mechanism</th><th>Granularity</th><th>Survives async boundary?</th><th>Vocabulary</th></tr></thead>
+        <tbody>
+          <tr><td>Task storage map</td><td>per task</td><td class="mono">No — kworker ≠ issuing task</td><td>arbitrary (if it survives)</td></tr>
+          <tr><td>cgroup membership</td><td>per task group</td><td class="mono">Partially — group persists</td><td>none (just grouping)</td></tr>
+          <tr><td>I/O priority class</td><td>per task/group</td><td class="mono">Partially — attached to task</td><td>a handful of tiers</td></tr>
+          <tr class="best"><td>Proposed context tag</td><td><b>per request</b></td><td class="mono"><b>Yes — by design</b></td><td><b>arbitrary application-defined</b></td></tr>
+        </tbody>
+      </table>
+      <div class="callout note"><span class="ic">🌱</span><div>None of the top three rows are wrong tools — they solve different problems. The gap is specifically: <i>per-request</i>, <i>async-boundary-surviving</i>, <i>arbitrary-vocabulary</i> context. Nothing existing hits all three at once.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · The proposal's three requirements</h3>
+      <ol class="seq">
+        <li><b>Attach</b> context at a request's origin (e.g. at the syscall boundary), as a tag or set of tags — a request identifier, a priority class, or an arbitrary application-defined label.</li>
+        <li><b>Propagate</b> it through VFS, the filesystem, and the BIO layer, surviving asynchronous boundaries such as page-cache writeback and kworker dispatch — the part that breaks today.</li>
+        <li><b>Extract</b> it at any layer, so an eBPF program running at the BIO layer, for instance, can read back the same tag an eBPF program attached at the syscall layer, without manual per-layer bookkeeping.</li>
+      </ol>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Two ways to get there</div>
+      <div class="viz-kicker">Direction A vs. Direction B — the paper's own framing</div>
+      <svg class="full" viewBox="0 0 700 260" role="img" aria-label="Comparing native kernel modification against a transparent middleware layer">
+        <rect x="30" y="20" width="300" height="210" rx="10" fill="#E6E3F5" stroke="#5750A8" stroke-width="2"/>
+        <text x="180" y="46" text-anchor="middle" font-family="Fraunces" font-size="15" font-weight="600" fill="#3a409a">A · Modify eBPF + kernel</text>
+        <text x="50" y="76" font-family="JetBrains Mono" font-size="10.5" fill="#3a409a">• task storage / stack traces for</text>
+        <text x="60" y="90" font-family="JetBrains Mono" font-size="10.5" fill="#3a409a">  sync layer transitions</text>
+        <text x="50" y="112" font-family="JetBrains Mono" font-size="10.5" fill="#3a409a">• wrap kworker dispatch to carry</text>
+        <text x="60" y="126" font-family="JetBrains Mono" font-size="10.5" fill="#3a409a">  the tag across async boundaries</text>
+        <text x="50" y="148" font-family="JetBrains Mono" font-size="10.5" fill="#3a409a">• new kernel struct fields + kfuncs</text>
+        <text x="50" y="178" font-family="JetBrains Mono" font-size="10.5" fill="#16463e">✓ precedent: sched_ext (mainline)</text>
+        <text x="50" y="196" font-family="JetBrains Mono" font-size="10.5" fill="#9a3a22">✗ less portable, harder to maintain</text>
+
+        <rect x="370" y="20" width="300" height="210" rx="10" fill="#D8EEE6" stroke="#1E8A6F" stroke-width="2"/>
+        <text x="520" y="46" text-anchor="middle" font-family="Fraunces" font-size="15" font-weight="600" fill="#16463e">B · Transparent middleware</text>
+        <text x="390" y="76" font-family="JetBrains Mono" font-size="10.5" fill="#16463e">• eBPF calls a stable API to attach</text>
+        <text x="400" y="90" font-family="JetBrains Mono" font-size="10.5" fill="#16463e">  context at the syscall boundary</text>
+        <text x="390" y="112" font-family="JetBrains Mono" font-size="10.5" fill="#16463e">• middleware tracks cross-layer</text>
+        <text x="400" y="126" font-family="JetBrains Mono" font-size="10.5" fill="#16463e">  association internally</text>
+        <text x="390" y="148" font-family="JetBrains Mono" font-size="10.5" fill="#16463e">• no core kernel struct changes</text>
+        <text x="390" y="178" font-family="JetBrains Mono" font-size="10.5" fill="#16463e">✓ more portable, no kernel patching</text>
+        <text x="390" y="196" font-family="JetBrains Mono" font-size="10.5" fill="#9a3a22">✗ harder: identify same request without</text>
+        <text x="400" y="210" font-family="JetBrains Mono" font-size="10.5" fill="#9a3a22">  a native carrier (PIDs/inodes insufficient)</text>
+      </svg>
+      <figcaption>Neither direction is free: A trades portability for richer native semantics; B trades a harder correlation problem for staying out of core kernel data structures. The paper commits to neither — it lays both out as open design space. (Paper, §2)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Three challenges that apply to either direction</h3>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Safety.</b> Any new eBPF capability must still pass the verifier and preserve kernel integrity — a context-carrying mechanism is new surface area the verifier has to reason about.</div></div>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Performance overhead.</b> Attaching, propagating, and reading a tag happens on or near the I/O critical path — any overhead here competes directly against the point of using eBPF (acting inline, cheaply).</div></div>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Semantic ambiguity.</b> A single user-space write may become multiple kernel-level writes (journaling, copy-on-write) — a scheme that assumes one-tag-per-one-write will misattribute the extra writes.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · What this would unlock</h3>
+      <ul>
+        <li><b>Observability and data provenance:</b> end-to-end root-cause analysis of I/O anomalies, pinpointing exactly which kernel layer(s) and application request(s) were responsible — something today's distributed tracing tools leave opaque below the kernel boundary, and today's kernel-only tracing tools can only partially correlate offline or with no application-level semantics.</li>
+        <li><b>Application-aware I/O scheduling:</b> today's in-kernel schedulers reason about PID and request size; per-request context tags would let them make priority/fairness decisions per individual request or tenant, reducing interference.</li>
+        <li><b>Specialized I/O optimizations:</b> the right tuning (e.g. read-ahead/prefetching) often depends on the workflow — scans benefit from prefetching, random access doesn't — and context tags would let the kernel apply per-request tuning instead of one-size-fits-all heuristics.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four passes through the paper's own motivating experiment and its consequences — the merge arithmetic, the failure of size-matching, the fsync moment, and the journaling multiplier.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The merge arithmetic behind "40 KiB"</h3>
+      <p style="color:var(--ink-soft)">In P1, thread A issues five sequential 4 KiB writes, and thread B issues five more, to the same file, concurrently.</p>
+      <ol class="seq">
+        <li><b>Thread A alone:</b> 5 writes × 4 KiB = <b>20 KiB</b>.</li>
+        <li><b>Thread B alone:</b> 5 writes × 4 KiB = <b>20 KiB</b>.</li>
+        <li><b>Combined, both threads:</b> 10 writes × 4 KiB = <b>40 KiB</b> total dirtied in the page cache.</li>
+        <li><b>The page cache may merge</b> these ten small dirty regions into a single block request when flushed — exactly the paper's own example of "ten consecutive 4 KiB writes may produce a single 40 KiB BIO request."</li>
+        <li><b>The arithmetic checks out</b>, but notice what it can't tell you: whether that 40 KiB came from one thread doing 10 writes, or two threads doing 5 each. The size alone is silent on origin.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🏷️</span><div><b>Insight:</b> the size math that makes correlation <i>tempting</i> is the same math that makes it <i>insufficient</i> — a correct total byte count is consistent with many different underlying request patterns.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Why the 40 KiB match still fails</h3>
+      <p style="color:var(--ink-soft)">At the BIO layer, the trace shows a 40 KiB <code>block_rq_issue</code> event around the time P1's writes should have flushed. Is it safe to attribute it to threads A and B?</p>
+      <ol class="seq">
+        <li><b>Candidate 1:</b> the genuine merged write from threads A + B — 40 KiB, matches.</li>
+        <li><b>Candidate 2:</b> an unrelated request from <code>kworker 166</code>, flushing something else entirely — also 40 KiB, also matches on size.</li>
+        <li><b>Nothing in the eBPF-visible fields</b> of <code>block_rq_issue</code> (size, device, sector, timing) distinguishes candidate 1 from candidate 2.</li>
+        <li><b>Only the paper's custom kernel module</b> — hashing the actual buffer contents at syscall/VFS/ext4 and matching those hashes at the BIO layer — can tell them apart, because it looks at data eBPF cannot directly access in <code>block_rq_issue</code>.</li>
+        <li><b>Conclusion:</b> without a native tag, correct attribution required stepping outside eBPF entirely. That's the paper's central piece of evidence that eBPF, as it stands, needs a new capability here.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is the paper's strongest empirical claim in an otherwise conceptual/position paper: a concrete false-positive (kworker 166) that size-matching cannot rule out.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ The P3 fsync moment — attribution breaks down completely</h3>
+      <p style="color:var(--ink-soft)">In P3, each thread issues one more write, then thread B (21719) calls <code>fsync</code>, forcing a flush. The resulting final <code>block_rq_issue</code> is attributed in the trace to thread 21719 (thread B) alone.</p>
+      <ol class="seq">
+        <li><b>By trace alone:</b> the event's PID field says "thread B (21719)" — as far as plain eBPF is concerned, this is entirely thread B's write.</li>
+        <li><b>By content hash (the custom module):</b> the block actually contains data written earlier by thread A too — its dirty pages were still pending and got swept up in B's forced flush.</li>
+        <li><b>So the true picture</b> is: one BIO request, contributed to by two threads, credited by the kernel's own bookkeeping to only one of them.</li>
+        <li><b>A single-ID tag might not fully fix this</b> — the paper's own wording allows for "a tag, <i>or set of tags</i>," which fits cases like this one where a request could need multiple origin tags, though the paper doesn't explicitly derive that wording from this example.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🏷️</span><div><b>Insight:</b> this is the sharpest illustration in the paper that "who issued this I/O" is not always a single answer — any context-tag design has to represent a <i>set</i>, not just a scalar ID.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ The journaling/COW multiplier — why one tag isn't automatically one write</h3>
+      <p style="color:var(--ink-soft)">Take one application-level write to a journaling filesystem. How many kernel-level writes might actually happen, and what does that mean for a context tag?</p>
+      <ol class="seq">
+        <li><b>1 syscall write</b> → at minimum, the data block itself needs writing: <b>1 physical write</b>.</li>
+        <li><b>Journaling filesystems</b> may also record a journal/metadata entry for crash consistency, turning that one write into <b>multiple physical writes</b> — the paper gives this as an example, not a fixed rule.</li>
+        <li><b>Copy-on-write filesystems</b> can similarly allocate a fresh block rather than overwriting in place — potentially touching metadata blocks (e.g. indirect pointers) as well: another possible multiplier, filesystem- and workload-dependent.</li>
+        <li><b>Net effect:</b> the paper's point is narrower than "every write is multiplied" — it's that one user write <i>may</i> translate into multiple kernel write requests, so a context tag attached once at the syscall must be able to reach every resulting physical write when this happens, not just the first one the kernel issues.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is exactly the "semantic ambiguity" challenge named in §2 — the paper frames it as a possibility ("may translate into multiple kernel write requests"), using journaling and COW as examples, not as a universal rule for every write.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the common misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">An eBPF program attaches metadata to the issuing thread using a task storage map at write time. Why might this metadata be unreadable by the time the data actually reaches disk?</div>
+      <details><summary>Show answer</summary><div class="ans">Because a buffered write doesn't go to disk immediately — it's marked dirty in the page cache and flushed later by a <b>kworker</b> thread, not by the original issuing thread. Task storage is keyed to a task; once the real work is done by a different task (the kworker), that key no longer resolves to anything useful.<span class="mis">Misconception: that "the thread that called write()" is still involved by the time the block actually hits the device. Buffered I/O explicitly decouples these in time and in which task performs the work.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Thread A issues 7 sequential 4 KiB writes and thread B issues 3 sequential 4 KiB writes to the same file, all buffered together. A trace shows one 40 KiB block_rq_issue event. Using size alone, can you tell how the 40 KiB splits between A and B?</div>
+      <details><summary>Show answer</summary><div class="ans">No. (7+3) × 4 KiB = 40 KiB is consistent with A:B = 7:3, but it's equally consistent with 5:5, 10:0, or any other split totaling ten 4 KiB writes — and also consistent with an entirely unrelated 40 KiB request from a different source, as the paper's kworker 166 example shows. Size is a necessary but not sufficient signal.<span class="mis">Misconception: that matching totals implies matching origin. A correct sum is compatible with infinitely many underlying request patterns.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why don't cgroups or I/O priority classes already solve this problem, given that they are genuine, existing forms of kernel-level context?</div>
+      <details><summary>Show answer</summary><div class="ans">They operate at the wrong granularity and with the wrong vocabulary for this problem. cgroups and I/O priority classes are attached per task or per task-group, not per individual request — so they can't distinguish two different transactions handled by the same thread. And their vocabulary is a small fixed set of tiers/classes, not arbitrary application-defined meaning (like a specific request ID or a free-form tag).<span class="mis">Misconception: that any existing "context" mechanism is interchangeable with what's needed. The paper's argument isn't "there is no context today" — it's "the context that exists is too coarse and too narrow."</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Construct a scenario, different from the paper's own kworker-166 example, where relying on request timing (instead of size) to correlate a BIO request with its originating writes would also fail.</div>
+      <details><summary>Show answer</summary><div class="ans">Any scenario with concurrent, unrelated background I/O defeats timing-based correlation just as size does: e.g. a separate process's periodic log rotation, or another filesystem's own journal commit, happening to fire in the same short window as your application's flush. Timing narrows the search but doesn't uniquely identify — exactly the same structural weakness as size, because neither is actually <i>tied</i> to the request, only <i>correlated with</i> it under normal conditions.<span class="mis">Misconception: that a "smarter" heuristic (timing instead of size, or both combined) fixes the fundamental problem. Any purely inferential signal remains probabilistic; only a carried, native tag is guaranteed.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Compare Direction A (modify eBPF and the kernel) and Direction B (transparent middleware) on exactly one axis: which one has to solve the "how do I know these two layer events are the same request" problem from scratch, and why?</div>
+      <details><summary>Show answer</summary><div class="ans">Direction B does. Because Direction A adds native carriers — new kernel struct fields and kfuncs that travel with the request by construction — the "same request" question is answered by the carrier itself. Direction B deliberately avoids touching core kernel structures, so it must reconstruct cross-layer association using only identifiers that already exist (PIDs, inode numbers) — which the paper explicitly says are insufficient, making this Direction B's harder open problem.<span class="mis">Misconception: that avoiding kernel modification is a strictly easier path. It trades one hard problem (kernel modification risk/maintenance) for another (reliable request identification without a native carrier).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">A context tag is attached once, at the syscall boundary, to a single write() call on a journaling filesystem. Explain concretely why a design that assumes "one tag maps to exactly one physical write" will misattribute part of the resulting I/O.</div>
+      <details><summary>Show answer</summary><div class="ans">Journaling filesystems commonly turn one logical write into at least two physical writes: the data block itself, and a journal/metadata record for crash consistency. If the tag is only propagated to "the" resulting write (singular), the journal write — which is just as much a consequence of this same application request — ends up untagged, or wrongly treated as a separate, unrelated kernel-internal write. Any correct scheme must let one tag fan out to every physical write the original request causes, however many there turn out to be.<span class="mis">Misconception: that context propagation is a simple 1:1 relay. The paper explicitly calls this out as "semantic ambiguity" — a structural challenge, not an edge case to patch over later.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">What does sched_ext's existence in mainline Linux tell us about Direction A (modifying eBPF and the kernel natively), and what does it NOT tell us?</div>
+      <details><summary>Show answer</summary><div class="ans">It tells us that adding native kernel support specifically so eBPF programs can do more (there, implement whole schedulers) is a path the kernel community has accepted before, so it's not an unprecedented ask. It does NOT tell us that context propagation specifically will be accepted, or that it's equally feasible — sched_ext solved a different problem (scheduling) with its own design and review history; it's evidence of viability-in-principle, not a ready-made template.<span class="mis">Misconception: that a precedent in one subsystem guarantees success in another. Precedents establish plausibility, not a free pass.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">Why does "application-aware I/O scheduling" require per-request context, when today's schedulers already use PID-based priority successfully in many systems?</div>
+      <details><summary>Show answer</summary><div class="ans">PID-based priority works when one thread's I/O is uniformly one priority class — but a single thread (e.g. a database connection handler) can issue both latency-critical foreground writes and background housekeeping writes (like SILK's distinction for LSM-tree stores). A scheduler keyed only to PID must treat all of that thread's I/O identically, even though the application itself knows some of it matters far more right now. Per-request tags let the scheduler see the distinction the application already has.<span class="mis">Misconception: that per-task priority is "basically" per-request priority as long as most threads are single-purpose. Real data-intensive applications routinely interleave multiple purposes per thread.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Twelve questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is this paper presenting a working implementation?<span class="chev">▾</span></summary><div class="a">No. It's a 3-page position/vision paper for the eBPF'26 workshop. It presents a problem (context is lost across the kernel I/O stack), a motivating experiment using a custom kernel module to expose the problem, and two possible design directions — without committing to or shipping either.</div></details>
+      <details><summary><span class="q">Q2</span>What exactly is wrong with eBPF maps?<span class="chev">▾</span></summary><div class="a">Not that they're useless — they're the mechanism the paper builds on. The problem is specifically that task-keyed maps assume the issuing task is still involved when the real I/O happens, which buffered writeback (via kworker threads) breaks, and that one task can serve multiple distinguishable requests that task-level keying can't separate.</div></details>
+      <details><summary><span class="q">Q3</span>Why can't you just track the writing thread's PID all the way to the block layer?<span class="chev">▾</span></summary><div class="a">Because the thread that issued a buffered write is often not the thread that eventually flushes it — that's a kworker thread, dispatched asynchronously, with no built-in record of which application thread's data it's flushing.</div></details>
+      <details><summary><span class="q">Q4</span>What precisely is the "async boundary" the paper keeps referring to?<span class="chev">▾</span></summary><div class="a">The point where a request stops being handled synchronously by the issuing thread and becomes deferred work handled later by a different kernel thread — concretely, when a buffered write is marked dirty in the page cache and later flushed by a kworker rather than the original caller.</div></details>
+      <details><summary><span class="q">Q5</span>Why did the authors need a custom kernel module for their experiment if the paper is about eBPF?<span class="chev">▾</span></summary><div class="a">Precisely to demonstrate the gap: they wanted ground truth (which writes' content ended up in which block request) to check whether plain eBPF tracing would have gotten it right. Since eBPF cannot directly inspect BIO segment contents, they used a kernel module only to establish that ground truth for the experiment — not as part of their proposed solution.</div></details>
+      <details><summary><span class="q">Q6</span>What are the two proposed design directions, in one line each?<span class="chev">▾</span></summary><div class="a">(A) Modify eBPF and core kernel structures to natively carry context tags across layers and async boundaries — richer, but less portable. (B) Build a transparent middleware service with a stable API that eBPF programs call into, without changing core kernel data structures — more portable, but must solve request identification without a native carrier.</div></details>
+      <details><summary><span class="q">Q7</span>What does sched_ext have to do with any of this?<span class="chev">▾</span></summary><div class="a">It's cited as precedent that Direction A (kernel modification specifically to empower eBPF) is not purely hypothetical — sched_ext already extended the kernel's scheduler subsystem for eBPF-based custom schedulers, and that work is now part of mainline Linux.</div></details>
+      <details><summary><span class="q">Q8</span>What is "semantic ambiguity" and why is journaling the classic example?<span class="chev">▾</span></summary><div class="a">It's the challenge that one user-space write doesn't always correspond to one kernel-level write. Journaling filesystems may issue a data write plus a separate journal/metadata write for the same logical operation; copy-on-write filesystems allocate new blocks rather than overwriting. Any context tag must fan out correctly across this one-to-many relationship.</div></details>
+      <details><summary><span class="q">Q9</span>Which concrete use-cases would context propagation unlock?<span class="chev">▾</span></summary><div class="a">Three are named: end-to-end observability and data provenance (root-causing I/O anomalies across kernel layers and application requests), application-aware I/O scheduling (per-request rather than per-task priority/fairness decisions), and specialized I/O optimizations (e.g. tuning prefetching per workload pattern rather than uniformly).</div></details>
+      <details><summary><span class="q">Q10</span>How is this different from existing distributed tracing tools like Jaeger or Zipkin?<span class="chev">▾</span></summary><div class="a">Those propagate trace context across network/service boundaries in user space, but leave the kernel I/O path opaque once a request enters it. Systems that do look inside the kernel either correlate user- and kernel-level events offline after the fact, or propagate purely kernel-internal IDs with no application-level meaning attached. The paper's gap is specifically application-level context propagated live, inside the kernel, across async boundaries.</div></details>
+      <details><summary><span class="q">Q11</span>Does the paper propose a specific format for the context tag?<span class="chev">▾</span></summary><div class="a">No — it deliberately stays general: "a tag, or set of tags (e.g., request identifier, priority class, or arbitrary tag)." The set framing fits cases like the fsync example, where a single BIO request could carry more than one origin's data — though the paper doesn't explicitly draw that connection itself.</div></details>
+      <details><summary><span class="q">Q12</span>Why should someone working on OS memory management (not storage) care about this paper?<span class="chev">▾</span></summary><div class="a">The same references this paper draws on for eBPF "acting" on the kernel include memory-management examples (FetchBPF for prefetch policy, cache_ext for page-cache customization). This guide's own extrapolation — not a claim the paper makes — is that those systems face an analogous root problem: a kernel-level decision (what to prefetch, what to evict, where to place a page) has no visibility into the application-level intent that produced the access.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Context propagation</b><span>The paper's proposal: carrying an application-level tag with a request as it descends the kernel I/O stack, including across asynchronous boundaries.</span></div>
+      <div class="term-def"><b>Context tag</b><span>A request identifier, priority class, or arbitrary application-defined label attached at a request's origin and readable at any lower layer.</span></div>
+      <div class="term-def"><b>Async(hronous) boundary</b><span>The point where a request stops being handled by the issuing thread and becomes deferred work for another kernel thread — chiefly, page-cache writeback via kworkers.</span></div>
+      <div class="term-def"><b>Semantic ambiguity</b><span>The challenge that one application-level write can become multiple physical kernel writes (journaling, copy-on-write), so a tag must fan out correctly.</span></div>
+      <div class="term-def"><b>Direction A (native)</b><span>Extend eBPF and core kernel data structures (new fields, kfuncs, wrapped kworker dispatch) to carry context tags — richer semantics, less portable. Precedent: sched_ext.</span></div>
+      <div class="term-def"><b>Direction B (middleware)</b><span>A transparent middleware service behind a stable API that eBPF programs call to attach/retrieve context, without modifying core kernel structures — more portable, harder request-identification problem.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Page cache / writeback</b><span>Buffered writes are held as "dirty" pages in memory and flushed to disk later by kworker threads, decoupling issuance from execution.</span></div>
+      <div class="term-def"><b>kworker</b><span>A generic kernel worker thread performing deferred work, notably dirty-page flushing, detached from the originating application thread.</span></div>
+      <div class="term-def"><b>Task storage map</b><span>An eBPF map keyed to a kernel task, used to attach and later read back per-thread metadata — breaks across async boundaries.</span></div>
+      <div class="term-def"><b>cgroup / IOCost</b><span>Linux mechanisms for grouping processes and assigning I/O cost-based weights/QoS at the group level — coarser than per-request.</span></div>
+      <div class="term-def"><b>sched_ext</b><span>A mainlined Linux subsystem letting eBPF programs implement CPU schedulers — cited as precedent for native kernel modification to empower eBPF.</span></div>
+      <div class="term-def"><b>BIO / block_rq_issue</b><span>The block I/O layer and the tracepoint marking a block request's dispatch to the device — where the paper's correlation experiment focuses.</span></div>
+      <div class="term-def"><b>Content-hash correlation</b><span>The paper's experimental technique: hashing write buffer contents at the syscall/VFS/ext4 layers (traceable with eBPF) and matching those hashes against BIO segment contents — which requires a custom kernel module, since eBPF can't read BIO segment contents directly — to get ground truth eBPF alone couldn't provide.</span></div>
+      <div class="term-def"><b>Distributed tracing (Dapper/Jaeger/Zipkin)</b><span>Userspace systems that propagate a trace ID across service/network boundaries — the precedent pattern this paper proposes replicating inside the kernel.</span></div>
+    </div>
+
+    <div class="subhead">Existing context mechanisms vs. what's proposed</div>
+    <table class="tbl">
+      <thead><tr><th>Mechanism</th><th>Granularity</th><th>Survives async boundary</th><th>Vocabulary</th></tr></thead>
+      <tbody>
+        <tr><td>Task storage map</td><td>per task</td><td class="mono">No</td><td>arbitrary (while task persists)</td></tr>
+        <tr><td>cgroup membership</td><td>per task group</td><td class="mono">Partially</td><td>grouping only</td></tr>
+        <tr><td>I/O priority class</td><td>per task</td><td class="mono">Partially</td><td>a few fixed tiers</td></tr>
+        <tr class="best"><td>Proposed context tag</td><td>per request</td><td class="mono">Yes (by design)</td><td>arbitrary, application-defined</td></tr>
+      </tbody>
+    </table>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>The Linux storage stack, syscall to device <span class="diff easy">easy</span></h4><div class="meta">explainer · 30–45 min</div><p>How a write() call travels through VFS, a filesystem, and the block layer. Foundation for every layer this paper discusses.</p></div>
+    <div class="read-item reveal"><h4>eBPF maps and verifier basics <span class="diff easy">easy</span></h4><div class="meta">explainer · 20–30 min</div><p>What eBPF maps can and can't do, and why the verifier constrains what a BPF program is allowed to touch.</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>XRP: In-Kernel Storage Functions with eBPF <span class="diff med">medium</span></h4><div class="meta">Zhong et al. · OSDI · 2022</div><p>An example of eBPF acting on storage directly, in-kernel — the kind of optimization context propagation aims to make more broadly applicable.</p></div>
+    <div class="read-item reveal"><h4>cache_ext: Customizing the Page Cache with eBPF <span class="diff med">medium</span></h4><div class="meta">Zussman et al. · SOSP · 2025</div><p>eBPF acting on memory management (the page cache) — the memory-side analogue of this paper's storage focus.</p></div>
+    <div class="read-item reveal"><h4>FetchBPF: Customizable Prefetching Policies in Linux with eBPF <span class="diff med">medium</span></h4><div class="meta">Cao et al. · USENIX ATC · 2024</div><p>Another memory-management eBPF system that would benefit from knowing application intent behind an access pattern.</p></div>
+    <div class="read-item reveal"><h4>sched_ext: eBPF Extensible Scheduler Class <span class="diff med">medium</span></h4><div class="meta">Heo &amp; Vernet · Linux kernel v6.12 · 2024</div><p>The precedent cited for Direction A — native kernel modification specifically to empower richer eBPF programs, now mainline.</p></div>
+    <div class="read-item reveal"><h4>SILK: Preventing Latency Spikes in LSM Key-Value Stores <span class="diff med">medium</span></h4><div class="meta">Balmau et al. · USENIX ATC · 2019</div><p>A concrete example of the application-level context (foreground vs. background writes) this paper wants the kernel to see natively.</p></div>
+    <div class="read-item reveal"><h4>PAIO: General, Portable I/O Optimizations <span class="diff hard">hard</span></h4><div class="meta">Macedo et al. · FAST · 2022</div><p>A user-space approach to portable I/O optimization — the kind of system context propagation could help push into the kernel.</p></div>
+    <div class="read-item reveal"><h4>Pivot Tracing: Dynamic Causal Monitoring <span class="diff hard">hard</span></h4><div class="meta">Mace, Roelke, Fonseca · ACM TOCS · 2018</div><p>Cross-component causal tracing at the distributed-systems level — the conceptual sibling of propagating context across kernel layers.</p></div>
+    <div class="read-item reveal"><h4>Dapper: A Large-Scale Distributed Systems Tracing Infrastructure <span class="diff med">medium</span></h4><div class="meta">Sigelman et al. · Google · 2010</div><p>The original trace-ID propagation system this paper's proposal mirrors, one layer down inside the kernel.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card">
+      <p><b>From the paper directly:</b> the motivating experiment (two threads, 4 KiB sequential writes, phases P1/P2/P3, the kworker 166 confounder, thread 21719's fsync merging both threads' data), the three named challenges (safety, performance overhead, semantic ambiguity), the two design directions and their named trade-offs, and all cited related systems (XRP, cache_ext, FetchBPF, sched_ext, SILK, PAIO, Dapper, Pivot Tracing, etc.) are drawn directly from the paper's text and reference list.</p>
+      <p><b>My framing, not the paper's:</b> the "baggage tag," "kitchen ticket," "relay baton," and other analogies; the explicit comparison table of existing mechanisms vs. the proposal; the connection to OS-managed memory tiering / CXL research via FetchBPF and cache_ext (the paper itself only lists these as citations for eBPF acting on memory management, without drawing this tiering connection); and all SVG diagrams, which are original illustrations of the paper's described scenarios, not reproductions of the paper's own Figure 1.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Machado, Amaro, Matos, Paulo, Esteves, "Context Matters: Expanding the Potential of eBPF" (eBPF'26 Workshop, 2026)</span>
+    <span><b>Venue:</b> 4th Workshop on eBPF and Kernel Extensions, Sept 29–Oct 2, 2026, Prague</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- INIT ---- */
+  runReveals();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
