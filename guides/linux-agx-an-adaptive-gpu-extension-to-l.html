@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Feeding the GPU on Time — Linux AGX, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98E04; --honey-deep:#A66A03; --honey-soft:#F7E4BC;
+  --dram:#1F7A8C; --dram-soft:#D9ECEF;
+  --ltram:#6C5CE7; --ltram-soft:#E7E4FB;
+  --optane:#B23A48; --optane-soft:#F5DCDF;
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,122,140,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(108,92,231,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,142,4,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(108,92,231,.05) 31px,rgba(108,92,231,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,142,4,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#154a53;font-size:.96rem}
+.primer .ready b{color:#0f393f}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#154a53}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a2f9a}
+.chip-lru{background:var(--optane-soft);color:#7a2530}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9DEE3;color:#154a53}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4bb;color:#7a2530}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fc9d2;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c3bbf1;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4bb;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dedafa}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#8a7ef0,#6C5CE7)}
+.bf-hi{background:linear-gradient(90deg,#2f95a8,#1F7A8C)}
+.bf-lru{background:linear-gradient(90deg,#c1505f,#B23A48)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--optane)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#0f393f;border:1px solid #9fc9d2}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#154a53}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#7a2530}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#d98e04} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#a79af0}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#154a53}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#7a2530}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,122,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(108,92,231,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,142,4,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Give the fair scheduler's weight to whoever is about to <span class="swash">unlock the GPU</span></h1>
+    <p class="lede">A short CPU "feeder" task preps the next GPU launch, but Linux fair scheduling only sees CPU service and sleep/wake events — it can't tell that feeder apart from the middleware timer that just happens to look the same. This is the plain-English story of <strong>AGX</strong>, a weight-only extension that fixes it.</p>
+    <div class="hero-meta">
+      <span>📄 "Linux AGX" · Shirvani &amp; Liu, UC Riverside</span>
+      <span>🎓 Assumes CFS/EEVDF familiarity roughly at kernel-doc level</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🤖</div>
+      <p>Bias the scheduler's <span class="ro">weight</span> toward whoever is <span class="ro">gating GPU progress</span>, not whoever merely <span class="wo">requests short slices and sleeps often</span>.<br><em style="font-size:.9rem">Measure it in user space, apply it as one number, change nothing else.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then the primers</h2>
+      <p class="sub">Acronyms first, so nothing below is opaque. Then eight short primers — open whichever concept is fuzzy.</p>
+    </div>
+
+    <div class="card">
+      <div class="gloss">
+        <div class="term-def"><b>AGX</b><span>Adaptive GPU eXtension — the paper's mechanism: a weight-only extension to Linux fair scheduling.</span></div>
+        <div class="term-def"><b>EEVDF</b><span>Earliest Eligible Virtual Deadline First — the fair-scheduling algorithm in Linux ≥6.6.</span></div>
+        <div class="term-def"><b>CFS</b><span>Completely Fair Scheduler — the older min-vruntime fair scheduler, still common on vendor/embedded kernels.</span></div>
+        <div class="term-def"><b>DAG</b><span>Directed acyclic graph — the task-dependency graph of a robotic pipeline.</span></div>
+        <div class="term-def"><b>CPS</b><span>Critical-Path Stretch — makespan ÷ measured critical-path sum; 1.0 is perfectly efficient.</span></div>
+        <div class="term-def"><b>L4T</b><span>Linux for Tegra — NVIDIA's embedded Linux distribution for Jetson boards.</span></div>
+        <div class="term-def"><b>MPS</b><span>Multi-Process Service — NVIDIA's mechanism for sharing one GPU context across processes.</span></div>
+        <div class="term-def"><b>Jain's index</b><span>A fairness statistic on dominant resource shares; 1.0 = perfectly balanced.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> feeder / GPU-gating task</span>
+      <span><i style="background:var(--optane)"></i> vanilla EEVDF (demand-blind baseline)</span>
+      <span><i style="background:var(--ltram)"></i> AGX machinery (profiler, weights, boost)</span>
+      <span><i style="background:var(--honey)"></i> short background competitors</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Proportional-share weight, in one line<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Linux fair scheduling gives each runnable task a <b>weight</b> (from its nice value). Over any interval, a backlogged task's CPU share should track weight<sub>i</sub> ÷ Σweights — that's the whole fairness contract. AGX's entire intervention is replacing this one weight with a computed <i>effective weight</i>; nothing else about the scheduler changes.</p>
+          <div class="ready"><b>Now you're ready:</b> everything AGX does is describable as "same scheduler, different weight number."</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>CFS's min-vruntime vs EEVDF's eligible-deadline pick<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>CFS</b> tracks each task's virtual runtime (CPU time ÷ weight) and always runs whoever has the smallest value. <b>EEVDF</b> refines this: each request gets a virtual <i>eligible time</i> and virtual <i>deadline</i>; among tasks eligible right now, it runs the earliest deadline. Crucially, a task requesting a <i>shorter slice</i> earns an earlier deadline and gets to run sooner — this is EEVDF's built-in "interactivity" trick.</p>
+          <div class="ready"><b>Now you're ready:</b> EEVDF already helps short tasks — but it can't tell a short task that matters (a GPU feeder) from a short task that doesn't (a log flush). That blind spot is AGX's target.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Lag: how "fair so far" is measured<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Lag</b> is the gap between the CPU service a task should have gotten under an ideal fluid proportional-share model and what it actually got. EEVDF (and CFS) guarantee this gap stays bounded by roughly one request size — no task drifts arbitrarily far behind or ahead.</p>
+          <div class="ready"><b>Now you're ready:</b> AGX's fairness proof (Thm 5.2) is exactly this bounded-lag guarantee, just measured against AGX's <i>effective</i> weights instead of the base ones.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Feeder, gate, and gating slice<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The <b>feeder</b> is the CPU thread that prepares and submits a GPU kernel. Its pre-launch CPU work is the <b>gating slice</b>; the <b>gate</b> is reached once that CPU work is done and the kernel can launch. <b>Gate delay</b> is the wall-clock wait to reach the gate.</p>
+          <div class="ready"><b>Now you're ready:</b> AGX's whole job is shrinking gate delay without touching anything else about the scheduler.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Micro-preemption — the paper's specific failure mode<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Streams of short, frequently-waking CPU tasks (middleware timers, driver callbacks) repeatedly become eligible with earlier deadlines than the feeder's current request, fragmenting the feeder across many dispatch rounds even though its total work is small. CPU-level fairness holds; the GPU still idles.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the paper's Fig. 14 adversarial pattern — the concrete thing AGX's bounded boost is built to neutralize.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Critical path and makespan<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>In a dependency graph, the <b>critical path</b> is the longest chain of dependent stages that determines the earliest possible finish time. <b>Makespan</b> is the actual end-to-end completion time. If CPU scheduling delays a critical-path GPU node's upstream feeder, the whole graph slips even if every other task is on time.</p>
+          <div class="ready"><b>Now you're ready:</b> AGX's payoff metric (CPS, Sec 6.6) is literally makespan ÷ critical-path sum — how close the system runs to the ideal 1.0.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Why this reads like your tiering work<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>AGX's user-space profiler samples per-task signals every 250 ms, computes a bounded importance score, and pushes one batched update to the kernel — a windowed, sampled, decay-free control loop applying a numeric bias to an existing mechanism. That shape (periodic epoch, bounded score, cheap kernel-side application) is structurally the same move that epoch-based hotness trackers in tiered-memory systems (à la TPP, HeMem, Memtis) make for page promotion/demotion, just for CPU weight instead of page placement.</p>
+          <div class="ready"><b>Now you're ready:</b> read AGX's <code>c_i</code> importance score the way you'd read a hotness counter, and its <code>κ</code> knob the way you'd read a promotion aggressiveness knob.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Jain's dominant-share fairness<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>With both CPU and GPU in play, a task's <b>dominant share</b> is the larger of its CPU-share and GPU-share (fraction of capacity used). Jain's index over these dominant shares summarizes overall balance in [0,1], with 1 meaning perfectly even sharing.</p>
+          <div class="ready"><b>Now you're ready:</b> the evaluation reports this alongside makespan to show AGX isn't buying speed by silently starving everyone else.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>AGX in a nutshell</h2>
+      <p class="sub">The blind spot, the two tightly-scoped fixes, and why the guarantees still hold.</p>
+    </div>
+    <div class="prose">
+      <p>Linux fair scheduling (EEVDF on modern kernels, CFS on older ones) sees only CPU service and sleep/wake events. It rewards a specific <i>behavioral signature</i> — request short slices, sleep often — with earlier dispatch, because on desktops that signature happens to correlate with "interactive." In ML-driven robotic pipelines it doesn't: the CPU <span class="mem-chip chip-hi">feeder</span> that gates the next GPU launch and an unrelated <span class="mem-chip chip-sat">middleware timer</span> both look short and sleepy, so the scheduler can't tell them apart or track which one currently sits on the critical path.</p>
+      <p><strong>AGX</strong> fixes this through the narrowest possible interface: the <b>weight</b> used in virtual-deadline computation and virtual-time accounting. A user-space profiler computes a bounded importance score <code>c_i ∈ [0,1]</code> per task every window (default <b>M = 250 ms</b>) from its GPU share, CPU→GPU handoff frequency, and optional dependency criticality. The kernel turns this into an <span class="mem-chip chip-ucp">effective weight</span> <code>w_eff = w0·(1+κc_i)</code> — a long-term bias. Separately, while a gate is pending, a <b>bounded temporary boost</b> λ (capped at 1+κ) gives the feeder just enough share to clear one base request within a short gating-response horizon <b>τ = 5 ms</b>. Everything else — EEVDF's eligibility test, deadline ordering, pick logic — is untouched.</p>
+      <p><strong>The payoff:</strong> across three NVIDIA platforms, AGX-EEVDF cuts makespan by <b>6.0–20.0%</b> and lifts GPU utilization by <b>7.6–22.1%</b> versus vanilla EEVDF. Under background CPU pressure it cuts p99 perception-to-control latency by <b>38.5%</b> and deadline misses by <b>33.8 percentage points</b>, while keeping CPU-only Jain's fairness ≥0.94 and total scheduler+profiler overhead under <b>2% of one core</b> (8.7–17.7 CPU-ms/s at default settings).</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>EEVDF rewards a <b>behavioral signature</b> (short slice + frequent sleep), not actual GPU-gating criticality.</li>
+        <li>AGX changes exactly one interface: the <b>weight</b> used in virtual-deadline computation and accounting.</li>
+        <li><b>Effective weight</b> (long-term, windowed) and <b>bounded boost</b> (short-term, event-driven) operate at complementary timescales.</li>
+        <li>κ=0 or daemon-off ⇒ AGX is algebraically vanilla EEVDF — fail-safe by construction.</li>
+        <li>Proven: bounded proportional fairness w.r.t. effective weights (Thm 5.2); <b>K</b>-independent gate-delay bound when the boost isn't clipped, bounded coalescing when it is (Thm 5.5).</li>
+        <li>Result: 6.0–20.0% shorter makespan, 7.6–22.1% higher GPU utilization, &lt;2% of one CPU core overhead.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">a feeder needing 3 slices, fragmented by short competitors — vanilla vs AGX</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> feeder slice</span>
+        <span><i style="background:var(--honey)"></i> short competitor</span>
+        <span><i style="background:var(--ltram)"></i> bounded boost active</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 260" role="img" aria-label="Timeline comparing vanilla EEVDF fragmentation of a feeder with AGX bounded boost">
+        <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Vanilla EEVDF — micro-preemption</text>
+        <g font-family="JetBrains Mono" font-size="10" fill="#fff">
+          <rect x="20" y="38" width="60" height="34" fill="#1F7A8C"/><text x="50" y="59" text-anchor="middle">F</text>
+          <rect x="82" y="38" width="60" height="34" fill="#D98E04"/><text x="112" y="59" text-anchor="middle">c</text>
+          <rect x="144" y="38" width="60" height="34" fill="#D98E04"/><text x="174" y="59" text-anchor="middle">c</text>
+          <rect x="206" y="38" width="60" height="34" fill="#1F7A8C"/><text x="236" y="59" text-anchor="middle">F</text>
+          <rect x="268" y="38" width="60" height="34" fill="#D98E04"/><text x="298" y="59" text-anchor="middle">c</text>
+          <rect x="330" y="38" width="60" height="34" fill="#D98E04"/><text x="360" y="59" text-anchor="middle">c</text>
+          <rect x="392" y="38" width="60" height="34" fill="#1F7A8C"/><text x="422" y="59" text-anchor="middle">F</text>
+          <rect x="454" y="38" width="60" height="34" fill="#D98E04"/><text x="484" y="59" text-anchor="middle">c</text>
+        </g>
+        <line x1="454" y1="85" x2="454" y2="100" stroke="#B23A48" stroke-width="2"/>
+        <text x="454" y="112" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#7a2530">GPU launch — delayed</text>
+
+        <text x="20" y="148" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">AGX-EEVDF — gate flag raises bounded boost λ</text>
+        <g font-family="JetBrains Mono" font-size="10" fill="#fff">
+          <rect x="20" y="160" width="60" height="34" fill="#1F7A8C"/><text x="50" y="181" text-anchor="middle">F</text>
+          <rect x="82" y="160" width="60" height="34" fill="#1F7A8C"/><text x="112" y="181" text-anchor="middle">F</text>
+          <rect x="144" y="160" width="60" height="34" fill="#1F7A8C"/><text x="174" y="181" text-anchor="middle">F</text>
+        </g>
+        <rect x="18" y="158" width="188" height="38" fill="none" stroke="#6C5CE7" stroke-width="2" stroke-dasharray="4 3" rx="6"/>
+        <text x="112" y="212" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a2f9a">λ active while gate unmet (Eq. 3)</text>
+        <line x1="206" y1="177" x2="206" y2="192" stroke="#1F7A8C" stroke-width="2"/>
+        <text x="206" y="230" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#154a53">GPU launch — one τ horizon</text>
+        <rect x="220" y="160" width="60" height="34" fill="#D98E04" opacity="0.5"/><text x="250" y="181" text-anchor="middle" fill="#fff">c</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> under vanilla EEVDF, short competitors (honey) repeatedly out-deadline the feeder (teal), spreading 3 slices' worth of work across 8 dispatch rounds and delaying the GPU launch (Fig. 14 pattern). Under AGX, the gate flag raises a bounded boost λ that lets the feeder run its 3 slices back-to-back within one gating-response horizon τ, then the boost is released — competitors resume normal share immediately after.</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">blind spot → measure → two weight changes → same pick logic → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">EEVDF/CFS reward short+sleepy behavior, not GPU-gating criticality</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Measure (profiler)</div><div class="nd">Every 250 ms: GPU share ρ, handoff freq g, dependency tag d → c_i</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Effective weight</div><div class="nd">w_eff = w0(1+κc_i) — long-term bias</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Bounded boost</div><div class="nd">While gate pending: λ ≤ 1+κ restores coverage within τ</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Pick logic unchanged</div><div class="nd">EEVDF eligibility + earliest-deadline pick, same as vanilla</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Result</div><div class="nd">6.0–20.0% shorter makespan, 7.6–22.1% higher GPU util</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Five everyday pictures</div>
+      <h2>How to think about AGX</h2>
+      <p class="sub">Read in any order. Each ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="50" r="10" fill="#DCEFE9" stroke="#1F7A8C" stroke-width="2.5"/>
+          <circle cx="70" cy="50" r="10" fill="#F7E4BC" stroke="#D98E04" stroke-width="2.5"/>
+          <circle cx="110" cy="50" r="10" fill="#F7E4BC" stroke="#D98E04" stroke-width="2.5"/>
+          <path d="M40 50 h60" stroke="#332C24" stroke-width="2" stroke-dasharray="3 3"/>
+          <path d="M30 36 v-14 M26 26 l4 -6 l4 6" stroke="#1F7A8C" stroke-width="2" fill="none"/>
+        </svg></div>
+        <span class="term">Critical path · Feeder/gate</span>
+        <h3>Relay race baton handoff</h3>
+        <p>Your team's fastest sprinter (the GPU) can't leave the blocks until the baton (the feeder's CPU prep) arrives. If the runner carrying the baton keeps getting shoved aside at the exchange zone by kids racing for snacks, the fast sprinter stands idle — the team's overall time is set by the handoff, not by the sprint.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real handoff is a single event; a gating slice can itself be split across many CPU dispatches, which is exactly the fragmentation AGX targets.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="40" width="100" height="20" rx="10" fill="#E7E4FB" stroke="#6C5CE7" stroke-width="2"/>
+          <rect x="20" y="40" width="46" height="20" rx="10" fill="#6C5CE7"/>
+          <path d="M70 30 l14 8 l-14 8z" fill="#B23A48"/>
+        </svg></div>
+        <span class="term">Bounded boost λ</span>
+        <h3>An ambulance's temporary siren</h3>
+        <p>An ambulance doesn't own the road permanently — it gets a temporary right-of-way exactly while carrying an active call, capped by traffic law, and yields the moment the call ends. AGX's boost λ is the same: active only while the gate flag is set, capped at 1+κ, released the instant the launch is submitted, cancelled, or times out.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real ambulance's priority is nearly unbounded in an emergency; AGX's boost is deliberately capped, so under extreme contention it degrades to bounded coalescing rather than an unbounded override.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="50" r="18" fill="#F7E4BC" stroke="#D98E04" stroke-width="2.5"/>
+          <path d="M38 44 q7 -6 14 0 M38 56 q7 6 14 0" stroke="#A66A03" stroke-width="2" fill="none"/>
+          <circle cx="100" cy="50" r="14" fill="#DCEFE9" stroke="#1F7A8C" stroke-width="2.5"/>
+          <path d="M94 50 h12 M100 44 v12" stroke="#154a53" stroke-width="2"/>
+        </svg></div>
+        <span class="term">The core blind spot</span>
+        <h3>The loud kid vs. the quiet expert</h3>
+        <p>A teacher who calls on whoever's hand shoots up fastest and most often ends up favoring the loud kid, not the one who actually knows the answer. EEVDF's "shorter request ⇒ earlier deadline" rule is the loud-kid heuristic: it favors a behavioral signature, not demonstrated importance — and a GPU feeder and an irrelevant middleware timer can raise their hands equally fast.</p>
+        <div class="breaks"><b>Where it breaks:</b> the loud kid isn't malicious; EEVDF's heuristic is genuinely useful for desktop interactivity. It only misfires when many equally "loud" tasks compete and none of them is labeled.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="80" height="40" rx="6" fill="#DCEFE9" stroke="#1F7A8C" stroke-width="2.5"/>
+          <text x="70" y="55" text-anchor="middle" font-family="monospace" font-size="11" fill="#154a53">×0.7</text>
+          <path d="M50 30 v-10 M90 30 v-10" stroke="#332C24" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Effective weight</span>
+        <h3>A toll discount card</h3>
+        <p>A frequent, high-priority commuter gets a discounted toll rate — they still pay for road use, just less per mile, so they can make more trips for the same budget. AGX's effective weight is a virtual-time discount: <code>w_eff = w0(1+κc_i)</code> means a critical task is charged less virtual time per real CPU cycle, so it becomes eligible again sooner.</p>
+        <div class="breaks"><b>Where it breaks:</b> a toll discount is usually permanent per commuter class; AGX's discount is recomputed every 250 ms from fresh measurements, so it can rise, fall, or vanish as the task's actual GPU-gating role changes.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 q30 -30 50 -10 q20 20 50 -10" fill="none" stroke="#1F7A8C" stroke-width="2.5"/>
+          <circle cx="20" cy="70" r="3" fill="#B23A48"/><circle cx="70" cy="60" r="3" fill="#B23A48"/><circle cx="120" cy="50" r="3" fill="#B23A48"/>
+          <text x="70" y="86" text-anchor="middle" font-family="monospace" font-size="9" fill="#6E6456">every 250ms</text>
+        </svg></div>
+        <span class="term">Profiling window M</span>
+        <h3>A weather forecast, refreshed hourly</h3>
+        <p>An hourly forecast is accurate enough for most planning, but if a storm forms in the last ten minutes of the hour you're still working off stale data until the next refresh. AGX's profiler recomputes importance every <b>M = 250 ms</b> — plenty for most pipeline phases, but a critical-path shift inside that window is invisible until the next tick.</p>
+        <div class="breaks"><b>Where it breaks:</b> this is exactly the failure the paper reports on twolf-vpr/gzip-twolf-style fast-phasing workloads, where vanilla EEVDF's continuous, per-access adaptation occasionally beats AGX's coarser, windowed one.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Mechanism by mechanism, with the two equations and their guarantees.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem — a behavioral signature, not a criticality signal</h3>
+      <p>EEVDF improves latency over CFS through two channels: shorter requests earn earlier virtual deadlines, and sleeping tasks retain lag that decays rather than resets. Neither channel knows <i>which</i> task matters — both just favor "requests short slices, sleeps often." In a robotic pipeline, the GPU feeder and a dozen unrelated middleware/logging/timer threads present that same signature, so vanilla EEVDF can't prioritize the one that's actually gating the GPU, nor notice when the critical path shifts to a different task.</p>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Effective weight — a long-term, windowed bias</h3>
+      <pre class="sketch"><span class="hl">w_eff_i ≜ w0_i · (1 + κ·c_i)</span>     <span class="cm">// κ≥0 sensitivity knob, c_i∈[0,1] windowed importance</span></pre>
+      <p>c_i is computed in user space every window M (default 250 ms) as the equal-weight average of three normalized signals (Eq. 2):</p>
+      <pre class="sketch">ρ_i = ΔtGPU_i / (ΔtCPU_i + ΔtGPU_i + ε_t)    <span class="cm">// GPU-share</span>
+g_i = N<sup>CPU→GPU</sup>_i / (N<sup>CPU</sup>_i + ε_n)          <span class="cm">// handoff frequency</span>
+d_i = d_idx_i / D_max                        <span class="cm">// optional dependency criticality</span>
+<span class="hl">c_i = (ρ_i + g_i + d_i) / 3</span></pre>
+      <div class="callout note"><span class="ic">🌱</span><div>A task with no GPU activity gets c_i≈0, so w_eff≈w0 — identical to vanilla behavior. Because w_eff is fixed within each weight epoch, <b>AGX is algebraically vanilla EEVDF run on different static weights</b> during that epoch (Lemma 5.1) — this is what makes the fairness proof possible.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Bounded boost — a short-term, event-driven override</h3>
+      <p>Define the coverage threshold θ ≜ Δ/(Cτ): the proportional share that supplies one base request Δ within one gating-response horizon τ, on C cores. While the gate is active, AGX raises the feeder's weight to the smallest bounded factor that restores this coverage:</p>
+      <pre class="sketch"><span class="hl">λ ≜ min( 1+κ,  max( 1,  θ/(1−θ) · S_B/w0_B ) )</span>
+w_eff_B ← max( w_eff_B, λ·w0_B )     <span class="cm">// S_B = total competing effective weight</span></pre>
+      <p>Heavy contention (large S_B) needs a bigger boost; light contention needs none (λ=1). Once the launch is submitted, cancelled, or times out, the boost is cleared — CPU-only tasks see no interference while no gate is pending.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Coverage: when one horizon τ supplies one base request</div>
+      <div class="viz-kicker">feeder share s_B(t) vs. threshold θ = Δ/(Cτ)</div>
+      <svg class="full" viewBox="0 0 700 190" role="img" aria-label="feeder share crossing coverage threshold under boost">
+        <line x1="60" y1="20" x2="60" y2="150" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="60" y1="150" x2="660" y2="150" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="60" y1="95" x2="660" y2="95" stroke="#B23A48" stroke-width="1.4" stroke-dasharray="5 4"/>
+        <text x="666" y="99" font-family="JetBrains Mono" font-size="10" fill="#7a2530">θ (coverage target)</text>
+        <polyline fill="none" stroke="#D98E04" stroke-width="2.6" points="60,140 200,138 210,138 210,60 400,60 410,60 410,140 660,140"/>
+        <text x="130" y="160" font-family="JetBrains Mono" font-size="10" fill="#6E6456">below θ: coalescing</text>
+        <text x="290" y="50" font-family="JetBrains Mono" font-size="10" fill="#0f393f">gate active — λ applied, s_B≥θ</text>
+        <line x1="210" y1="20" x2="210" y2="150" stroke="#6C5CE7" stroke-dasharray="3 3"/>
+        <line x1="410" y1="20" x2="410" y2="150" stroke="#6C5CE7" stroke-dasharray="3 3"/>
+        <text x="210" y="16" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#3a2f9a">gate set</text>
+        <text x="410" y="16" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#3a2f9a">launch, boost cleared</text>
+      </svg>
+      <figcaption><b>Outside a gate:</b> the feeder's share can sit below θ with no penalty — nothing is pending. <b>While a gate is active,</b> λ lifts the share to at least θ, guaranteeing one Δ-sized request completes within τ (Lemma C.7); when S_B is large enough that λ would exceed 1+κ, the cap binds and AGX instead bounds the coalescing factor rather than removing it (Remark 5.6).</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Enforcement — EEVDF's pick logic is untouched</h3>
+      <pre class="sketch"><span class="cm">// every window M: refresh effective weights</span>
+<span class="kw">for</span> i in R: w_eff_i ← w0_i·(1+κ·c_i)
+
+<span class="cm">// on gate flag set for feeder B</span>
+<span class="kw">if</span> gate_active(B): w_eff_B ← max(w_eff_B, λ·w0_B)
+
+<span class="cm">// unchanged EEVDF dispatch</span>
+i* ← EEVDFPick(R, {w_eff})
+run(i* under its EEVDF request); account(i*, δ, w_eff_i*)</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why keep two mechanisms?</b> Effective weight answers "who has been gating GPU progress over recent windows"; the boost answers "who needs to clear a specific pending gate right now." Collapsing them into one signal would either react too slowly (window-only) or overreact to noise (boost-only).</div></div>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: contention vs. gate delay</div>
+      <div class="viz-kicker">slide the number of short competitors K — compare vanilla EEVDF (K-linear, Lemma 5.4) with AGX (K-independent until the cap binds, Thm 5.5)</div>
+      <div class="part-viz">
+        <div>
+          <div class="ways-strip" id="waysStrip"></div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">competing short tasks K:</span>
+            <input type="range" min="1" max="15" value="4" id="partRange">
+            <span class="mono" id="partRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">4</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-set="2">light contention (K=2)</button>
+            <button class="tbtn" data-set="8">cap begins to bind (K=8)</button>
+            <button class="tbtn" data-set="12">heavy (K=12, Appx B.1)</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">AGX gate delay<b id="pVpr">—</b></div>
+            <div class="pstat">Vanilla EEVDF delay<b id="pEq">—</b></div>
+            <div class="pstat">Δ improvement<b id="pTot">—</b></div>
+          </div>
+          <div class="pverdict sub" id="pVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>Illustrative curves</b> matched to the qualitative trends of Lemma 5.4 / Theorem 5.5 and the measured short-vs-short numbers in Appendix B.1 (CFS/EEVDF ≈33–35 ms, AGX ≈13.8 ms at K=12); not a literal replay of one experiment.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · Specializing to CFS and beyond</h3>
+      <p>AGX depends only on (i) a virtual-time charge rule keyed to a weight, and (ii) a bounded service quantum. Swap EEVDF's eligible-deadline pick for CFS's min-vruntime pick and the same effective-weight substitution and boost logic apply, with an analogous "bounded virtual-runtime spread" lemma standing in for bounded lag (App. D). More broadly, any proportional-share scheduler with a monotone least-served-progress notion and a bounded quantum can host AGX.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces: computing the two AGX numbers by hand, then checking them against the paper's measured results.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Effective weight from the importance score (Eq. 1–2)</h3>
+      <p style="color:var(--ink-soft)">A feeder has base weight w0=1024 (nice 0). Over one window: ΔtGPU=15 ms, ΔtCPU=5 ms; it issued 8 of its 20 CPU dispatches with a GPU launch; no dependency tag. With κ=1, find w_eff.</p>
+      <ol class="seq">
+        <li><b>GPU share:</b> ρ = 15/(5+15+ε_t) ≈ 15/20.001 ≈ <b>0.75</b>.</li>
+        <li><b>Handoff frequency:</b> g = 8/(20+1) ≈ <b>0.38</b>.</li>
+        <li><b>Dependency tag absent</b> ⇒ d = 0.</li>
+        <li><b>c_i</b> = (0.75+0.38+0)/3 ≈ <b>0.38</b>.</li>
+        <li><b>w_eff</b> = 1024·(1+1·0.38) ≈ <b>1413</b> — a ~38% virtual-time discount versus a task with c_i≈0.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> a task with no dependency metadata still gets a meaningful boost purely from GPU share and handoff frequency (Sec. 4.4's fallback iii) — c_i=0 only for genuinely GPU-irrelevant tasks.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Is the boost clipped? (Eq. 3)</h3>
+      <p style="color:var(--ink-soft)">C=2 cores, τ=5 ms, Δ=3 ms (a typical base slice), κ=1 (cap 1+κ=2). Twelve equal-weight competitors, so S_B/w0_B=12.</p>
+      <ol class="seq">
+        <li><b>θ</b> = Δ/(Cτ) = 3/(2·5) = <b>0.3</b>.</li>
+        <li><b>Requested factor</b> = θ/(1−θ) · S_B/w0_B = (0.3/0.7)·12 ≈ <b>5.14</b>.</li>
+        <li><b>Compare to cap</b> 1+κ = 2: 5.14 &gt; 2, so <b>the cap binds</b>: λ = 2.</li>
+        <li>This matches the paper's measured cap-hit rate of <b>55% of gate episodes at K=12</b> (Sec. 6.7, App. B.1) — heavy contention routinely saturates λ.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Even capped, AGX still improves feeder share from 1/13 (≈0.077) to 2/(2+11)≈0.154 — double — which is why the paper still measures a ~2× delay reduction (34.5→13.8 ms) even when the bound isn't strictly K-independent.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Gate delay: vanilla EEVDF vs AGX (Appendix B.1, real numbers)</h3>
+      <p style="color:var(--ink-soft)">Short-vs-short contention, K=12 competing tasks, mean per-run p99 feeder-ready-to-submit delay over 10 runs.</p>
+      <ol class="seq">
+        <li><b>CFS:</b> 34.5 ms p99 delay.</li>
+        <li><b>Vanilla EEVDF:</b> 33.3 ms — within 4% of CFS, since request-length alone can't distinguish similarly-short tasks.</li>
+        <li><b>AGX-EEVDF:</b> 13.8 ms — a <b>58.6% reduction</b> versus EEVDF, by identifying which short task is actually gating GPU progress.</li>
+        <li>At this K, the boost is capped in <b>55% of gate episodes</b>, so this is the "bounded coalescing" regime (Remark 5.6), not the strict K-independent bound — yet the reduction is still large.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the explicit short-vs-long experiment (Fig. 15a) shows EEVDF alone gets most of the way there (44.6→27.1 ms, 39.2% over CFS) when request size differs; AGX's extra 21.0% comes specifically from resolving the short-vs-short case EEVDF's own mechanism can't see.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Overhead tally on Jetson Orin AGX (Sec. 6.5, N=100)</h3>
+      <ol class="seq">
+        <li><b>Baseline scheduling cost</b> (shared with vanilla EEVDF): 1.72 ms/window.</li>
+        <li><b>Total with AGX:</b> 3.33 ms/window — AGX adds <b>1.61 ms/window</b>.</li>
+        <li><b>Breakdown of the add:</b> user daemon ≈0.93 ms + mark_gpu() ≈0.40 ms + update_weight ≈0.28 ms ≈ 1.61 ms. ✓ matches.</li>
+        <li><b>As a rate:</b> 1.61 ms per 250 ms window = <b>6.44 CPU-ms/s</b>, i.e. ≈0.64% of one core — inside the paper's reported 8.7–17.7 CPU-ms/s range across platforms.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The components scale sublinearly with runnable-task count (Sec. 6.5), so this overhead stays small even as pipeline complexity grows — important for long-running robotic deployments.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A task requests very short slices and sleeps frequently, but never submits GPU work. Under AGX, what is its w_eff, and why?</div>
+      <details><summary>Show answer</summary><div class="ans">w_eff ≈ w0, its base weight. With no GPU share, no CPU→GPU handoffs, and (absent metadata) d=0, c_i≈0, so w_eff = w0(1+κ·0) = w0. It keeps EEVDF's normal short-slice advantage but gets no extra AGX bias.<span class="mis">Misconception: that AGX boosts every short/sleepy task. It boosts only tasks whose measured signals show GPU-gating or dependency criticality — "short and sleepy" alone earns nothing extra.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Compute w_eff for w0=512, ρ=0.4, g=0.5, d=0.3, κ=2.</div>
+      <details><summary>Show answer</summary><div class="ans">c_i = (0.4+0.5+0.3)/3 = 0.4. w_eff = 512·(1+2·0.4) = 512·1.8 = <b>921.6</b>.<span class="mis">Misconception: forgetting κ multiplies c_i, not adds to it directly — doubling κ roughly doubles the discount's strength, not the score itself.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why is the boost capped at 1+κ instead of always granting whatever λ Eq. 3 computes?</div>
+      <details><summary>Show answer</summary><div class="ans">An unbounded λ under heavy contention (large S_B) would let the feeder starve every competitor arbitrarily, breaking AGX's fairness guarantee entirely and risking priority inversion on background work. Capping means that under extreme contention AGX falls back to "bounded coalescing" (Remark 5.6) — a weaker but still bounded guarantee — rather than an unbounded override.<span class="mis">Misconception: that hitting the cap means AGX "fails." It still substantially improves the feeder's share relative to vanilla; it just no longer guarantees full K-independence.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Does increasing κ from 0 to 2 violate EEVDF's fairness guarantee? What does Theorem 5.2 actually promise?</div>
+      <details><summary>Show answer</summary><div class="ans">No. Theorem 5.2 promises bounded proportional service <i>with respect to the effective weights currently in force</i> — the same structural form as vanilla EEVDF's guarantee, just restated in effective-weight space. It does not promise tasks keep their original base-weight share once κ&gt;0. Setting κ=0 recovers the vanilla guarantee exactly.<span class="mis">Misconception: that "preserves fairness" means "preserves the original shares." It means the new shares (however biased) are themselves delivered fairly and predictably, with a bound that doesn't grow with interval length.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">On CPU-bound stress-ng (no GPU work at all), what should AGX-EEVDF's makespan and GPU utilization look like relative to vanilla EEVDF, and why?</div>
+      <details><summary>Show answer</summary><div class="ans">Essentially identical — the paper reports AGX-EEVDF within ~3% of vanilla EEVDF on stress-ng. With no GPU activity, every task's ρ, g ≈0, so c_i≈0 and w_eff≈w0 for everyone; no gate is ever pending, so λ=1 always. AGX degrades cleanly to vanilla behavior.<span class="mis">Misconception: that AGX always biases toward "the busiest" task. It only biases toward measured GPU-gating/dependency signals — absent those signals, there's nothing to bias.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Table 1's ablation shows removing effective weights (keep only the boost) hurts makespan more (+9.3%) than removing the boost (keep only effective weights, +5.6%). Why might the longer-timescale mechanism matter more here?</div>
+      <details><summary>Show answer</summary><div class="ans">The boost only fires reactively once a gate is already pending, fixing a symptom moment-to-moment; effective weights proactively keep the feeder eligible and well-positioned across the whole window, reducing how often the feeder falls behind enough to need rescue in the first place. Removing effective weights means every gate has to be recovered from a worse starting position, inflating both makespan and dependency delay (24→38 ms).<span class="mis">Misconception: that the boost is the "main" AGX mechanism because it's the more dramatic, event-driven one. The windowed reweighting is what prevents most gate crises from becoming severe in the first place.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">Why does AGX target CFS as well as EEVDF, given modern kernels default to EEVDF?</div>
+      <details><summary>Show answer</summary><div class="ans">Many production robotic and embedded stacks (Jetson-class L4T builds, Yocto-based systems) still run older or vendor kernels where CFS remains the effective fair-class policy. Since AGX only needs a virtual-time charge keyed to a weight and a bounded service quantum — both present in CFS — the same mechanism transfers by swapping EEVDF's eligible-deadline pick for CFS's min-vruntime pick.<span class="mis">Misconception: that AGX is an EEVDF-only patch. Its guarantees are stated generally enough (proportional-share weights + bounded quantum) to specialize to CFS and generalize to future fair schedulers.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly does AGX change in the kernel?<span class="chev">▾</span></summary><div class="a">One thing: the weight used in virtual-deadline computation and virtual-time accounting. It replaces the base weight with a computed effective weight and, while a gate is pending, applies a bounded temporary boost to that weight. EEVDF's eligibility test, deadline ordering, and pick logic are all unchanged.</div></details>
+      <details><summary><span class="q">Q2</span>Why not just redesign the scheduler for GPU awareness?<span class="chev">▾</span></summary><div class="a">The authors' measurements suggest EEVDF's core pick/eligibility logic isn't the root cause — it's already deeply integrated with cgroups, load balancing, and RT/Deadline classes, so replacing it would sacrifice compatibility. Targeting the weight interface gets the fix with minimal blast radius.</div></details>
+      <details><summary><span class="q">Q3</span>Does AGX require changing the application or ROS graph?<span class="chev">▾</span></summary><div class="a">No. Dependency metadata is optional — if a ROS executor or launch graph exposes stage structure, AGX uses it; if not, AGX still works from inferred GPU-share and handoff-frequency signals alone (d_i=0 fallback), staying within 3% of the best tested configuration across the evaluated workloads.</div></details>
+      <details><summary><span class="q">Q4</span>How is this different from tuning nice or latency_nice?<span class="chev">▾</span></summary><div class="a">Static tuning (EEVDF+Tune) helps briefly right after retuning but decays mid-stage as the critical path shifts, since it isn't updated continuously. AGX recomputes its signal every profiling window and reacts immediately to gate events, tracking phase changes without manual intervention.</div></details>
+      <details><summary><span class="q">Q5</span>What's the actual overhead?<span class="chev">▾</span></summary><div class="a">8.7–17.7 CPU-ms/s total (scheduler hooks + user daemon) at the default 250 ms window — under 2% of one CPU core across all three test platforms.</div></details>
+      <details><summary><span class="q">Q6</span>Does AGX ever make things worse than vanilla EEVDF?<span class="chev">▾</span></summary><div class="a">Occasionally, on workloads with phase changes faster than the 250 ms profiling window (e.g. twolf-vpr, gzip-twolf style mixes), where vanilla EEVDF's continuous per-access adaptation can outrun AGX's coarser windowed one. This is an explicit, acknowledged trade for low overhead.</div></details>
+      <details><summary><span class="q">Q7</span>What happens if the user-space daemon crashes or is disabled?<span class="chev">▾</span></summary><div class="a">AGX degrades cleanly to vanilla fair scheduling — c_i is never refreshed, so effective weights stay at their last (or base) values and no new boosts are triggered. Setting κ=0 has the same effect algebraically.</div></details>
+      <details><summary><span class="q">Q8</span>Does AGX generalize beyond a single GPU?<span class="chev">▾</span></summary><div class="a">Yes — Sec. 5.3 sketches per-device queues for multi-GPU/heterogeneous accelerators (same coverage/coalescing argument per device) and an effective-capacity term for heterogeneous CPUs. The core requirement is just proportional-share weights plus a bounded service quantum.</div></details>
+      <details><summary><span class="q">Q9</span>How does AGX relate to application-level schedulers like DREAM?<span class="chev">▾</span></summary><div class="a">Complementary, not competing. DREAM decides the logical DAG order at the framework level; Linux still has to dispatch the resulting runnable threads amid callbacks and middleware, which is where AGX's gap-filling applies. DREAM+AGX further reduces makespan by 1.8–3.9% over AGX-EEVDF alone.</div></details>
+      <details><summary><span class="q">Q10</span>Is AGX's importance score like a hotness counter in tiered memory systems?<span class="chev">▾</span></summary><div class="a">Structurally, yes — both are periodic, bounded, sampled scores computed cheaply and applied as a coarse-grained bias to an existing mechanism (CPU weight here, page placement in tiering). The key difference: AGX has no promotion/demotion state machine or migration cost to amortize — it just rewrites one number every window.</div></details>
+      <details><summary><span class="q">Q11</span>Why 250 ms for the profiling window and 5 ms for the gating-response horizon?<span class="chev">▾</span></summary><div class="a">Sec. 6.7's sweep shows a sweet spot near M≈250 ms balancing responsiveness against daemon overhead and noisy estimates; τ=5 ms is a separate, much finer-grained target for how quickly one base request should clear once a gate is pending. The two knobs are set independently because they answer different questions.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then results, then provenance.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>AGX (Adaptive GPU eXtension)</b><span>The paper's mechanism: weight-only, GPU- and dependency-aware extension to Linux fair scheduling.</span></div>
+      <div class="term-def"><b>Effective weight w_eff</b><span>w0(1+κc_i) — the windowed, importance-adjusted weight EEVDF/CFS use in place of the base weight.</span></div>
+      <div class="term-def"><b>Importance score c_i</b><span>Equal-weight average of GPU share ρ_i, handoff frequency g_i, and dependency criticality d_i, all in [0,1].</span></div>
+      <div class="term-def"><b>Bounded gating boost λ</b><span>Temporary weight multiplier (capped at 1+κ) applied to a feeder while its gate is unmet.</span></div>
+      <div class="term-def"><b>Weight epoch</b><span>An interval between profiling updates or gate-state transitions during which scheduler weights are fixed — the unit the fairness proof reasons over.</span></div>
+      <div class="term-def"><b>Coverage threshold θ</b><span>Δ/(Cτ) — the share needed for one base request to complete within one gating-response horizon.</span></div>
+      <div class="term-def"><b>Micro-preemption</b><span>Repeated fragmentation of a feeder by streams of short, frequently-waking competitors.</span></div>
+      <div class="term-def"><b>Critical-Path Stretch (CPS)</b><span>Makespan ÷ measured critical-path sum; 1.0 is ideal.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Feeder / gate / gating slice</b><span>The CPU thread preparing a GPU launch; the point that CPU work is done; that CPU work itself.</span></div>
+      <div class="term-def"><b>EEVDF eligible time / virtual deadline</b><span>Per-request quantities determining when a request may run and in what order among eligible requests.</span></div>
+      <div class="term-def"><b>Lag</b><span>Deviation between actual and ideal proportional-share CPU service; EEVDF/AGX both bound it by ~one request size.</span></div>
+      <div class="term-def"><b>Jain's dominant-share index</b><span>Fairness statistic over max(CPU-share, GPU-share) per task; 1.0 = perfectly balanced.</span></div>
+      <div class="term-def"><b>DREAM</b><span>An application-level dynamic scheduler for multi-model ML workloads, evaluated here as complementary to AGX.</span></div>
+      <div class="term-def"><b>L4T / MPS</b><span>NVIDIA's embedded Linux distribution; Multi-Process Service for sharing one GPU context.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What AGX buys (vs vanilla EEVDF)</div>
+      <div class="viz-kicker">across robotic pipelines, fuzz DAGs, and CPU-pressure tests</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Makespan<small>reduction</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="20"><span>6.0–20.0%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">GPU utilization<small>gain</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="22.1"><span>+7.6–22.1%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">p99 latency<small>under pressure</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="38.5"><span>−38.5% (114.6→70.5ms)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Deadline misses<small>under pressure</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="33.8"><span>−33.8 pts (43.6%→9.8%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Vanilla EEVDF<small>no extension</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="16.7"><span>+16.7% slower (Table 1)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 40%</p>
+      <figcaption>Overhead stays under 2% of one CPU core (8.7–17.7 CPU-ms/s) at the default 250 ms window; CPU-only Jain's fairness and background-worker throughput remain ≥94–95.5% of vanilla EEVDF (Secs. 6.2, 6.4, 6.5).</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes</div>
+    <div class="read-item reveal"><h4>Paper facts</h4><p>All equations (1–7), theorems/lemmas (5.1–5.5, C.6–C.7), section numbers, and numeric results (makespan, GPU utilization, latency, overhead, ablation Table 1) are taken directly from Shirvani &amp; Liu, "Linux AGX" (SOSP '26).</p></div>
+    <div class="read-item reveal"><h4>My framing</h4><p>The relay-race, ambulance-siren, loud-kid, toll-discount, and weather-forecast analogies; the Worked-Example ① and ② numbers (feeder weight/boost calculations); the tiering/hotness-counter comparison; and the SVG diagrams are original illustrations built to match the paper's described behavior, not reproductions of paper figures. Worked Examples ③ and ④ use the paper's own measured numbers (Appendix B.1, Sec. 6.5).</p></div>
+
+    <div class="subhead">Related work (from the paper's §7)</div>
+    <div class="read-item reveal"><h4>PTask <span class="diff med">medium</span></h4><div class="meta">Rossbach et al. · SOSP · 2011</div><p>Dataflow OS abstraction managing GPUs as compute devices — an earlier accelerator-as-kernel-resource approach AGX avoids by staying inside the existing fair-class weight interface.</p></div>
+    <div class="read-item reveal"><h4>TimeGraph / Gdev <span class="diff med">medium</span></h4><div class="meta">Kato et al. · USENIX ATC · 2011/2012</div><p>Driver-level GPU scheduling and first-class GPU resource management in the OS — require driver cooperation that AGX's user-space-only observation avoids.</p></div>
+    <div class="read-item reveal"><h4>DREAM <span class="diff med">medium</span></h4><div class="meta">Kim et al. · ASPLOS · 2023</div><p>Application-level dynamic scheduler for multi-model ML workloads; evaluated directly alongside AGX in Sec. 6 as a complementary layer.</p></div>
+    <div class="read-item reveal"><h4>Tiresias / Gavel <span class="diff hard">hard</span></h4><div class="meta">Gu et al. NSDI '19 · Narayanan et al. OSDI '20</div><p>Cluster-level GPU job schedulers optimizing placement across many nodes — a different layer than AGX's node-local, single-GPU CPU-dispatch problem.</p></div>
+    <div class="read-item reveal"><h4>Linux sched_ext / eBPF scheduling <span class="diff med">medium</span></h4><div class="meta">Linux Kernel Docs · 2026</div><p>A possible alternative implementation path for workload-specific policies, noted as complementary rather than what AGX itself uses.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Shirvani &amp; Liu, "Linux AGX: An Adaptive GPU eXtension to Linux Fair Scheduling for Physical AI and Robotic Systems" (SOSP '26)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 40;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  // illustrative gate-delay curves (ms) indexed by K=1..15 competitors
+  var agxDelay   = [5,6,7,8,9,10,11,12,13,14,15.5,17,18.5,20,21.5];
+  var eevdfDelay = [6,9,12,15,18,21,24,27,30,33,36,39,42,45,48];
+  var capK = 8;
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=v+1;i++){ html += '<div class="way '+(i===1?'vpr':'eq')+'">'+(i===1?'F':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var av = agxDelay[v-1], ev = eevdfDelay[v-1], imp = ((ev-av)/ev*100);
+    document.getElementById('pVpr').textContent = av.toFixed(1)+' ms';
+    document.getElementById('pEq').textContent  = ev.toFixed(1)+' ms';
+    document.getElementById('pTot').textContent = imp.toFixed(0)+'%';
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v < capK){ verd.className = 'pverdict opt'; verd.textContent = '✓ Coverage regime — boost not clipped, delay is K-independent (Thm 5.5).'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Cap regime — boost saturates at 1+κ; AGX still bounds coalescing, but delay creeps up (Remark 5.6).'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(4);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#6C5CE7">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
