@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<!-- GAZE field guide — Rearchitecting Log-Structured Filesystem GC for ZNS (Kim, Yoo, Yoo, Won — SOSP'26).
+     Format: interactive field guide, house style. Semantic colors:
+     terracotta = legacy F2FS / blocking baseline · honey = CPU-bound bottleneck (the paper's core finding)
+     indigo = GAZE's machinery (pipeline / page pool / selective blocking) · teal = I/O-bound / device-side work. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cleaning a Zone Without Blocking Everyone — GAZE, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D9862B; --honey-deep:#B36A17; --honey-soft:#FBE6C6;
+  --dram:#1F7A7A; --dram-soft:#DCEEEA;      /* teal   = I/O-bound / device-side work        */
+  --ltram:#5B5FA6; --ltram-soft:#E7E7F5;    /* indigo = GAZE's machinery                    */
+  --optane:#B8472F; --optane-soft:#F6DED6;  /* terracotta = legacy F2FS / blocking baseline */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,122,122,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,95,166,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,134,43,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(91,95,166,.05) 31px,rgba(91,95,166,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,134,43,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#164949;font-size:.96rem}
+.primer .ready b{color:#0f3838}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#164949}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#34397e}
+.chip-lru{background:var(--optane-soft);color:#7a2f1c}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9DED8;color:#164949}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b0a2;color:#7a2f1c}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9dcac4;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bdbfe0;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b0a2;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dadcf1}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#7276c2,#5B5FA6)}
+.bf-hi{background:linear-gradient(90deg,#2b9494,#1F7A7A)}
+.bf-lru{background:linear-gradient(90deg,#cf6650,#B8472F)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#164949}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#7a2f1c}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#d9862b} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8188d6}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#164949}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#7a2f1c}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,122,122,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,95,166,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,134,43,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Cleaning a zone <span class="swash">in parallel</span>, not one block <span class="swash" style="color:var(--optane)">at a time</span></h1>
+    <p class="lede">Zoned SSDs moved garbage collection off the device and onto the filesystem — at roughly 1000× the old scale. GAZE shows the decades-old GC code was never built for that jump, and rebuilds it around three ideas: pipeline the CPU work, stop borrowing the kernel's page cache, and stop blocking writes that don't actually need free space yet.</p>
+    <div class="hero-meta">
+      <span>📄 "GAZE" · Kim, Yoo, Yoo, Won (KAIST)</span>
+      <span>🎓 Some filesystem/kernel basics assumed — primers cover them</span>
+      <span>⏱ ~20 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧹</div>
+      <p>Reclaim a zone the way you'd clean a shared room: don't stand in the doorway <span class="wo">blocking everyone</span> while you tidy — <span class="ro">pipeline the work</span>, bring your own supplies, and only turn people away when there's truly nowhere left to put them.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then eight ideas the paper assumes</h2>
+      <p class="sub">Acronyms first, then primers — collapsed, tap any to open. Read in order the first time, or jump to whatever's unfamiliar.</p>
+    </div>
+
+    <div class="card">
+      <h3>Quick glossary</h3>
+      <div class="gloss">
+        <div class="term-def"><b>ZNS</b><span>Zoned Namespace — the NVMe interface that makes the host write each zone append-only, sequentially.</span></div>
+        <div class="term-def"><b>Zone</b><span>A fixed-size, append-only region of the SSD (32 MB – several GB) with a single write pointer.</span></div>
+        <div class="term-def"><b>GC</b><span>Garbage Collection — migrating still-valid data out of a region before it's erased/reset.</span></div>
+        <div class="term-def"><b>F2FS</b><span>Flash-Friendly File System — the log-structured Linux filesystem GAZE is built on.</span></div>
+        <div class="term-def"><b>SSA / NAT</b><span>Segment Summary Area / Node Address Table — F2FS's reverse-mapping and address-translation metadata, used to find and relocate valid blocks.</span></div>
+        <div class="term-def"><b>LBA</b><span>Logical Block Address — the address a filesystem uses to name a disk block.</span></div>
+        <div class="term-def"><b>KIOPS / IOPS</b><span>(Thousand) I/O Operations Per Second — the throughput metric used throughout the evaluation.</span></div>
+        <div class="term-def"><b>ENOSPC</b><span>The "no space left on device" error a write() fails with when the filesystem can't find free blocks.</span></div>
+        <div class="term-def"><b>YCSB / TPC-C</b><span>Yahoo! Cloud Serving Benchmark / a standard OLTP transaction benchmark — used as macrobenchmarks.</span></div>
+        <div class="term-def"><b>xarray</b><span>The radix-tree-like structure Linux's page cache uses to map file offsets to pages, O(log n) per lookup.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--optane)"></i> legacy F2FS / blocking baseline</span>
+      <span><i style="background:var(--honey-deep)"></i> CPU-bound bottleneck</span>
+      <span><i style="background:var(--ltram)"></i> GAZE's machinery</span>
+      <span><i style="background:var(--dram)"></i> I/O-bound / device-side work</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Zones and the append-only constraint<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A zoned SSD (ZNS) splits storage into <b>zones</b>. Inside a zone you may only write at the current <b>write pointer</b> — sequentially, never in place. This is a deliberate trade: the device gives up fine-grained random writes, and in exchange gets coarse zone-granularity address mapping and no internal garbage collection of its own.</p>
+          <p>To empty a zone, the host issues <code>reset</code>. If the zone still holds live data, the host must first copy that data elsewhere — that copying is exactly the "filesystem-level garbage collection" this paper is about.</p>
+          <div class="ready"><b>Now you're ready:</b> GC used to be the SSD's private problem. ZNS hands it to the filesystem — and zones are gigabytes, not megabytes.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Log-structured filesystems and segment cleaning<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>log-structured filesystem (LFS)</b> never overwrites in place — it always appends new writes to the end of a log. Old versions of a block become <b>invalid</b> (superseded) but their space isn't reclaimed until a cleaning process, traditionally called <b>segment cleaning</b>, migrates the still-valid blocks out and frees the rest.</p>
+          <p>Because LFS already writes sequentially, it was the obvious filesystem to adapt to ZNS: just make the cleaning unit match the zone size.</p>
+          <div class="ready"><b>Now you're ready:</b> GAZE isn't a new filesystem — it's a rearchitected garbage collector for the segment-cleaning step of an LFS (F2FS), scaled up to zone size.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>F2FS's units: segments, sections, and the metadata that finds valid blocks<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>F2FS groups blocks into 2 MB <b>segments</b>, and segments into <b>sections</b> — the actual unit of garbage collection. To find which blocks in a victim section are still valid, F2FS consults a <b>block bitmap</b>, a reverse mapping (<b>SSA</b>), and the <b>NAT</b> (address table) to check and update ownership.</p>
+          <div class="ready"><b>Now you're ready:</b> every valid block GAZE migrates still goes through this same bitmap/SSA/NAT bookkeeping — that per-block bookkeeping is exactly the CPU work the paper measures.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>How F2FS migrates a valid block today (read phase, write phase)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>F2FS's GC has two phases. In the <b>read phase</b>, for each valid block it: checks validity, allocates a physical page (kernel page allocator), inserts that page into the page cache, then issues a read. In the <b>write phase</b>, it: re-checks validity, waits for the read to finish, allocates a new disk location, and issues a write. Both phases run in one thread, one segment at a time.</p>
+          <div class="ready"><b>Now you're ready:</b> every one of those steps — check, allocate, insert, wait — is a candidate for GAZE's pipeline or page pool to speed up.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Per-CPU page lists, the buddy allocator, and the page cache<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To get a free physical page, Linux first tries a <b>per-CPU page list</b>; if that's empty it falls back to the <b>buddy allocator</b>, which splits/merges power-of-two page groups. A freshly allocated page is zero-filled (to avoid leaking old data) and inserted into the <b>page cache</b>, indexed per-file by an <b>xarray</b>.</p>
+          <p>All of this is general-purpose machinery, built to serve arbitrary-sized, arbitrary-lifetime requests safely and efficiently — at a real CPU cost per call.</p>
+          <div class="ready"><b>Now you're ready:</b> GC doesn't need any of this generality — the block count is known in advance, and the data is never re-read. That's the entire argument for the Garbage Collection Page Pool.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Buffered, direct, and synchronous writes — and delayed allocation<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>direct write</b> (<code>O_DIRECT</code>) or <b>synchronous write</b> (<code>O_SYNC</code>) needs a real disk block right away. A <b>buffered write</b> just copies data into the page cache and returns — the filesystem uses <b>delayed allocation</b> to pick the actual disk block later, at writeback time, not at write() time.</p>
+          <div class="ready"><b>Now you're ready:</b> if buffered writes don't need free space immediately, why does today's F2FS make them wait for GC anyway? That contradiction is the whole motivation for Selective Blocking.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Pipelining and producer-consumer threads<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>pipeline</b> splits a task into stages, each run by its own thread, connected by bounded queues in a <b>producer-consumer</b> relationship. If one stage is CPU-bound and the next is I/O-bound, running them as separate concurrent stages lets the CPU keep working while I/O for earlier items is still in flight — instead of one thread alternating between the two and leaving each resource idle in turn.</p>
+          <div class="ready"><b>Now you're ready:</b> this is precisely GAZE's Pipelined Garbage Collection — four stages, four threads, overlapping CPU work with disk I/O.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Dirty pages, writeback, and the kernel's soft/hard limits<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Buffered writes accumulate as <b>dirty pages</b> in memory until a writeback thread flushes them to disk. Linux throttles this with two thresholds: a <b>soft limit</b> (default 10% of RAM) that wakes the writeback thread, and a <b>hard limit</b> (default 20%) that blocks the writing application outright.</p>
+          <div class="ready"><b>Now you're ready:</b> these limits are the real safety net for buffered writes — which is exactly why it's safe to let them proceed during GC instead of blocking them pre-emptively.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>GAZE in a nutshell</h2>
+      <p class="sub">The mismatch, the measurement that exposed it, and the three fixes.</p>
+    </div>
+    <div class="prose">
+      <p>Log-structured filesystems were designed to reclaim <b>megabytes</b> at a time — F2FS segments are 2 MB, and classic LFS reclamation units range from 64 KB to 8 MB. Zoned SSD zones are <b>32 MB to several gigabytes</b>. Reclaiming a 1 GB zone at 40% utilization means repeating F2FS's per-block migration logic roughly <b>100,000 times</b> — and in the paper's measurement, that 1 GB zone takes <b>283× longer</b> than reclaiming one 2 MB segment (1.7 sec vs. 6.0 msec). That's not a superlinear blowup — it roughly tracks the ~500× jump in size — but because none of that per-block CPU work gets any cheaper as the unit grows, it adds up to over a second and a half of stalled latency at zone scale.</p>
+      <p>The authors trace this to three design habits baked into every log-structured filesystem, each reasonable at megabyte scale and each a bottleneck at gigabyte scale: <b>serial, single-threaded</b> cleaning; borrowing the <b>kernel's general-purpose page cache and allocator</b> to hold victim blocks; and <b>blindly blocking every write</b> — buffered, direct, or synchronous — while GC runs.</p>
+      <p><strong>GAZE's fix is three matching techniques.</strong> <span class="mem-chip chip-ucp">Pipelined Garbage Collection</span> restructures GC into a four-stage pipeline (preread → read → prewrite → write) so CPU-bound and I/O-bound stages overlap instead of alternating. <span class="mem-chip chip-ucp">Garbage Collection Page Pool</span> pre-allocates its own pages and, for GC's own bounded migration path, sidesteps the general page cache in favor of simple O(1) arrays — bypassing the buddy allocator and xarray for that path, while still checking and pinning pages that are genuinely present in the real page cache. <span class="mem-chip chip-ucp">Selective Blocking</span> lets buffered writes proceed during GC — because a log-structured filesystem's blocks are really <b>valid / invalid / free</b>, not just <b>valid / free</b>, and a buffered write doesn't need a free block the moment it's issued.</p>
+      <p><strong>The payoff:</strong> GAZE cuts GC latency to about <b>1/3</b> of F2FS's, and beats F2FS-with-ZNS, ZNS+, and P-GC by up to <b>3×</b>, ScaleLFS by up to <b>4.4×</b> (FIO), and IPLFS by up to <b>1.9×</b> (YCSB-A) — with no change to the on-disk layout and no special hardware.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🧹 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Zone-scale GC is <b>CPU-bound</b>, not I/O-bound: 73% of read-phase and 84% of write-phase latency is CPU, not disk time.</li>
+        <li><b>Pipelined GC</b> splits the four steps into four concurrent threads, overlapping CPU stages with I/O stages — 51% latency reduction alone.</li>
+        <li><b>GC Page Pool</b> bypasses the kernel's page allocator and general page cache for GC's own bounded migration path, using pre-owned pages and O(1) arrays instead — 25% latency reduction alone.</li>
+        <li><b>Selective Blocking</b> exploits the ternary (valid/invalid/free) block model: buffered writes don't need free space at write() time, so they needn't wait for GC.</li>
+        <li>Combined: GC latency drops to about <b>1/3</b> of F2FS's, and FIO throughput improves by <b>95%</b> during GC.</li>
+        <li>No on-disk layout changes, no specialized hardware, no non-standard device interface.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Everyone optimized the wrong bottleneck</div>
+      <div class="viz-kicker">where GC's latency actually goes — read phase and write phase (Fig. 5)</div>
+      <div class="legend">
+        <span><i style="background:var(--honey-deep)"></i> CPU-bound work</span>
+        <span><i style="background:var(--dram)"></i> storage I/O</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 260" role="img" aria-label="Read phase and write phase latency breakdown, CPU vs I/O">
+        <text x="20" y="30" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">Read phase — 73% CPU / 27% I/O</text>
+        <rect x="20" y="42" width="720" height="46" rx="8" fill="#F3EADA" stroke="#D8C8AC"/>
+        <rect x="20" y="42" width="288" height="46" fill="#D9862B"/>
+        <rect x="308" y="42" width="216" height="46" fill="#B36A17"/>
+        <rect x="524" y="42" width="41.6" height="46" fill="#6e4a09"/>
+        <rect x="565.6" y="42" width="194.4" height="46" fill="#1F7A7A"/>
+        <text x="164" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">ID valid blocks 40%</text>
+        <text x="416" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">alloc page 25%</text>
+        <text x="663" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">disk read 27%</text>
+        <text x="20" y="120" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">Write phase — 84% CPU / 16% I/O</text>
+        <rect x="20" y="132" width="720" height="46" rx="8" fill="#F3EADA" stroke="#D8C8AC"/>
+        <rect x="20" y="132" width="151.2" height="46" fill="#D9862B"/>
+        <rect x="171.2" y="132" width="216" height="46" fill="#B36A17"/>
+        <rect x="387.2" y="132" width="237.6" height="46" fill="#6e4a09"/>
+        <rect x="624.8" y="132" width="115.2" height="46" fill="#1F7A7A"/>
+        <text x="96" y="160" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#fff">check 21%</text>
+        <text x="279" y="160" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#fff">alloc addr 30%</text>
+        <text x="506" y="160" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#fff">fs logic 33%</text>
+        <text x="682" y="160" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#fff">disk write 16%</text>
+        <text x="20" y="210" font-family="JetBrains Mono" font-size="12" fill="#9a3a22">1.7 sec to reclaim 1 GB zone (40% util.) — 283× a 2 MB segment's 6.0 msec</text>
+        <text x="20" y="234" font-family="JetBrains Mono" font-size="12" fill="#6E6456">Decades of LFS work optimized read-ahead and async writes — the I/O sliver. GAZE targets the amber majority.</text>
+      </svg>
+      <figcaption><b>The paper's central empirical finding:</b> at zone scale, garbage collection is dominated by CPU work — identifying valid blocks, allocating pages, filesystem bookkeeping — not by disk time. GAZE's three techniques all attack that amber majority. (Paper, Fig. 5)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the three fixes connect</div>
+      <div class="viz-kicker">problem → three matching techniques → shifted bottleneck</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Serial GC, page-cache-oriented allocation, blanket write blocking — all sized for megabytes, not gigabytes</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Pipelined GC</div><div class="nd">4 stages, 4 threads: CPU-bound and I/O-bound work overlap, intra- and inter-segment</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">GC Page Pool</div><div class="nd">Pre-owned pages + O(1) arrays replace buddy allocator + xarray</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Selective Blocking</div><div class="nd">Ternary (valid/invalid/free) model lets buffered writes skip the free-space check</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">Bottleneck shifts back to storage I/O, where flash bandwidth can finally be exploited</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about GAZE</h2>
+      <p class="sub">Read in any order. Each ends with an honest note on where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="34" width="24" height="22" rx="3" fill="#F6DED6" stroke="#B8472F" stroke-width="2"/>
+          <rect x="42" y="34" width="24" height="22" rx="3" fill="#FBE6C6" stroke="#B36A17" stroke-width="2"/>
+          <rect x="70" y="34" width="24" height="22" rx="3" fill="#FBE6C6" stroke="#B36A17" stroke-width="2"/>
+          <rect x="98" y="34" width="24" height="22" rx="3" fill="#DCEEEA" stroke="#1F7A7A" stroke-width="2"/>
+          <path d="M20 60 h8 M48 60 h8 M76 60 h8 M104 60 h8" stroke="#5B5FA6" stroke-width="2" stroke-linecap="round"/>
+          <text x="70" y="78" text-anchor="middle" font-family="monospace" font-size="9" fill="#5B5FA6">4 stages, 4 hands</text>
+        </svg></div>
+        <span class="term">Core idea · Pipelined Garbage Collection</span>
+        <h3>An assembly line, not one cook</h3>
+        <p>One cook checking, plating, and serving each dish in sequence spends half their time waiting on the oven. Four cooks — one per step — keep working continuously, each handing off as soon as their step is done. GAZE's preread/read/prewrite/write stages run the same way, as four threads instead of one, so CPU work on block N+1 overlaps with disk I/O on block N.</p>
+        <div class="breaks"><b>Where it breaks:</b> GAZE deliberately caps this at four stages, not more — more cooks (cores) means more interference with the foreground application, so the pipeline is sized for minimal footprint, not maximal parallelism.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="24" width="46" height="52" rx="4" fill="#E7E7F5" stroke="#5B5FA6" stroke-width="2.5"/>
+          <rect x="28" y="34" width="10" height="10" fill="#5B5FA6"/><rect x="42" y="34" width="10" height="10" fill="#5B5FA6"/>
+          <rect x="28" y="48" width="10" height="10" fill="#5B5FA6"/><rect x="42" y="48" width="10" height="10" fill="#5B5FA6"/>
+          <path d="M78 34 q10 -10 20 0 M78 34 q10 10 20 0" stroke="#B8472F" stroke-width="2" fill="none"/>
+          <circle cx="88" cy="56" r="10" fill="none" stroke="#B8472F" stroke-width="2"/>
+          <path d="M95 63 l8 8" stroke="#B8472F" stroke-width="2.5" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">Core idea · Garbage Collection Page Pool</span>
+        <h3>Your own supply closet, not the general warehouse</h3>
+        <p>Need a bucket and mop every day? Keep them in a closet by the door instead of filing a requisition with the warehouse each time — no waiting for staff to pick, log, and hand it back. GAZE's page pool pre-owns exactly as many pages as a partition needs and tracks them with a plain array, skipping the buddy allocator's search-and-zero-fill and the page cache's tree lookup entirely.</p>
+        <div class="breaks"><b>Where it breaks:</b> the closet only holds so much — sized to one partition (32 MB). If GAZE tried to pool an entire gigabyte zone at once, the "closet" itself would become the memory-pressure problem it was built to avoid.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="18" rx="4" fill="#F6DED6" stroke="#B8472F" stroke-width="2"/>
+          <text x="70" y="43" text-anchor="middle" font-family="monospace" font-size="9" fill="#7a2f1c">everyone waits</text>
+          <rect x="20" y="58" width="42" height="18" rx="4" fill="#DCEEEA" stroke="#1F7A7A" stroke-width="2"/>
+          <text x="41" y="71" text-anchor="middle" font-family="monospace" font-size="8" fill="#164949">buffered</text>
+          <rect x="70" y="58" width="50" height="18" rx="4" fill="#F6DED6" stroke="#B8472F" stroke-width="2"/>
+          <text x="95" y="71" text-anchor="middle" font-family="monospace" font-size="8" fill="#7a2f1c">direct/sync</text>
+        </svg></div>
+        <span class="term">Core idea · Selective Blocking</span>
+        <h3>Order now, pay when the food arrives</h3>
+        <p>A diner who says "just put my order in, I'll settle up when the food's ready" doesn't need a free table reserved this instant. One who demands a table right now, immediately, does. Legacy log-structured filesystems treat both the same — blocked writes stem from a binary valid/free model. GAZE gives the "settle later" (buffered) write its due: with a ternary valid/invalid/free model, invalid blocks that GC will soon free count too, so a buffered write can proceed and only truly urgent (direct/sync) writes wait.</p>
+        <div class="breaks"><b>Where it breaks:</b> the restaurant isn't infinite — the kernel's dirty-page hard limit (20% of RAM) still eventually says "kitchen's full, please wait," so Selective Blocking defers the wait, it doesn't abolish it.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 q30 -34 50 -34 q20 0 50 34" stroke="#5B5FA6" stroke-width="2.5" fill="none"/>
+          <circle cx="30" cy="66" r="5" fill="#1F7A7A"/><circle cx="55" cy="42" r="5" fill="#1F7A7A"/>
+          <circle cx="85" cy="42" r="5" fill="#5B5FA6"/><circle cx="110" cy="66" r="5" fill="#5B5FA6"/>
+          <path d="M35 63 l16 -18 M60 40 l20 0 M90 44 l16 18" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="3 2"/>
+        </svg></div>
+        <span class="term">Design detail · Intra- and inter-segment overlap</span>
+        <h3>A relay where the baton hands off mid-stride</h3>
+        <p>A strict relay waits for the full baton pass before the next runner moves. GAZE's writer starts writing block 1 the moment the reader has <i>dispatched</i> its read — not waited for it to complete — and the next segment's prereader starts scanning while the current segment's writer is still finishing up. It's less a clean handoff, more a bucket brigade in motion.</p>
+        <div class="breaks"><b>Where it breaks:</b> this overlap is exactly why the pipelined prewrite and write stages individually get <i>longer</i> in isolation (they now absorb wait time the old serial code hid) — the total drops, but per-stage numbers alone can be misread as a regression.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="18" width="46" height="60" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3"/>
+          <path d="M32 30 q11 10 22 0 M32 46 q11 10 22 0 M32 62 q11 10 22 0" stroke="#9A8E7C" stroke-width="1.5" fill="none"/>
+          <rect x="80" y="18" width="46" height="60" rx="4" fill="#E7E7F5" stroke="#5B5FA6" stroke-width="2.5"/>
+          <rect x="88" y="26" width="10" height="10" fill="#5B5FA6"/><rect x="102" y="26" width="10" height="10" fill="#5B5FA6"/>
+          <rect x="88" y="42" width="10" height="10" fill="#5B5FA6"/><rect x="102" y="42" width="10" height="10" fill="#5B5FA6"/>
+          <rect x="88" y="58" width="10" height="10" fill="#5B5FA6"/><rect x="102" y="58" width="10" height="10" fill="#5B5FA6"/>
+        </svg></div>
+        <span class="term">Why not just reuse the page cache</span>
+        <h3>A card catalog vs. a numbered coat check</h3>
+        <p>A library's card catalog (the xarray) is built to find any book, by any key, in a collection that grows and shrinks unpredictably — worth its O(log n) search cost. A coat check simply hands you numbered ticket #14 and you fetch coat #14 directly — O(1), but only because the domain is small and bounded in advance. GAZE's valid/pending page maps are the coat check: they work because a partition's block count is known the moment GC starts.</p>
+        <div class="breaks"><b>Where it breaks:</b> a general-purpose file's page cache can't assume a bounded, pre-sized domain — which is exactly why GAZE doesn't replace the page cache everywhere, only inside GC's own bounded scope.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="26" fill="none" stroke="#B8472F" stroke-width="2.5"/>
+          <path d="M45 48 l0 -20 M45 48 l14 8" stroke="#B8472F" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="45" cy="48" r="3" fill="#B8472F"/>
+          <path d="M85 30 h35 M85 48 h35 M85 66 h20" stroke="#5B5FA6" stroke-width="2" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">The paper's core empirical move</span>
+        <h3>Patching the tire that isn't flat</h3>
+        <p>Decades of LFS work polished read-ahead and asynchronous writes — the I/O side of GC. That's fixing the tire that goes flat slowly. But at zone scale, the paper measures the CPU side — identifying blocks, allocating pages, bookkeeping — consuming 73–84% of GC's time. That's the tire that's actually flat, and nobody had been pumping it.</p>
+        <div class="breaks"><b>Where it breaks:</b> which tire is flat depends on the vehicle. On the mobile platform (slower ZUFS storage, less RAM), GAZE's own results show the bottleneck partly shifts back toward I/O — the CPU fix still helps, just less dramatically.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How GAZE actually works</h2>
+      <p class="sub">Section by section, with the paper's key mechanisms rebuilt as diagrams.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Pipelined Garbage Collection</h3>
+      <p>GAZE splits GC into four stages, each its own thread, connected by producer-consumer bounded buffers: <b>preread</b> (scan the block bitmap, check validity), <b>read</b> (allocate a page, issue read I/O), <b>prewrite</b> (re-check validity, wait for the read to land), <b>write</b> (allocate a new disk block, issue write I/O). Preread and prewrite are CPU-bound; read and write are I/O-bound — separating them lets CPU work on later blocks overlap with disk I/O on earlier ones.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Serial GC vs. Pipelined GC</div>
+      <div class="viz-kicker">same four steps, run one-thread-serial vs. four-threads-concurrent (Fig. 7)</div>
+      <div class="legend">
+        <span><i style="background:var(--honey-deep)"></i> CPU-bound stage</span>
+        <span><i style="background:var(--dram)"></i> I/O-bound stage</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 230" role="img" aria-label="Serial vs pipelined garbage collection timeline">
+        <text x="20" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Serial GC (F2FS) — one thread, segments back to back</text>
+        <g>
+          <rect x="20" y="34" width="60" height="26" fill="#B36A17"/><rect x="80" y="34" width="90" height="26" fill="#1F7A7A"/>
+          <rect x="170" y="34" width="40" height="26" fill="#B36A17"/><rect x="210" y="34" width="90" height="26" fill="#1F7A7A"/>
+          <rect x="310" y="34" width="60" height="26" fill="#B36A17" opacity=".55"/><rect x="370" y="34" width="90" height="26" fill="#1F7A7A" opacity=".55"/>
+          <rect x="460" y="34" width="40" height="26" fill="#B36A17" opacity=".55"/><rect x="500" y="34" width="90" height="26" fill="#1F7A7A" opacity=".55"/>
+          <text x="45" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#fff">pre</text>
+          <text x="120" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#fff">read</text>
+          <text x="185" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#fff">pre</text>
+          <text x="250" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#fff">write</text>
+          <text x="605" y="52" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">seg 0 → seg 1, one at a time</text>
+        </g>
+        <text x="20" y="94" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">Flash chips sit idle during CPU stages — busy only during read/write stages.</text>
+
+        <text x="20" y="130" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Pipelined GC (GAZE) — four threads, overlapping</text>
+        <g>
+          <rect x="20" y="140" width="60" height="16" fill="#B36A17"/>
+          <rect x="80" y="158" width="90" height="16" fill="#1F7A7A"/>
+          <rect x="90" y="176" width="40" height="16" fill="#B36A17"/>
+          <rect x="130" y="194" width="90" height="16" fill="#1F7A7A"/>
+          <rect x="80" y="140" width="60" height="16" fill="#B36A17" opacity=".8"/>
+          <rect x="170" y="158" width="90" height="16" fill="#1F7A7A" opacity=".8"/>
+          <rect x="220" y="140" width="60" height="16" fill="#B36A17" opacity=".6"/>
+          <rect x="260" y="158" width="90" height="16" fill="#1F7A7A" opacity=".6"/>
+          <text x="20" y="220" font-family="JetBrains Mono" font-size="10" fill="#164949">Total span ≈ 1/3 shorter — CPU and I/O stages run at the same time, on different blocks.</text>
+        </g>
+        <text x="590" y="140" font-family="JetBrains Mono" font-size="9" fill="#6E6456">prereader</text>
+        <text x="600" y="158" font-family="JetBrains Mono" font-size="9" fill="#6E6456">reader</text>
+        <text x="590" y="176" font-family="JetBrains Mono" font-size="9" fill="#6E6456">prewriter</text>
+        <text x="605" y="194" font-family="JetBrains Mono" font-size="9" fill="#6E6456">writer</text>
+      </svg>
+      <figcaption><b>Read it as:</b> in serial GC, the flash chips go idle every time the CPU is checking validity or allocating pages. In pipelined GC, four threads keep both CPU and chips busy simultaneously — measured as a 51% GC latency reduction on its own. (Paper, Fig. 7)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <p>Pipelining needs a bounded buffer between read and write. To keep that buffer's size manageable — instead of gigabytes — GAZE reclaims a zone in fixed-size <b>partitions</b> (32 MB), one partition at a time in serial fashion, sized just large enough to keep the pipeline full without excess memory pressure (Table 1, worked out in the next tab).</p>
+
+      <h3>2 · Garbage Collection Page Pool</h3>
+      <p>Instead of routing GC's victim-block migration through the kernel's per-CPU page list, buddy allocator, and general page cache, GAZE pre-allocates a fixed <b>free page pool</b> at mount time and tracks victim blocks with two plain arrays — a <b>valid page map</b> (blocks in the victim partition) and a <b>pending page map</b> (blocks being written to the destination) — plus a <b>cache bitmap</b> marking blocks that happen to already be in the regular page cache, which GAZE still checks and pins rather than bypassing. Both maps give O(1) lookup, versus the page cache's O(log n) xarray traversal.</p>
+    </div>
+
+    <div class="flow-row">
+      <div class="node n-ucp"><div class="nt">Free Page Pool</div><div class="nd">Pre-allocated pages, no zero-fill, no buddy allocator — a simple linked list</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="node n-ucp"><div class="nt">Valid Page Map</div><div class="nd">O(1) array: which page holds each block in the victim partition</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="node n-ucp"><div class="nt">Pending Page Map</div><div class="nd">O(1) array: blocks in flight to their new disk location</div></div>
+    </div>
+    <div class="callout why" style="margin-top:14px"><span class="ic">💡</span><div><b>Correctness detail — shadow copies.</b> If a user <code>read()</code>/<code>write()</code> misses the page cache while a block sits in the Page Pool, GAZE copies it into a real page-cache page (a "shadow copy") before servicing the request — so the pool never has to impersonate the page cache's full semantics, only lend it a page on demand.</div></div>
+
+    <div class="prose">
+      <h3>3 · Selective Blocking</h3>
+      <p>In-place-update filesystems have two block states: valid or free — so every write() reasonably checks for free space up front. Log-structured filesystems actually have three: valid, invalid, free. An <b>invalid</b> block isn't free yet, but GC will make it free soon. GAZE lets a <b>buffered</b> write count on that: it reserves space against free blocks plus soon-to-be-freed invalid blocks, copies data into the page cache, and returns — without pre-emptively triggering or waiting on GC. <b>Direct</b> and <b>synchronous</b> writes, which need a real block immediately, still wait.</p>
+    </div>
+
+    <div class="flow-row">
+      <div class="node n-lru"><div class="nt">Legacy blocking</div><div class="nd">Buffered, direct, and sync writes all wait for GC — inherited from the binary valid/free model</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="node n-hi"><div class="nt">Selective Blocking</div><div class="nd">Only direct/sync writes wait; buffered writes proceed, capped by the kernel's existing dirty-page limits</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the paper's own numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces through the evaluation section, arithmetic shown.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① What the Page Pool actually saves (Fig. 12)</h3>
+      <p style="color:var(--ink-soft)">Vanilla F2FS vs. F2FS with the GC Page Pool, same FIO workload:</p>
+      <ol class="seq">
+        <li><b>Page allocation:</b> 0.21 sec → 0.05 sec. Reduction = (0.21 − 0.05)/0.21 = <b>76%</b> — bypassing the per-CPU list and buddy allocator.</li>
+        <li><b>Page insertion:</b> 0.073 sec → 0.005 sec. Reduction = (0.073 − 0.005)/0.073 ≈ <b>93%</b> — an O(1) array write instead of an xarray traversal.</li>
+        <li><b>Read-phase total:</b> 0.97 sec → 0.66 sec. Reduction = (0.97 − 0.66)/0.97 ≈ <b>32%</b>, matching the paper's headline claim exactly.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🧹</span><div><b>Insight:</b> the two costs eliminated (alloc + insert) are exactly the kernel-service overheads the paper flagged as unnecessary — none of it involves the disk.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Why 32 MB partitions (Table 1)</h3>
+      <p style="color:var(--ink-soft)">GC latency by partition size: 4→1.07s, 8→0.92s, 16→0.85s, 32→0.77s, 64→0.75s, 128→0.73s, 256→0.73s.</p>
+      <ol class="seq">
+        <li><b>Total possible gain</b> from largest buffer: 1.07 − 0.73 = <b>0.34 sec</b> (4 MB down to the 256 MB plateau).</li>
+        <li><b>Gain achieved at 32 MB:</b> 1.07 − 0.77 = 0.30 sec = <b>88% of the total possible gain</b>.</li>
+        <li><b>Gain left on the table</b> going from 32 MB all the way to 256 MB: only 0.77 − 0.73 = 0.04 sec (a further 5%) — for <b>8× the buffer memory</b>.</li>
+        <li><b>Conclusion:</b> 32 MB captures nearly all the benefit of a large bounded buffer at a fraction of the memory cost — exactly the tradeoff the paper picks.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is a diminishing-returns curve: the pipeline just needs enough buffered blocks to never starve, not the whole zone in flight at once.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Stacking the two techniques (Fig. 14, 15)</h3>
+      <p style="color:var(--ink-soft)">GC latency: Vanilla 1.70s, +Page Pool 1.27s, +Pipeline 0.83s, +Both 0.58s. FIO throughput: Vanilla 83.0 KIOPS → combined 162.0 KIOPS.</p>
+      <ol class="seq">
+        <li><b>Page Pool alone:</b> (1.70 − 1.27)/1.70 = <b>25%</b> latency reduction.</li>
+        <li><b>Pipeline alone:</b> (1.70 − 0.83)/1.70 = <b>51%</b> latency reduction.</li>
+        <li><b>Combined:</b> (1.70 − 0.58)/1.70 ≈ <b>66%</b> reduction — i.e., 0.58/1.70 ≈ <b>1/3</b> of the baseline, matching the abstract's headline number.</li>
+        <li><b>Throughput:</b> (162.0 − 83.0)/83.0 ≈ <b>95%</b> improvement — and standard deviation drops from 66.2 to 17.0 KIOPS, a <b>74%</b> reduction in variability, once Selective Blocking is added on top.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🧹</span><div><b>Insight:</b> neither technique alone prevents the dirty-page buffer from filling (blocking still happens eventually); only combining faster GC with Selective Blocking keeps the application from stalling at all.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Why the mobile gains are smaller (Fig. 20)</h3>
+      <p style="color:var(--ink-soft)">On SM8750 mobile storage: throughput 56.02 → 68.38 KIOPS; GC-time latency 3.10 → 0.42 sec.</p>
+      <ol class="seq">
+        <li><b>Throughput gain:</b> (68.38 − 56.02)/56.02 ≈ <b>22%</b> — much smaller than the server's 95%.</li>
+        <li><b>Latency reduction:</b> (3.10 − 0.42)/3.10 ≈ <b>87%</b> — actually a larger relative cut than the server's 66%.</li>
+        <li><b>Why the mismatch:</b> the mobile platform has only 12 GB RAM (vs. 64 GB on the server), so Selective Blocking's dirty-page buffer fills sooner; and Zoned UFS has lower bandwidth than the server's NVMe, shifting the bottleneck partly back toward I/O — right where GAZE's CPU-focused fixes help least.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div><b>A tiering parallel:</b> this is the same shape of tradeoff as reducing hot/cold-classification or migration-bookkeeping overhead in a DRAM/NVM tiering system — the payoff is largest when the interconnect (here, NVMe; there, CXL/DRAM bandwidth) is fast enough that software overhead, not raw transfer time, is the bottleneck. Slow the device down and the same optimization has less room to matter. <em>(This connection is our framing, not the paper's.)</em></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one names the misconception it's checking.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Why doesn't simply making F2FS's segment size equal to the zone size (without any other changes) solve the zone-scale GC problem?</div>
+      <details><summary>Show answer</summary><div class="ans">Segment size determines the reclamation <i>unit</i>, but every valid block within that unit still runs the same per-block software path — bitmap check, page allocation, xarray insertion — one at a time, on one thread. Scaling the unit up ~500× in size doesn't come for free: reclaiming the 1 GB zone still takes 283× longer than the 2 MB segment, because that per-block CPU work has to run for every one of the ~100,000 valid blocks in the zone instead of a couple hundred. The point isn't that latency scales worse than the size ratio — it's that CPU-bound, per-block overhead is what turns "more data" directly into "more wall-clock time," and at zone scale that's over a second and a half of stalling.<span class="mis">Misconception: that reclamation unit size is "just a number" and per-block cost is negligible. Because the per-block work dominates, latency tracks the block count almost one-for-one — there's no shortcut from simply calling the unit "bigger."</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">The paper notes that in the baseline, "the write phase begins once read requests have been dispatched rather than completed" — so read and write already overlap somewhat. Why does Pipelined GC still cut latency by 51%?</div>
+      <details><summary>Show answer</summary><div class="ans">That overlap is confined to a <i>single</i> segment, and even there it's partial — the write phase for a segment can't start until <i>every</i> valid block's read has been dispatched, and segments themselves are still reclaimed strictly one after another. Pipelined GC overlaps at both intra-segment (writer starts on the very first loaded block) and inter-segment (next segment's preread starts before the current segment fully finishes) granularity, across four distinct threads instead of one thread's brief overlap window.<span class="mis">Misconception: "some overlap already exists, so there's nothing left to gain." The existing overlap is narrow and single-threaded; pipelining is overlap by design, across stages and across segments.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Figure 6 shows FIO throughput and dirty-page memory utilization both drop sharply when GC starts — even though there's 64 GB of RAM and the dirty-page ratio never nears the hard limit. What's the real cause?</div>
+      <details><summary>Show answer</summary><div class="ans">The buffered write() itself is blocked before it even gets to copy data into the page cache, because legacy F2FS pre-emptively secures free disk space (step 3 of write servicing) regardless of write type, and that check collides with the already-running GC. The application literally never gets the chance to generate dirty pages — it's not that memory is full, it's that the write path never reaches memory.<span class="mis">Misconception: "if memory utilization is low, memory isn't the bottleneck." Here the bottleneck is a blocking check upstream of memory use entirely.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 4 · easy</span>
+      <div class="qtext">True or false: Selective Blocking removes the free-space check for buffered writes entirely.</div>
+      <details><summary>Show answer</summary><div class="ans">False. It <i>defers</i> the check's consequence, not the check itself — the filesystem still reserves against free blocks plus invalid blocks that can be reclaimed (step 1) to guarantee the write won't hit ENOSPC later, it just no longer pre-emptively triggers or waits on GC to secure literal free blocks at write() time (step 3). And the kernel's existing dirty-page hard limit still throttles the application if too many buffered writes accumulate before writeback.<span class="mis">Misconception: "selective" means "none" — it actually means "only for writes that truly need it right now" (direct/sync), not "no blocking anywhere."</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 5 · hard</span>
+      <div class="qtext">The GC Page Pool replaces the page cache's xarray with plain O(1) arrays. Why doesn't the kernel just do this for the whole page cache, everywhere, all the time?</div>
+      <details><summary>Show answer</summary><div class="ans">The array trick works because GC's domain is small and known in advance — the exact number of blocks in one 32 MB partition, fixed before the migration starts. The general page cache has no such bound: files grow and shrink unpredictably, offsets are sparse and arbitrary, and the structure must support efficient lookup, insertion, and lockless concurrent reads (via RCU) across an open-ended key space. A flat array sized for "one partition's worth of blocks" simply doesn't generalize to "any file, any size, any access pattern."<span class="mis">Misconception: "if a simpler structure works for GC, it's just better." It's better only within GC's specifically bounded, short-lived, single-purpose context.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 6 · medium</span>
+      <div class="qtext">GAZE shows smaller relative gains on the mobile platform (22% throughput, though 87% latency reduction) than on the server (95% throughput, 66% latency reduction). Does this mean GAZE's design principles don't apply to mobile storage?</div>
+      <details><summary>Show answer</summary><div class="ans">No — it means the relative size of the CPU bottleneck GAZE targets is smaller there. The mobile platform has less RAM (12 GB, limiting how much Selective Blocking's deferred writes can buffer) and lower-bandwidth Zoned UFS storage (shifting some of the latency back toward genuine I/O time, which GAZE's techniques don't shrink). The paper's own framing — "GAZE is most effective when CPU overhead dominates garbage collection latency" — predicts exactly this outcome; it's a confirmation of the model, not a contradiction of it.<span class="mis">Misconception: "smaller gain = design failure." A CPU-overhead fix should show a smaller gain wherever CPU overhead is a smaller share of the total latency — that's the mechanism working as described, not against it.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly makes zone-scale GC different from ordinary segment cleaning?<span class="chev">▾</span></summary><div class="a">Scale, not kind. The same read-phase/write-phase logic runs, but a 1 GB zone at 40% utilization requires roughly 100,000 repetitions of the per-block migration steps, versus only around 205 valid blocks in a 2 MB segment (512 total 4 KB blocks at 40% utilization) — and the paper measures that as a 283× latency increase (1.7 sec vs. 6.0 msec), roughly tracking that ~500× jump in scale, because per-block CPU overhead — not disk time — dominates and simply has to run 100,000 times over.</div></details>
+      <details><summary><span class="q">Q2</span>Is GC really CPU-bound, given SSDs are so fast?<span class="chev">▾</span></summary><div class="a">Yes, according to the paper's measurements: 73% of read-phase latency and 84% of write-phase latency is CPU time (identifying valid blocks, allocating pages, filesystem bookkeeping), leaving only 27%/16% as actual disk I/O. Decades of LFS work optimized the I/O side (read-ahead, async writes); GAZE targets the CPU side instead.</div></details>
+      <details><summary><span class="q">Q3</span>Why exactly four pipeline stages, not more or fewer?<span class="chev">▾</span></summary><div class="a">The authors split GC into four stages — enough to separate every CPU-bound step (preread, prewrite) from every I/O-bound step (read, write) with minimal dependency between adjacent stages, unlocking concurrency without using more CPU cores than necessary or interfering more with the foreground application. The paper doesn't claim four is provably minimal, just that it's the natural split along the CPU/I/O boundary.</div></details>
+      <details><summary><span class="q">Q4</span>How does the Garbage Collection Page Pool avoid breaking read()/write() correctness?<span class="chev">▾</span></summary><div class="a">By "shadow copying": if a user request touches a block still sitting in the Page Pool (not yet flushed to its new location), GAZE first copies it into a real page-cache page via the normal allocation path, then services the request from there — so the Page Pool never needs to reimplement the page cache's full read/write semantics, only lend it pages on demand.</div></details>
+      <details><summary><span class="q">Q5</span>What's the difference between Selective Blocking and "not blocking at all"?<span class="chev">▾</span></summary><div class="a">Selective Blocking still blocks direct and synchronous writes during GC — they genuinely need a free block immediately. It only exempts buffered writes, which use delayed allocation and don't need a disk block until writeback, long after GC may have already freed enough space.</div></details>
+      <details><summary><span class="q">Q6</span>Does GAZE require a new on-disk layout, custom hardware, or a non-standard device interface?<span class="chev">▾</span></summary><div class="a">No — this is an explicit design goal. GAZE is built entirely on F2FS's existing metadata and the standard ZNS interface (open/read/write/close/reset), unlike ZNS+ or ZMS (which offload work to the device) or ScaleLFS (which changes the on-disk layout).</div></details>
+      <details><summary><span class="q">Q7</span>Why do ZNS+ and P-GC underperform GAZE despite also targeting GC overhead?<span class="chev">▾</span></summary><div class="a">P-GC parallelizes with 32 threads but serializes on a per-file lock, so a single-file workload gets no real concurrency benefit. ZNS+ offloads block copying to the device (helpful mainly on slow PCIe 2.0 links) but pays a "post-GC checkpoint" that blocks all requests until every device-side copy completes — a cost GAZE avoids by keeping victim blocks pinned in memory until writes finish.</div></details>
+      <details><summary><span class="q">Q8</span>Why are GAZE's gains smaller on the mobile platform?<span class="chev">▾</span></summary><div class="a">Less RAM (12 GB) limits how much Selective Blocking can defer, and Zoned UFS has lower bandwidth than the server's NVMe SSD, shifting part of the bottleneck back to genuine storage I/O — exactly where a CPU-overhead fix has less to offer. GAZE still improves mobile throughput 22% and cuts GC-time latency 87%.</div></details>
+      <details><summary><span class="q">Q9</span>How is the 32 MB partition size chosen, and what does it trade off?<span class="chev">▾</span></summary><div class="a">It bounds the size of the buffer needed between the pipeline's read and write stages. Table 1 shows 32 MB already captures about 88% of the maximum possible latency reduction from a larger buffer, while using only 1/8 the memory of the 256 MB option that captures the rest.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every mechanism in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>GAZE</b><span>The paper's rearchitected filesystem GC: Pipelined GC + GC Page Pool + Selective Blocking, built on F2FS.</span></div>
+      <div class="term-def"><b>Pipelined Garbage Collection</b><span>Four-stage GC (preread/read/prewrite/write), each a separate thread, overlapping CPU-bound and I/O-bound work.</span></div>
+      <div class="term-def"><b>Garbage Collection Page Pool</b><span>Pre-allocated pages plus O(1) valid/pending page maps and a cache bitmap, replacing the buddy allocator and page cache/xarray for GC's own bounded needs.</span></div>
+      <div class="term-def"><b>Selective Blocking</b><span>Letting buffered writes proceed during GC (relying on delayed allocation), while still blocking direct/synchronous writes that need free space immediately.</span></div>
+      <div class="term-def"><b>Ternary block state model</b><span>Valid / invalid / free — the log-structured filesystem's actual state space, vs. the binary valid/free model inherited from in-place-update filesystems.</span></div>
+      <div class="term-def"><b>Partition</b><span>A fixed-size (32 MB) sub-unit of a zone; GAZE reclaims one partition at a time to bound the pipeline's buffer memory.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Zone / write pointer</b><span>A ZNS append-only region and the single valid offset for its next write.</span></div>
+      <div class="term-def"><b>Segment / section</b><span>F2FS's 2 MB write-clustering unit, and its garbage-collection unit (contiguous segments).</span></div>
+      <div class="term-def"><b>Delayed allocation</b><span>Deferring a buffered write's disk-block assignment until writeback, not write() time.</span></div>
+      <div class="term-def"><b>Dirty page soft/hard limit</b><span>Kernel thresholds (default 10%/20% of RAM) that trigger writeback, then throttle the writing application.</span></div>
+      <div class="term-def"><b>Shadow copy</b><span>A page-cache copy of a Page-Pool-resident block, created on demand to preserve normal read()/write() semantics.</span></div>
+      <div class="term-def"><b>Post-GC checkpoint (ZNS+)</b><span>A blocking barrier ZNS+ needs to wait for device-side copy commands to finish — a cost GAZE's design avoids.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What GAZE buys (vs. F2FS-with-ZNS baseline)</div>
+      <div class="viz-kicker">clean, directly-computed numbers from the paper's figures</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">GC latency<small>reduction</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="66"><span>−66% (to ≈1/3)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">FIO throughput<small>during GC</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="95"><span>+95% (83→162 KIOPS)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Throughput stability<small>std-dev cut</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="74"><span>−74% (66.2→17.0)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Page alloc overhead<small>reduction</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="76"><span>−76% (0.21→0.05s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Mobile GC latency<small>during GC</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="87"><span>−87% (3.10→0.42s)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 100%</p>
+      <figcaption>All five figures are independently computable from the paper's own reported before/after values (Figs. 12, 14, 15, 20). (Paper §5)</figcaption>
+    </figure>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>ZNS: Avoiding the Block Interface Tax for Flash-based SSDs <span class="diff med">medium</span></h4><div class="meta">Bjørling, Aghayev, Holmberg, Ramesh, Le Moal, Ganger, Amvrosiadis · USENIX ATC · 2021</div><p>The ZNS interface this entire paper is built on top of.</p></div>
+    <div class="read-item reveal"><h4>F2FS: A New File System for Flash Storage <span class="diff easy">easy</span></h4><div class="meta">Lee, Sim, Hwang, Cho · FAST · 2015</div><p>The log-structured filesystem GAZE is implemented in and evaluated against.</p></div>
+    <div class="read-item reveal"><h4>ZNS+: Advanced Zoned Namespace Interface for In-Storage Zone Compaction <span class="diff hard">hard</span></h4><div class="meta">Han, Gwak, Shin, Hwang · OSDI · 2021</div><p>The device-offload baseline whose post-GC checkpoint overhead GAZE's evaluation highlights.</p></div>
+    <div class="read-item reveal"><h4>Is Garbage Collection Overhead Gone? Case Study of F2FS on ZNS SSDs <span class="diff med">medium</span></h4><div class="meta">Seo, Chen, Li, Bjørling, Dutt · HotStorage · 2023</div><p>Source of the multi-threaded P-GC baseline and its file-lock contention limitation.</p></div>
+    <div class="read-item reveal"><h4>ScaleLFS: A Log-Structured File System with Scalable Garbage Collection <span class="diff hard">hard</span></h4><div class="meta">Ha, Lee, Eom, Son · FAST · 2025</div><p>The on-disk-layout-redesign alternative GAZE explicitly avoids requiring.</p></div>
+    <div class="read-item reveal"><h4>IPLFS: Log-Structured File System without Garbage Collection <span class="diff hard">hard</span></h4><div class="meta">Kim, Jang, Tehseen, Oh, Won · USENIX ATC · 2022</div><p>A host-device co-design alternative that trades filesystem-level GC for device-level L2P compaction overhead.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="callout note"><span class="ic">📎</span><div><b>From the paper:</b> all figures, percentages, and mechanism descriptions in this guide are drawn directly from the paper's text, tables, and figures (Figs. 1–20, Table 1), with arithmetic (percentage reductions, ratios) recomputed here from the reported raw values. <b>Our framing:</b> the analogies (assembly line, supply closet, restaurant ordering, card catalog vs. coat check, patching the wrong tire), the "misconceptions" named in Practice, and the tiering/CXL parallel in Worked Example ④ are original synthesis for this guide, not claims made by the paper itself.</div></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Kim, Yoo, Yoo, Won, "GAZE: Rearchitecting Log-Structured Filesystem for Garbage Collection on Zoned Namespace Flash Storage" (SOSP '26)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5B5FA6">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
