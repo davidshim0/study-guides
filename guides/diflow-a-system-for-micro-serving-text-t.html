@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<!-- DiFlow field guide — Micro-Serving Text-to-Image Diffusion Workflows (Yang, Li et al., SOSP'26).
+     Palette: teal = DiFlow / micro-serving (the win) · honey = adapters (ControlNet/LoRA) & optimizations
+     · indigo = DiFlow machinery (compiler, data engine, scheduler) · terracotta = monolithic baseline (Diffusers). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scheduling by the Model, Not the Workflow — DiFlow, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98A2E; --honey-deep:#AD6C12; --honey-soft:#F6E6C2;
+  --dram:#1E8F79; --dram-soft:#D7F0E7;      /* teal   = DiFlow / micro-serving win        */
+  --ltram:#5750A8; --ltram-soft:#E7E4F5;    /* indigo = DiFlow machinery (compiler/scheduler) */
+  --optane:#B14A2E; --optane-soft:#F5DFD2;  /* terracotta = monolithic serving (baseline)  */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,143,121,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(87,80,168,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,138,46,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(87,80,168,.05) 31px,rgba(87,80,168,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,138,46,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5750A8)}
+.bf-hi{background:linear-gradient(90deg,#2ea28c,#1E8F79)}
+.bf-lru{background:linear-gradient(90deg,#c96a4b,#B14A2E)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive; unused elements on this page are safely no-op) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,143,121,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(87,80,168,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,138,46,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Scheduling the <span class="swash">model</span>, not the whole <span class="swash" style="color:var(--optane)">workflow</span></h1>
+    <p class="lede">A text-to-image request runs a pipeline — text encoder, diffusion backbone, ControlNet, decoder. Existing servers bundle all of it into one opaque blob and scale, place, and schedule that blob as a unit. This is the plain-English story of <strong>DiFlow</strong>, a system that cuts the blob into independently schedulable model nodes.</p>
+    <div class="hero-meta">
+      <span>📄 Yang, Li et al., "DiFlow: A System for Micro-Serving Text-to-Image Diffusion Workflows" · SOSP 2026</span>
+      <span>🖥️ GPU serving basics assumed — the primers cover them</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧩</div>
+      <p>Make the <span class="ro">MODEL</span> the schedulable unit — not the <span class="wo">WORKFLOW</span>. Scale, share, and parallelize each one on its own merits.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Eight ideas the paper assumes you know</h2>
+      <p class="sub">Each card clears up one concept DiFlow builds on. Collapsed by default — open any that look unfamiliar.</p>
+    </div>
+
+    <div class="card">
+      <h3>Quick glossary</h3>
+      <div class="gloss">
+        <div class="term-def"><b>T2I</b><span>Text-to-image generation: turning a text prompt into a picture via a diffusion model.</span></div>
+        <div class="term-def"><b>DSL</b><span>Domain-specific language — DiFlow's Python-embedded API for composing workflows.</span></div>
+        <div class="term-def"><b>DAG</b><span>Directed acyclic graph — the compiled form of a workflow: model nodes plus their data dependencies.</span></div>
+        <div class="term-def"><b>VAE</b><span>Variational autoencoder — here, its decoder turns a denoised latent tensor into a pixel image.</span></div>
+        <div class="term-def"><b>CFG</b><span>Classifier-free guidance — runs two denoising passes per step (conditioned/unconditioned) to improve quality.</span></div>
+        <div class="term-def"><b>SLO</b><span>Service-level objective — a request's latency deadline; "SLO attainment" is the fraction met.</span></div>
+        <div class="term-def"><b>FCFS</b><span>First-come-first-served — the scheduler's base ordering policy for ready nodes.</span></div>
+        <div class="term-def"><b>NVSHMEM / RDMA</b><span>GPU-to-GPU one-sided memory access over NVLink/RDMA — lets DiFlow move tensors without CPU staging.</span></div>
+        <div class="term-def"><b>LoRA</b><span>Low-rank adapter — small weights patched onto a base model to change its style, cheaply.</span></div>
+        <div class="term-def"><b>CV</b><span>Coefficient of variation — a knob used to control how bursty simulated request traffic is.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> DiFlow / micro-serving (the win)</span>
+      <span><i style="background:var(--honey-deep)"></i> adapters (ControlNet, LoRA) &amp; optimizations</span>
+      <span><i style="background:var(--ltram)"></i> DiFlow's machinery (compiler, data engine, scheduler)</span>
+      <span><i style="background:var(--optane)"></i> monolithic serving (the baseline)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>What a diffusion workflow actually is<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A basic text-to-image request runs three models in sequence: a <b>text encoder</b> turns the prompt into embeddings; a <b>diffusion model</b> starts from random noise and iteratively "denoises" a latent tensor over many steps, conditioned on those embeddings; a <b>VAE decoder</b> turns the final latent into a pixel image.</p>
+          <p>Production workflows add <b>adapters</b> on top of this base pipeline to steer composition or style.</p>
+          <div class="ready"><b>Now you're ready:</b> DiFlow's whole argument is about how these several models — not one monolithic model — should be scheduled.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Two kinds of adapters: ControlNet vs LoRA<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>ControlNet</b> is a <i>parallel-execution</i> adapter: it runs alongside the base diffusion model at every denoising step, feeding intermediate feature maps into specific layers. It's roughly as large as the base model and needs GPU-to-GPU synchronization.</p>
+          <p><b>LoRA</b> is a <i>weight-patching</i> adapter: it's fetched once and merged into the base model's weights before inference, adding no extra runtime compute — but it specializes that model replica to one request's style until the patch is removed.</p>
+          <div class="ready"><b>Now you're ready:</b> these two adapter types demand two different scheduling tricks — deferred data-fetch for ControlNet, patch-swap-aware sharing for LoRA (§4.3.2, §5.1).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Monolithic serving — the default, and its four cracks<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Systems like HuggingFace Diffusers treat an entire workflow — base model plus every adapter — as one opaque instance: provisioned, placed, and scaled together on a fixed set of GPUs.</p>
+          <p>This causes four problems: <b>L1</b> coarse scaling (replicate everything to fix one bottleneck), <b>L2</b> no model sharing across workflows, <b>L3</b> no runtime visibility to tune per-model resources, <b>L4</b> a workflow-wide failure domain.</p>
+          <div class="ready"><b>Now you're ready:</b> DiFlow is named after its fix — <i>micro</i>-serving instead of <i>monolithic</i> serving — and each design piece maps to one of L1–L4.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Microservices, generally<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A microservice architecture decomposes a large application into small, independently deployable components that communicate over well-defined interfaces, instead of one large program. Each component can be scaled, updated, and debugged on its own.</p>
+          <p>DiFlow applies this idea to diffusion inference: each <i>model</i> (not each workflow) becomes a microservice-like unit.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's central design choice — "workflow node" as the schedulable unit — is this microservices idea applied to GPU model inference.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>DAGs and graph compilation<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A directed acyclic graph (DAG) represents a computation as nodes (units of work) and directed edges (data dependencies), with no cycles. Topologically sorting a DAG gives a valid execution order; nodes with no dependency between them can run in parallel.</p>
+          <p>A <b>compiler</b> here means: turn a high-level program (the workflow definition) into this executable graph, optionally rewriting it to apply optimizations.</p>
+          <div class="ready"><b>Now you're ready:</b> DiFlow's graph compiler turns a Python-composed workflow into a DAG of model nodes, then runs optimization passes (like approximate caching) as graph rewrites.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>GPU-direct data movement (NVSHMEM/RDMA)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Normally, moving data between two GPUs on different machines means: GPU → host CPU memory (PCIe) → network → remote host memory → remote GPU. Each hop adds latency and burns CPU/PCIe bandwidth.</p>
+          <p><b>GPU-direct / RDMA</b> techniques let one GPU write directly into another GPU's memory over NVLink or the network, skipping host-memory staging entirely — "zero-copy." NVSHMEM is a library providing this as one-sided put/get operations.</p>
+          <div class="ready"><b>Now you're ready:</b> DiFlow's data engine is built on NVSHMEM specifically because diffusion tensors are large (gigabytes per workflow) and CPU staging would be too slow.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Model parallelism: splitting one model across GPUs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>When one model's inference is too slow on a single GPU, you can split the computation across several GPUs so they work on it concurrently. Two forms appear here: <b>latent parallelism</b> splits the two classifier-free-guidance passes across GPUs, requiring a "scatter-gather" sync every denoising step; <b>ControlNet parallelism</b> runs the ControlNet and base model on separate GPUs concurrently, exchanging feature maps mid-inference.</p>
+          <div class="ready"><b>Now you're ready:</b> DiFlow calls the first kind "intra-node" parallelism (splitting work inside one model's node) and the second "inter-node" parallelism (overlapping two different models' nodes).</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Scheduling basics: queues, batching, admission, SLOs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>FCFS</b> (first-come-first-served) processes requests in arrival order — simple, and easy to reason about. <b>Batching</b> groups several inference calls to the same model into one GPU pass for efficiency. <b>Admission control</b> rejects a request up front if the system predicts it can't be served in time, rather than letting it queue uselessly. <b>SLO attainment</b> is the fraction of all submitted requests (including rejected ones) that finish within their latency deadline.</p>
+          <div class="ready"><b>Now you're ready:</b> DiFlow's scheduler makes exactly these three kinds of decisions every cycle — batch/place, size parallelism, admit/reject (§5).</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>DiFlow in a nutshell</h2>
+      <p class="sub">The problem, the fix, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>Text-to-image workflows are pipelines of several distinct models — a text encoder, a diffusion backbone, and adapters like <span class="mem-chip chip-sat">ControlNet</span> and <span class="mem-chip chip-sat">LoRA</span>. But existing servers, from HuggingFace Diffusers to ComfyUI, treat the <i>entire pipeline</i> as one opaque, monolithic instance: provisioned, placed, and scaled as a single black box. Since diffusion backbones are usually the sole bottleneck, and the full workflow is often 1.7×–4× larger than the base model alone, scaling the whole monolith to fix one hot model wastes enormous GPU memory and loading time — and precludes sharing a common backbone across the many workflows that reuse it.</p>
+      <p>DiFlow's fix is <strong>micro-serving</strong>: make the individual <b>model</b>, not the workflow, the unit of scheduling. A DSL and graph compiler turn a workflow into a DAG of independently schedulable <span class="mem-chip chip-ucp">workflow nodes</span>, each wrapping one model's load/execute logic. A GPU-native <span class="mem-chip chip-ucp">distributed data engine</span> built on NVSHMEM moves tensors directly between GPUs, with <b>eager</b> fetch (wait for the input) or <b>deferred</b> fetch (start now, fetch at the point of use) matched to each dependency's timing. A <span class="mem-chip chip-ucp">scheduler</span> then exploits this decomposition three ways: it scales only the bottleneck model, it dispatches same-model requests from <i>different</i> workflows onto shared warm GPU replicas, and it adapts each model's parallelism degree to current cluster availability.</p>
+      <p><strong>The payoff:</strong> across 12 workflows built from SD3, SD3.5-Large, Flux-Dev, and Flux-Schnell, DiFlow sustains up to <b>3× higher request rates</b>, meets <b>6× more stringent SLOs</b>, tolerates <b>8× burstier traffic</b>, and needs up to <b>3× fewer GPUs</b> for the same 90% SLO-attainment target — for under <b>150 ms</b> of added overhead per request, on requests that themselves take 2–20 seconds.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Monolithic serving scales, places, and shares at <b>workflow</b> granularity; DiFlow does all three at <b>model</b> granularity.</li>
+        <li>A <b>Model</b> base class standardizes load/execute logic; a <b>Workflow</b> DSL composes models with ordinary Python; a compiler lowers this to a DAG.</li>
+        <li>The data engine's <b>eager/deferred fetch</b> modes let dependent models start before their input is ready, when the paper's dataflow allows it.</li>
+        <li>The scheduler batches <b>same-model</b> nodes across workflows (sharing), right-sizes parallelism per batch, and admits/rejects by predicted SLO.</li>
+        <li>Result: up to 3× request rate, 8× burst tolerance, 3× fewer GPUs, &lt;150 ms overhead, full compatibility with existing diffusion-specific optimizations.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">GPU allocation: monolithic replication vs. micro-serving with sharing</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> monolithic: duplicated per workflow</span>
+        <span><i style="background:var(--dram)"></i> micro-serving: one shared copy per model</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 330" role="img" aria-label="Monolithic serving duplicates every model per workflow; micro-serving shares model nodes across workflows">
+        <text x="175" y="26" text-anchor="middle" font-family="Fraunces" font-size="15" font-weight="600" fill="#9a3a22">Monolithic serving</text>
+        <text x="585" y="26" text-anchor="middle" font-family="Fraunces" font-size="15" font-weight="600" fill="#1f5b51">Micro-serving (DiFlow)</text>
+
+        <text x="105" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#6E6456">Workflow A</text>
+        <rect x="40" y="56" width="130" height="34" rx="6" fill="#F5DFD2" stroke="#B14A2E" stroke-width="1.5"/><text x="105" y="77" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#9a3a22">Text Encoder</text>
+        <rect x="40" y="96" width="130" height="34" rx="6" fill="#F5DFD2" stroke="#B14A2E" stroke-width="1.5"/><text x="105" y="117" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#9a3a22">Diffusion (12B)</text>
+        <rect x="40" y="136" width="130" height="34" rx="6" fill="#F5DFD2" stroke="#B14A2E" stroke-width="1.5"/><text x="105" y="157" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#9a3a22">VAE Decoder</text>
+
+        <text x="245" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#6E6456">Workflow B (+ C.N.)</text>
+        <rect x="180" y="56" width="130" height="34" rx="6" fill="#F5DFD2" stroke="#B14A2E" stroke-width="1.5"/><text x="245" y="77" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#9a3a22">Text Encoder</text>
+        <rect x="180" y="96" width="130" height="34" rx="6" fill="#F5DFD2" stroke="#B14A2E" stroke-width="1.5"/><text x="245" y="117" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#9a3a22">Diffusion (12B)</text>
+        <rect x="180" y="136" width="130" height="34" rx="6" fill="#F5DFD2" stroke="#B14A2E" stroke-width="1.5"/><text x="245" y="157" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#9a3a22">VAE Decoder</text>
+        <rect x="180" y="176" width="130" height="34" rx="6" fill="#F7E1D8" stroke="#C0563B" stroke-width="1.3" stroke-dasharray="3 2"/><text x="245" y="197" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#9a3a22">ControlNet</text>
+        <text x="175" y="235" text-anchor="middle" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="#9a3a22">7 GPU-resident copies</text>
+
+        <text x="585" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#6E6456">Shared model pool</text>
+        <rect x="450" y="56" width="270" height="34" rx="6" fill="#D7F0E7" stroke="#1E8F79" stroke-width="1.5"/><text x="585" y="77" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#1f5b51">Text Encoder — shared by A &amp; B</text>
+        <rect x="450" y="96" width="270" height="34" rx="6" fill="#E7E4F5" stroke="#5750A8" stroke-width="1.5"/><text x="585" y="117" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#3a409a">Diffusion (12B) — scaled ×2, shared</text>
+        <rect x="450" y="136" width="270" height="34" rx="6" fill="#D7F0E7" stroke="#1E8F79" stroke-width="1.5"/><text x="585" y="157" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#1f5b51">VAE Decoder — shared by A &amp; B</text>
+        <rect x="450" y="176" width="270" height="34" rx="6" fill="#F6E6C2" stroke="#AD6C12" stroke-width="1.3" stroke-dasharray="3 2"/><text x="585" y="197" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#6e4a09">ControlNet — only for B</text>
+        <text x="585" y="235" text-anchor="middle" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="#1f5b51">5 GPU-resident copies</text>
+
+        <line x1="335" y1="115" x2="440" y2="115" stroke="#9A8E7C" stroke-width="1.4" stroke-dasharray="4 3"/>
+        <text x="387" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">decompose</text>
+
+        <rect x="70" y="260" width="620" height="46" rx="8" fill="#FBEACB" stroke="#EFD9AC"/>
+        <text x="380" y="288" text-anchor="middle" font-family="Fraunces" font-size="13.5" font-weight="600" fill="#6e4a09">Same two workflows, fewer redundant copies — no model is loaded twice on purpose</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> monolithic serving duplicates the text encoder, diffusion backbone, and decoder for every workflow instance. Micro-serving lets Workflow A and B's requests multiplex the same loaded models — only ControlNet, used solely by B, stays unshared. This is exactly the mechanism behind DiFlow's up to 90% loading-latency reduction and up to 75% memory-waste elimination (§3.1).</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → compose &amp; compile → run &amp; move data → schedule → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Monolithic serving scales, isolates, and hides dataflow at workflow granularity (L1–L4)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">DSL + Compiler</div><div class="nd">Model class + Workflow DSL compile to a DAG of typed, independently schedulable nodes</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Runtime + Data Engine</div><div class="nd">NVSHMEM data store; eager/deferred GPU-direct tensor fetch</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Scheduler</div><div class="nd">Cross-workflow batching &amp; sharing, adaptive parallelism, SLO-aware admission control</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">Up to 3× request rate, 8× burst tolerance, 3× fewer GPUs</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Compatible</div><div class="nd">Approximate caching, async LoRA loading work unmodified inside a node</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about DiFlow</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="20" width="50" height="56" rx="4" fill="#F5DFD2" stroke="#B14A2E" stroke-width="2.3"/>
+          <rect x="76" y="20" width="50" height="56" rx="4" fill="#F5DFD2" stroke="#B14A2E" stroke-width="2.3"/>
+          <circle cx="39" cy="36" r="4" fill="#B14A2E"/><rect x="27" y="48" width="24" height="6" rx="2" fill="#B14A2E"/><rect x="27" y="58" width="24" height="6" rx="2" fill="#B14A2E"/>
+          <circle cx="101" cy="36" r="4" fill="#B14A2E"/><rect x="89" y="48" width="24" height="6" rx="2" fill="#B14A2E"/><rect x="89" y="58" width="24" height="6" rx="2" fill="#B14A2E"/>
+        </svg></div>
+        <span class="term">The core idea · Micro vs monolithic serving</span>
+        <h3>Two food trucks vs one shared kitchen</h3>
+        <p>Monolithic serving is like giving every customer their own fully-equipped food truck — grill, fryer, oven, cashier — even if they only want fries. Micro-serving is a shared kitchen: each station is staffed independently, and any order routes to whichever free grill or fryer can take it. DiFlow makes the <i>model</i> the station, not the whole truck.</p>
+        <div class="breaks"><b>Where it breaks:</b> kitchen stations don't need "reloading" between orders. GPU model weights do — a station that doesn't already have the right model loaded pays real loading latency before it can help.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="40" width="40" height="24" rx="4" fill="#D7F0E7" stroke="#1E8F79" stroke-width="2.3"/>
+          <rect x="80" y="40" width="40" height="24" rx="4" fill="#D7F0E7" stroke="#1E8F79" stroke-width="2.3"/>
+          <path d="M60 52 h20" stroke="#1E8F79" stroke-width="2.5" stroke-dasharray="4 3"/>
+          <circle cx="35" cy="24" r="4" fill="#5750A8"/><circle cx="105" cy="24" r="4" fill="#5750A8"/>
+          <path d="M35 28 v10 M105 28 v10" stroke="#5750A8" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Model sharing · Cross-workflow reuse</span>
+        <h3>Carpooling to overlapping destinations</h3>
+        <p>Two commuters heading roughly the same way share one car instead of each driving separately. DiFlow's scheduler does this for models: when workflows A and B both invoke the same diffusion backbone, their requests are batched onto the same warm GPU replica, regardless of which workflow they came from.</p>
+        <div class="breaks"><b>Where it breaks:</b> not every "car" fits every "rider." A LoRA-patched model replica is specialized to one style until the patch is removed — two riders wanting different styles can't share that particular ride without a patch swap first (§7.3).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="18" width="112" height="18" rx="4" fill="#E7E4F5" stroke="#5750A8" stroke-width="2"/>
+          <text x="70" y="31" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">course 1: soup</text>
+          <rect x="14" y="42" width="112" height="18" rx="4" fill="#E7E4F5" stroke="#5750A8" stroke-width="2"/>
+          <text x="70" y="55" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">course 2: main</text>
+          <rect x="14" y="66" width="112" height="18" rx="4" fill="#F6E6C2" stroke="#AD6C12" stroke-width="2" stroke-dasharray="3 2"/>
+          <text x="70" y="79" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">dessert (fetched later)</text>
+        </svg></div>
+        <span class="term">Deferred data fetch · Timing</span>
+        <h3>Starting the meal before dessert exists</h3>
+        <p>A good waiter seats you and starts the appetizer immediately, ordering dessert only when you actually reach that course — you're not stuck waiting at the door until the whole meal is plated. This is <b>deferred fetch</b>: the Flux node starts inference right away and only fetches ControlNet's output at the exact layer that consumes it, instead of blocking on it up front.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real diner can chat while dessert is prepared. DiFlow's node can't improvise — if the ControlNet output isn't ready by the moment it's actually needed, that specific fetch call blocks until it arrives.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="50" width="24" height="30" rx="3" fill="#D7F0E7" stroke="#1E8F79" stroke-width="2"/>
+          <rect x="50" y="40" width="24" height="40" rx="3" fill="#D7F0E7" stroke="#1E8F79" stroke-width="2"/>
+          <rect x="80" y="30" width="24" height="50" rx="3" fill="#D7F0E7" stroke="#1E8F79" stroke-width="2"/>
+          <rect x="110" y="20" width="20" height="60" rx="3" fill="none" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 2"/>
+          <path d="M32 45 l0 -14 M62 35 l0 -14" stroke="#5750A8" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Adaptive parallelism · Right-sizing</span>
+        <h3>Hiring temps for today's crowd, not every day</h3>
+        <p>A restaurant that calls in extra cooks only when it's actually busy — and only as many as its kitchen can usefully use — beats one that always staffs for peak or always staffs for a slow Tuesday. DiFlow's scheduler sets each batch's GPU count to <code>min(available GPUs, max useful degree)</code>, fresh every scheduling cycle.</p>
+        <div class="breaks"><b>Where it breaks:</b> a temp cook can start mid-shift instantly; adding a GPU mid-request cannot — parallelism is chosen once, when the batch is dispatched, not adjusted while it's already running.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M30 20 v56 M30 20 h30 l14 12 M30 76 h30" stroke="#332C24" stroke-width="2.4" fill="none" stroke-linejoin="round"/>
+          <circle cx="70" cy="48" r="14" fill="#F5DFD2" stroke="#B14A2E" stroke-width="2.3"/>
+          <path d="M64 48 l4 4 l8 -9" stroke="#B14A2E" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M100 48 h20" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 2"/>
+        </svg></div>
+        <span class="term">Admission control · Early rejection</span>
+        <h3>A bouncer who does the math before you wait in line</h3>
+        <p>Instead of letting everyone queue and disappointing them at the door, a good bouncer estimates whether you'll get in before doors close and turns you away immediately if not — saving you a wasted evening and keeping the line moving for those who'll actually make it. DiFlow's admission control estimates a new request's completion time from its remaining critical path and rejects it up front if it can't meet its SLO.</p>
+        <div class="breaks"><b>Where it breaks:</b> the bouncer's estimate is only as good as the profiled latencies it's built from; under-profiled models could get requests wrongly admitted or wrongly turned away.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="24" width="30" height="24" rx="4" fill="#D7F0E7" stroke="#1E8F79" stroke-width="2"/>
+          <rect x="55" y="24" width="30" height="24" rx="4" fill="#D7F0E7" stroke="#1E8F79" stroke-width="2"/>
+          <rect x="94" y="24" width="30" height="24" rx="4" fill="#F5DFD2" stroke="#B14A2E" stroke-width="2" stroke-dasharray="3 2"/>
+          <path d="M94 24 l30 24 M124 24 l-30 24" stroke="#B14A2E" stroke-width="1.6"/>
+          <rect x="16" y="60" width="108" height="16" rx="4" fill="#E7E4F5" stroke="#5750A8" stroke-width="1.6"/>
+        </svg></div>
+        <span class="term">Fault isolation · Node granularity</span>
+        <h3>A modular desk, not a welded frame</h3>
+        <p>If one drawer of a modular desk breaks, you replace that drawer — the rest of the desk keeps working. DiFlow's node-level execution and immutable intermediate tensors give the same property: a failed node's downstream re-executes, but sibling nodes and unrelated workflows are untouched.</p>
+        <div class="breaks"><b>Where it breaks:</b> the isolation is per-node, not per-GPU. If the executor (the "desk leg") holding several nodes goes down, everything it was hosting is lost together, and its coordinator must reassign all of it.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Component by component, from the programming model down to the scheduling loop.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem, quantified</h3>
+      <p>A full diffusion workflow's memory footprint is often <b>1.7×–4×</b> larger than its base model alone. Under monolithic serving, scaling to relieve a bottleneck means replicating that entire footprint — Diffusers-based replication adds up to <b>80%</b> extra loading latency and wastes up to <b>75%</b> of GPU memory versus scaling only the bottlenecked model; vLLM-Omni and SGLang-Diffusion show similar 70–75% overheads. The other two costs — no cross-workflow sharing, and no runtime visibility for per-model tuning — compound this on production traces where a handful of backbones and ControlNets are reused across tens of thousands of distinct workflows.</p>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Programming model — Model class + Workflow DSL</h3>
+      <p>Model developers subclass a <code>Model</code> base class and implement three methods: <code>setup_io()</code> (typed inputs/outputs), <code>load()</code>, and <code>execute()</code> — nothing about how the model plugs into a larger workflow. Workflow developers write ordinary Python: create model instances, call them, and let intermediate tensors flow between calls. Every call to a model automatically records a <b>workflow node</b>; the framework infers the DAG edges from the typed I/O each node declared.</p>
+      <div class="callout note"><span class="ic">🧩</span><div>This split is the whole trick: a model developer never has to reason about workflow composition, and a workflow developer never has to manually wire up nodes or transfers — both are derived by the framework.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Graph compiler — DAG + optimization passes</h3>
+      <p>The compiler resolves recorded model invocations into a topologically sorted DAG, recording for every edge its producer, consumer, and fetch mode (eager/deferred). It then applies <b>graph-rewriting passes</b> that pattern-match on node properties and insert, remove, or replace nodes — for example, swapping a random-noise-init node for a cache-lookup node (approximate caching), or inserting async-load-and-patch nodes around a LoRA-attached model (async LoRA loading). Adding a new optimization means writing a new pass, not touching the core compiler.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Runtime &amp; distributed data engine</h3>
+      <p>At request time, the compiled DAG is instantiated once; root nodes are enqueued, and completed nodes unlock their downstream dependents until the workflow's output is returned. Because CUDA tensors dominate inter-node traffic (over 99% of transferred data; a single SDXL+ControlNet workflow moves 5.3 GiB), DiFlow avoids host-memory staging entirely: a per-executor local data store built on <b>NVSHMEM</b> provides GPU-direct, zero-copy transfers over NVLink/RDMA.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Eager vs. deferred fetch</div>
+      <div class="viz-kicker">two executors, one request — timing determines the fetch mode</div>
+      <svg class="full" viewBox="0 0 700 250" role="img" aria-label="Eager fetch blocks a node until its input arrives; deferred fetch lets the node start and fetch mid-execution">
+        <text x="16" y="24" font-family="JetBrains Mono" font-size="11" fill="#6E6456">Executor 1</text>
+        <text x="16" y="150" font-family="JetBrains Mono" font-size="11" fill="#6E6456">Executor 2</text>
+        <line x1="16" y1="34" x2="680" y2="34" stroke="#E7DBC6"/>
+        <line x1="16" y1="160" x2="680" y2="160" stroke="#E7DBC6"/>
+
+        <rect x="30" y="44" width="120" height="34" rx="6" fill="#D7F0E7" stroke="#1E8F79" stroke-width="1.6"/><text x="90" y="65" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#1f5b51">Text Enc infer</text>
+        <rect x="470" y="44" width="180" height="70" rx="6" fill="#D7F0E7" stroke="#1E8F79" stroke-width="1.6"/><text x="560" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#1f5b51">Flux infer (layers 0..N)</text>
+        <text x="560" y="90" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">consumes C.N. output mid-way</text>
+
+        <rect x="200" y="170" width="150" height="34" rx="6" fill="#F6E6C2" stroke="#AD6C12" stroke-width="1.6"/><text x="275" y="191" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#6e4a09">ControlNet infer</text>
+
+        <line x1="150" y1="61" x2="200" y2="61" stroke="#1E8F79" stroke-width="1.8"/>
+        <line x1="200" y1="61" x2="200" y2="170" stroke="#1E8F79" stroke-width="1.8" marker-end="url(#arrEager)"/>
+        <text x="205" y="130" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">eager: C.N. waits for<br/>embedding</text>
+        <text x="153" y="120" font-family="JetBrains Mono" font-size="9.5" fill="#1f5b51">eager fetch</text>
+
+        <line x1="350" y1="187" x2="500" y2="187" stroke="#AD6C12" stroke-width="1.8" stroke-dasharray="5 4"/>
+        <line x1="500" y1="187" x2="500" y2="79" stroke="#AD6C12" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#arrDeferred)"/>
+        <text x="505" y="140" font-family="JetBrains Mono" font-size="9.5" fill="#6e4a09">deferred fetch —</text>
+        <text x="505" y="153" font-family="JetBrains Mono" font-size="9.5" fill="#6e4a09">Flux already running</text>
+
+        <defs>
+          <marker id="arrEager" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#1E8F79"/></marker>
+          <marker id="arrDeferred" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#AD6C12"/></marker>
+        </defs>
+      </svg>
+      <figcaption><b>Eager (solid, teal):</b> ControlNet cannot start until it has the prompt embedding — its input is fetched before execution begins. <b>Deferred (dashed, amber):</b> Flux starts immediately and fetches ControlNet's output only at the layer that consumes it, so the two models overlap instead of serializing. (Paper, Fig. 8, simplified.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · Scheduler — three decisions every cycle</h3>
+      <p>Given a ready queue ordered by FCFS (ties broken by shallower DAG depth), the scheduler pops the earliest node, then makes three decisions:</p>
+    </div>
+    <pre class="sketch"><span class="cm"># 1. batch same-model nodes across workflows — this IS model sharing (§5.1)</span>
+Batch = {n_head} ∪ {n' in ready_queue | n'.model == n_head.model}[:B_max]
+
+<span class="cm"># 2. score each candidate executor and pick the top-k (§5.1, §5.2)</span>
+<span class="kw">for</span> e in available_executors:
+    L_data  = CalcDataFetchLatency(Batch, e)
+    L_load  = 0 <span class="kw">if</span> e already hosts n_head.model <span class="kw">else</span> CalcLoadTime(n_head.model)
+    L_infer = CalcInferenceTime(Batch, e, k)
+    e.score = L_data + L_load + L_infer
+k = min(len(available_executors), k_max_for_model)   <span class="hl"># adaptive parallelism</span>
+dispatch Batch to top-k lowest-scoring executors
+
+<span class="cm"># 3. admission control runs asynchronously, independent of the loop above (§5.3)</span>
+<span class="kw">on</span> new request arrival:
+    est = sum(profiled latency of remaining DAG nodes) + queueing delay
+    <span class="kw">if</span> est &gt; request.SLO: reject immediately
+    <span class="kw">else</span>: admit</pre>
+    <div class="callout why"><span class="ic">💡</span><div><b>Why L_load = 0 matters:</b> a model state table tracks which models are already resident on which executor, updated for free via node-completion piggybacking. Zeroing the load cost for warm executors is what naturally routes batches toward sharing — no separate "sharing policy" is needed.</div></div>
+
+    <div class="prose">
+      <h3>6 · Compatibility with existing optimizations</h3>
+      <p>Because optimizations are expressed as compiler passes or logic inside a node's <code>execute()</code>, DiFlow reproduces prior techniques without new machinery: <b>approximate caching</b> (Nirvana) becomes a cache-lookup node replacing random-noise init, recovering matching 1.13×/1.17× and 1.43×/1.42× speedups; <b>asynchronous LoRA loading</b> (Katz) becomes an async-load node plus a check node, cutting patch latency from 0.5 s to 0.05 s, matching the original implementation.</p>
+      <div class="callout note"><span class="ic">🔗</span><div><b>For the tiering-minded reader:</b> the data engine's design — GPU-resident, one-sided, zero-copy transfers with an explicit eager/deferred consumption contract — parallels how CXL-attached or pooled memory systems separate "when is data placed" from "when is it consumed," letting a consumer start work before every input has physically arrived. DiFlow just applies that separation to inter-model tensor dependencies instead of inter-tier page placement.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations using the paper's own reported figures.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Why full-workflow scaling wastes up to 75% of GPU memory</h3>
+      <p style="color:var(--ink-soft)">The paper states a workflow footprint can be up to 4× the base model's size alone, and that scaling the whole workflow "wastes up to 75% of GPU memory" versus scaling just the bottleneck. Let's derive that 75%.</p>
+      <ol class="seq">
+        <li><b>Take a base diffusion model</b> at, say, 8 GiB (within the paper's reported 2–24 GiB range for these backbones).</li>
+        <li><b>At the high end (4×),</b> the full workflow — text encoder, diffusion model, decoder, adapters — weighs 8 × 4 = <b>32 GiB</b>.</li>
+        <li><b>Scaling only the bottleneck</b> (the diffusion model) to add capacity costs 8 GiB. <b>Scaling the whole workflow</b> costs 32 GiB for the same added capacity.</li>
+        <li><b>Wasted memory</b> = 32 − 8 = 24 GiB, spent on components that weren't the bottleneck.</li>
+        <li><b>As a fraction of the monolithic replica:</b> 24 / 32 = <b>75%</b> — exactly the paper's reported worst case (§2.2, L1).</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the "up to 75%" isn't a rounded estimate — it falls directly out of "workflow can be 4× the base model" and "only the base model needed to scale." Model-granular scaling (§3.1) is what recovers this.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② What LoRA patch-swap sharing actually saves</h3>
+      <p style="color:var(--ink-soft)">The paper reports: a LoRA occupies 886 MiB and takes 100 ms to swap onto an already-loaded base model, versus 3.9 GiB and 430 ms to load a fresh SD3 model copy instead.</p>
+      <ol class="seq">
+        <li><b>Memory saved</b> = 3.9 GiB − 886 MiB. Converting: 3.9 GiB = 3993.6 MiB, so savings = 3993.6 − 886 = <b>3107.6 MiB ≈ 3.03 GiB</b>.</li>
+        <li><b>As a percentage:</b> 3107.6 / 3993.6 ≈ <b>77.8% less memory</b> than loading a whole fresh SD3 replica.</li>
+        <li><b>Latency saved</b> = 430 ms − 100 ms = <b>330 ms</b>.</li>
+        <li><b>As a percentage:</b> 330 / 430 ≈ <b>76.7% faster</b> than a cold model load.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is why DiFlow shares base-model replicas across requests needing <i>different</i> LoRAs, rather than treating each patched model as its own unsharable instance: the patch itself is cheap; a whole new backbone copy is not.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Turning "1.3× faster" into a latency reduction</h3>
+      <p style="color:var(--ink-soft)">The paper reports adaptive parallelism accelerates average request serving by 1.3× versus a fixed Parallelism=1 policy, and 1.2× versus a fixed Parallelism=2 policy. What does that mean for actual latency?</p>
+      <ol class="seq">
+        <li><b>Let L₁ be the average latency under fixed Parallelism=1.</b> "1.3× faster" means L₁ / L_adaptive = 1.3, so L_adaptive = L₁ / 1.3 ≈ <b>0.77 · L₁</b> — a <b>23% latency cut</b>.</li>
+        <li><b>Let L₂ be the average latency under fixed Parallelism=2.</b> "1.2× faster" gives L_adaptive = L₂ / 1.2 ≈ <b>0.83 · L₂</b> — a <b>17% latency cut</b>.</li>
+        <li><b>Why isn't Parallelism=2 always best?</b> Fixing 2 GPUs per request means later requests queue for an available GPU pair when the cluster is busy — visible as the "stepped" CDF in the paper's Figure 4-right.</li>
+        <li><b>Adaptive avoids both failure modes:</b> it uses 1 GPU when that's all that's free (beating fixed=2's queueing) and 2 when available (beating fixed=1's lack of speedup).</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> "1.3× faster" and "23% lower latency" describe the same result — the multiplier compares full latencies (L₁ vs L_adaptive), while the percentage describes the drop.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Admission control's 110× swing in setting S1</h3>
+      <p style="color:var(--ink-soft)">At the highest tested rate scale (RS=8) in setting S1, SLO attainment is 0.4% without admission control and 44% with it enabled.</p>
+      <ol class="seq">
+        <li><b>Improvement ratio</b> = 44 / 0.4 = <b>110×</b>.</li>
+        <li><b>Why so large?</b> Without admission control, an overloaded system keeps admitting requests it cannot possibly serve in time — they queue, consume resources, and still miss their SLO, dragging down <i>every</i> other request's chances too.</li>
+        <li><b>The denominator still includes rejects</b> — SLO attainment is computed over all submitted requests, so 44% isn't achieved by only counting the requests that were let in; rejected requests count as misses.</li>
+        <li><b>This is feasible only under micro-serving:</b> the estimate needs per-node progress visibility (which nodes of an inflight request have finished) that a monolithic black-box workflow simply doesn't expose.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Compare this to the system's overall overhead: the maximum end-to-end micro-serving overhead measured is 150 ms, against workflows that take 2–20 s — between 0.75% and 7.5% of total runtime, negligible next to a 110× admission-control gain.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">DiFlow scales only the bottleneck diffusion model under load. Does that mean the text encoder and VAE decoder stop running, or get removed from GPU memory?</div>
+      <details><summary>Show answer</summary><div class="ans">No. Their existing loaded replicas keep serving requests — via model sharing, in fact — DiFlow simply doesn't create <i>additional</i> redundant copies of them the way monolithic replication would. "Scale only the bottleneck" means don't over-provision the non-bottleneck components, not that they disappear.<span class="mis">Misconception: that per-model scaling means starving non-bottleneck models. It means not wastefully duplicating them.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Using the paper's low-end multiplier (workflow footprint = 1.7× the base model), and a base model of 8 GiB, compute the memory wasted by full-workflow scaling versus base-model-only scaling, and its percentage.</div>
+      <details><summary>Show answer</summary><div class="ans">Workflow footprint = 8 × 1.7 = 13.6 GiB. Wasted memory = 13.6 − 8 = 5.6 GiB. As a fraction: 5.6 / 13.6 ≈ <b>41.2%</b> — notably less than the 75% high-end case, since a lighter adapter set means less non-bottleneck weight to needlessly duplicate.<span class="mis">Misconception: that the "up to 75%" figure applies uniformly to every workflow. It's the ceiling, reached only at the heaviest adapter compositions (4×); lighter workflows waste proportionally less.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">A model developer marks ControlNet's output as an <i>eager</i> input to Flux instead of <i>deferred</i>. What happens to inter-node parallelism between them?</div>
+      <details><summary>Show answer</summary><div class="ans">It disappears. Flux can no longer start until ControlNet's output is fully available, forcing the two nodes to run sequentially even though they were placed on separate executors. Marking the input deferred is exactly what lets Flux begin its early layers while ControlNet is still computing, recovering the overlap.<span class="mis">Misconception: that placing two nodes on separate GPUs automatically parallelizes them. Placement enables concurrency; the fetch mode on the data dependency determines whether it's actually exploited.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Why does DiFlow run admission control asynchronously, outside the main scheduling loop, instead of checking every request's SLO feasibility inside the loop before dispatching?</div>
+      <details><summary>Show answer</summary><div class="ans">The scheduling loop's job is to dispatch <i>already-admitted</i> ready nodes as fast as possible every cycle; blocking it on a fresh admission estimate for every newly arriving request would add latency to the hot path for all in-flight work, not just the new arrival. Running admission control asynchronously lets it reject doomed requests early without slowing down the dispatch of nodes that are already progressing toward their deadlines.<span class="mis">Misconception: that admission control and node dispatch are the same kind of decision. Admission control is a one-time, coarse-grained gate at arrival; dispatch is a per-cycle, fine-grained placement decision — coupling them would serialize unrelated work.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">The scheduler uses FCFS with shallow-depth tie-breaking rather than a sophisticated priority policy. What does the paper trade away by doing this, and why is it a deliberate choice?</div>
+      <details><summary>Show answer</summary><div class="ans">It trades away the extra gains a priority-aware or SLO-aware scheduling policy (like those in prior multi-model serving work) could add on top. It's deliberate because using the simplest possible ordering isolates the performance gains attributable to <i>micro-serving itself</i> (model-granular scaling, sharing, adaptive parallelism) from gains a smarter policy might separately contribute — and because the scheduler is explicitly pluggable, so such policies remain compatible, just orthogonal to the paper's contribution.<span class="mis">Misconception: that FCFS is used because it's necessarily optimal. It's used because it's a clean, low-overhead baseline that doesn't need global optimization or future-arrival knowledge — not because more sophisticated policies wouldn't help further.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">Model sharing's SLO-attainment benefit grows from a modest gap at low request rates to a huge one at high rates (e.g. 86%→100% at RS=0.25 vs 22%→92% at RS=1.0 in the paper's Figure 10). Why does sharing help more as load increases?</div>
+      <details><summary>Show answer</summary><div class="ans">At low request rates there's little contention — even without sharing, models mostly aren't fighting over the same GPUs or paying repeated load costs, so attainment is already high either way. As the rate rises, workflows increasingly compete for GPUs; without sharing, each must separately re-load or wait for its own dedicated model copy, and that redundant loading cost compounds under contention. Sharing removes exactly that redundant cost, so its benefit is largest precisely when the system is most stressed.<span class="mis">Misconception: that a mechanism's benefit is a fixed percentage independent of load. Model sharing's payoff scales with contention — it's most valuable exactly when you need it most.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 7 · hard</span>
+      <div class="qtext">DiFlow's node-level fault isolation limits a failure to "affected nodes and their lost inputs." Construct a scenario where a single executor failure still disrupts more than one workflow, despite this isolation.</div>
+      <details><summary>Show answer</summary><div class="ans">Because model sharing deliberately places nodes from different workflows onto the same warm executor, one executor can be hosting, say, the shared diffusion-model node for both Workflow A and Workflow B at once. If that executor fails, both workflows lose their in-flight diffusion-model node simultaneously — the failure domain is per-node, but a node that's serving multiple workflows' requests (via batching/sharing) means the executor failure's blast radius spans those workflows too. Recovery still only re-executes the affected nodes (not entire workflows), but "affected" can span multiple workflows when sharing is active.<span class="mis">Misconception: that node-level isolation means "one workflow" isolation. The isolation boundary is the node/executor, and because sharing intentionally colocates different workflows' nodes, a shared node's failure can touch several workflows at once — narrower than monolithic (whole-workflow) failure, but not single-workflow-narrow.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What's the actual unit DiFlow schedules — a GPU, a workflow, or something else?<span class="chev">▾</span></summary><div class="a">A <b>workflow node</b>: one model invocation (e.g., "run this diffusion model on this batch") produced by the graph compiler. It's smaller than a whole workflow and larger than a raw kernel — the granularity chosen specifically because it's what can be independently scaled, placed, and shared.</div></details>
+      <details><summary><span class="q">Q2</span>Why can't existing microservice or LLM-agent frameworks (Ray, Parrot) just be reused for this?<span class="chev">▾</span></summary><div class="a">They target CPU-centric dataflow or autoregressive token generation, neither of which expresses diffusion-specific semantics: ControlNet feature maps consumed at specific layers mid-denoising, LoRA weight-patching that mutates model state, GPU-native tensor communication instead of host-memory dataflow, and diffusion-specific parallelism strategies. DiFlow's programming model, compiler, and data engine are built to carry these semantics end to end.</div></details>
+      <details><summary><span class="q">Q3</span>How is "eager" fetch different from just a normal function call?<span class="chev">▾</span></summary><div class="a">It isn't conceptually different — it's the default: a node can't begin executing until its eager inputs are physically present in its local data store. The distinction only matters because DiFlow also offers <i>deferred</i> fetch, where a node begins executing and fetches an input only when execution reaches the point that actually consumes it.</div></details>
+      <details><summary><span class="q">Q4</span>Does model sharing mean two requests literally run inside the same GPU kernel call?<span class="chev">▾</span></summary><div class="a">Often yes, in the common case: the scheduler batches same-model nodes from different workflows together (up to a profiled max batch size) and runs them as one inference call on a shared executor. This is standard request batching, just applied across workflow identities rather than within one.</div></details>
+      <details><summary><span class="q">Q5</span>What happens to a LoRA-patched model when it needs to serve a request with a different LoRA?<span class="chev">▾</span></summary><div class="a">The scheduler triggers a patch swap: remove the current LoRA's weights, apply the new one. This is far cheaper than loading a whole fresh base model (§7.3) — reported at 886 MiB / 100 ms versus 3.9 GiB / 430 ms for SD3 — so patched replicas remain shareable across requests wanting different styles, just with a small swap cost.</div></details>
+      <details><summary><span class="q">Q6</span>Is intra-node and inter-node parallelism the same mechanism?<span class="chev">▾</span></summary><div class="a">No. <b>Intra-node</b> parallelism splits <i>one</i> model's computation (e.g., the two CFG passes) across several GPUs — it's a scheduler decision about how many executors to assign one batch. <b>Inter-node</b> parallelism overlaps <i>two different</i> models' nodes (e.g., ControlNet and Flux) that have no eager dependency between them, letting them run concurrently on separate executors.</div></details>
+      <details><summary><span class="q">Q7</span>Does DiFlow change what image comes out, compared to running the same workflow monolithically?<span class="chev">▾</span></summary><div class="a">No — the paper explicitly verifies computational equivalence: DiFlow and Diffusers produce identical images for identical inputs. DiFlow only changes <i>how</i> model executions are scheduled and where tensors move, not the underlying diffusion computation.</div></details>
+      <details><summary><span class="q">Q8</span>How does the system scale beyond one coordinator as the cluster grows?<span class="chev">▾</span></summary><div class="a">Executors are sharded across multiple coordinators, each managing a disjoint subset of workflows chosen to preserve model-sharing opportunities within a shard. A cluster management service handles coordinator discovery and failure detection; an executor failure triggers reassignment of just its affected nodes, not a full workflow restart.</div></details>
+      <details><summary><span class="q">Q9</span>Is the micro-serving overhead (extra communication, coordination) actually negligible?<span class="chev">▾</span></summary><div class="a">Measured end-to-end overhead tops out at 150 ms against workflows that take 2–20 s to complete (0.75–7.5% of runtime). At 256-GPU simulated scale with 500 in-flight requests, the coordinator itself accounts for only 2.7–3.4% of execution time for the two largest-DAG workflow families tested.</div></details>
+      <details><summary><span class="q">Q10</span>What's explicitly left for future work?<span class="chev">▾</span></summary><div class="a">The paper does not target long-horizon global replica placement — it makes online decisions from current executor state and per-model profiles. A complementary global planner forecasting demand over longer horizons (as explored for LLM serving and omni-modal workflow serving) is noted as an open problem for shared, adapter-rich diffusion workflows specifically.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Micro-serving</b><span>DiFlow's approach: schedule, scale, and share at the granularity of an individual model, not a whole diffusion workflow.</span></div>
+      <div class="term-def"><b>Workflow node</b><span>The unit of scheduling: one model invocation, with typed inputs/outputs, produced by compiling a workflow.</span></div>
+      <div class="term-def"><b>Model base class</b><span>The framework interface (setup_io/load/execute) model developers subclass to integrate a model without knowing its workflow context.</span></div>
+      <div class="term-def"><b>Graph compiler</b><span>Lowers a composed workflow into a topologically sorted DAG of nodes and applies optimization-rewrite passes.</span></div>
+      <div class="term-def"><b>Distributed data engine</b><span>Per-executor local data stores over NVSHMEM providing GPU-direct, zero-copy tensor transfers between nodes.</span></div>
+      <div class="term-def"><b>Eager / deferred fetch</b><span>Eager: input must be ready before a node starts. Deferred: node starts immediately, fetches the input at first use.</span></div>
+      <div class="term-def"><b>Model sharing</b><span>Dispatching same-model nodes from different workflows onto the same warm-loaded GPU replica, avoiding redundant loads.</span></div>
+      <div class="term-def"><b>Adaptive parallelism</b><span>Choosing a batch's GPU parallelism degree at dispatch time as min(available executors, max useful degree).</span></div>
+      <div class="term-def"><b>SLO-aware admission control</b><span>Estimating a new request's completion time from remaining DAG latency and rejecting it early if it can't meet its deadline.</span></div>
+      <div class="term-def"><b>Model state table</b><span>Per-executor record of which models are currently resident in GPU memory, kept current via node-completion piggybacking.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>ControlNet</b><span>A parallel-execution adapter, roughly base-model-sized, that feeds feature maps into specific layers during denoising.</span></div>
+      <div class="term-def"><b>LoRA</b><span>A weight-patching adapter merged into base-model weights before inference; specializes a replica until unpatched.</span></div>
+      <div class="term-def"><b>Latent parallelism</b><span>Splitting classifier-free guidance's two denoising passes across GPUs, with scatter-gather sync each step.</span></div>
+      <div class="term-def"><b>ControlNet parallelism</b><span>Running a ControlNet and the base model concurrently on separate GPUs, exchanging feature maps mid-inference.</span></div>
+      <div class="term-def"><b>NVSHMEM</b><span>NVIDIA's GPU-side one-sided-communication library, used here for zero-copy tensor transfer over NVLink/RDMA.</span></div>
+      <div class="term-def"><b>FCFS</b><span>First-come-first-served — the scheduler's base ordering, tie-broken by DAG depth.</span></div>
+      <div class="term-def"><b>SLO attainment</b><span>Fraction of all submitted requests (including rejected ones) completed within their latency deadline.</span></div>
+      <div class="term-def"><b>Approximate caching</b><span>Nirvana's optimization: initialize denoising from a cached similar image instead of random noise, cutting steps.</span></div>
+      <div class="term-def"><b>Async LoRA loading</b><span>Katz's optimization: overlap LoRA fetch with early base-model inference, then hot-patch when ready.</span></div>
+      <div class="term-def"><b>CV (coefficient of variation)</b><span>Parameter controlling simulated traffic burstiness while holding the mean arrival rate fixed.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What DiFlow buys (vs the strongest monolithic baseline)</div>
+      <div class="viz-kicker">headline figures from §7 · bars cap visually for large multipliers — read exact values in the labels</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Request rate<small>at 90% SLO</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="25"><span>up to 3× (vs Diffusers-S)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Burst tolerance<small>CV scale</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="25"><span>up to 8×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">GPU requirement<small>for 90% SLO</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="25"><span>up to 3× fewer GPUs</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">SLO attainment<small>at high load</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="25"><span>&gt;90% vs &lt;3% (strongest baseline)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">System overhead<small>micro-serving cost</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="3"><span>≤150 ms (0.75–7.5% of runtime)</span></div></div></div>
+      </div>
+      <figcaption><b>The pattern:</b> every headline gain traces back to one design choice — scheduling at model granularity — evaluated across SD3, SD3.5-Large, Flux-Dev, and Flux-Schnell workflows on 8–32 real H800 GPUs plus a 256-GPU simulator. (Paper §7.1–§7.5)</figcaption>
+    </figure>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Katz: Efficient Workflow Serving for Diffusion Models with Many Adapters <span class="diff med">medium</span></h4><div class="meta">Li, Yang et al. · USENIX ATC · 2025</div><p>Source of ControlNet parallelism and asynchronous LoRA loading — the monolithic-workflow optimizations DiFlow re-expresses as compiler passes and schedules dynamically.</p></div>
+    <div class="read-item reveal"><h4>Approximate Caching for Efficiently Serving Text-to-Image Diffusion Models (Nirvana) <span class="diff easy">easy</span></h4><div class="meta">Agarwal, Mitra et al. · USENIX NSDI · 2024</div><p>The cached-initialization optimization DiFlow implements as a cache-lookup compiler pass, reproducing its original speedups.</p></div>
+    <div class="read-item reveal"><h4>DistriFusion: Distributed Parallel Inference for High-Resolution Diffusion Models <span class="diff med">medium</span></h4><div class="meta">Li, Cai et al. · IEEE/CVF CVPR · 2024</div><p>An intra-node parallelism technique DiFlow integrates and schedules adaptively rather than statically.</p></div>
+    <div class="read-item reveal"><h4>Shepherd: Serving DNNs in the Wild <span class="diff med">medium</span></h4><div class="meta">Zhang, Tang et al. · USENIX NSDI · 2023</div><p>Source of the Diffusers-S baseline's planning-and-scheduling framework, DiFlow's strongest monolithic comparison point.</p></div>
+    <div class="read-item reveal"><h4>Serving DNNs like Clockwork <span class="diff med">medium</span></h4><div class="meta">Gujarati, Karimi et al. · USENIX OSDI · 2020</div><p>Source of the swap-based model-unit scheduling adapted into the Diffusers-C baseline.</p></div>
+    <div class="read-item reveal"><h4>Ray: A Distributed Framework for Emerging AI Applications <span class="diff hard">hard</span></h4><div class="meta">Moritz, Nishihara et al. · USENIX OSDI · 2018</div><p>A generic task-graph runtime DiFlow builds beyond, adding diffusion-specific semantics (adapter patching, deferred tensor consumption) that generic DAG systems don't express.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card">
+      <p style="margin:0 0 .7em"><b>From the paper directly:</b> all named systems, algorithms, primitives (Model/Workflow classes, eager/deferred fetch, the scheduler's three decisions), and every quantitative result cited in this guide (loading-latency/memory-waste percentages, model-sharing latency/memory reductions, LoRA swap figures, adaptive-parallelism multipliers, admission-control attainment numbers, end-to-end overhead) are taken directly from the paper text, §2–§7.</p>
+      <p style="margin:0">
+        <b>This guide's own framing:</b> the food-truck/kitchen, carpooling, waiter/dessert, temp-staffing, bouncer, and modular-desk analogies; the derived arithmetic in Worked Examples (e.g. converting "1.3× faster" into a 23% latency cut, or reconstructing the 75%/41.2% memory-waste percentages from stated multipliers); the CXL/tiering framing note in How It Works §6; and all SVG diagrams are original explanatory scaffolding built around the paper's stated facts, not paper content themselves.
+      </p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Yang, Li, Feng, Jiang, Di, Lu, Liu, Yu, Lan, Yang, Qu, Zhang, Wang, "DiFlow: A System for Micro-Serving Text-to-Image Diffusion Workflows" (SOSP '26)</span>
+    <span><b>Source:</b> conference paper text (provided)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PARTITION EXPLORER (no matching elements on this page; safely no-ops) ---- */
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal split.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Not optimal — adjust.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5750A8">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
