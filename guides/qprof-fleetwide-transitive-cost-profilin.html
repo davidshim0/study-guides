@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<!-- QProf field guide — Fleetwide Transitive Cost Profiling of Warehouse-Scale Services (Xi et al., SOSP'26).
+     House style borrowed from the UCP field guide template. Semantic colors:
+     teal-blue = skeletal tracing (accurate, low-overhead) · amber = cost/$ metrics (CPU/TPU/disk)
+     violet = QProf's own machinery (pipeline, monitor, batching APIs) · rust = normal tracing / observer effects (the flawed baseline). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finding the Room at the Top — QProf, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D6A23A; --honey-deep:#AD7A16; --honey-soft:#F8E7C0;
+  --dram:#1F7A93; --dram-soft:#D9EAF0;       /* teal-blue = skeletal tracing (accurate, invisible) */
+  --ltram:#6659BE; --ltram-soft:#E7E3F7;     /* violet = QProf's own machinery / pipeline           */
+  --optane:#C1543C; --optane-soft:#F7DED4;   /* rust = normal tracing / observer effects (baseline) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,122,147,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(102,89,190,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(214,162,58,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(102,89,190,.05) 31px,rgba(102,89,190,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(214,162,58,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#123a45;font-size:.96rem}
+.primer .ready b{color:#0d2b33}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#123a45}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a2f9a}
+.chip-lru{background:var(--optane-soft);color:#8a3222}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #b9dde6;color:#123a45}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#8a3222}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fc7d6;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c3bce6;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dedaf3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#7b70d0,#6659BE)}
+.bf-hi{background:linear-gradient(90deg,#2790a8,#1F7A93)}
+.bf-lru{background:linear-gradient(90deg,#d0674f,#C1543C)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive; unused on this page but kept for style parity) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#123a45;border:1px solid #9fc7d6}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#123a45}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#8a3222}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#D6A23A} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#9b91e0}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#123a45}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#8a3222}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,122,147,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(102,89,190,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(214,162,58,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Profiling a datacenter like it's <span class="swash">one program</span>, one RPC at a time</h1>
+    <p class="lede">A single search query fans out across dozens of microservices you don't own. QProf treats that whole tangle as one call stack, so it can tell you exactly which service is burning your CPUs — without a single line of manual instrumentation.</p>
+    <div class="hero-meta">
+      <span>📄 "QProf: Fleetwide Transitive Cost Profiling of Warehouse-Scale Services" · Xi et al., Google</span>
+      <span>🎓 Distributed tracing basics assumed — the primers cover them</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🕸️</div>
+      <p>Trace RPCs like stack frames, weight every sample by <span class="ro">how rare it was</span>, and make the tracer <span class="wo">invisible</span> enough that it never lies about what really happened.</p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then ten ideas the paper assumes</h2>
+      <p class="sub">Acronyms first — pin these down, then work through the primers. Everything is collapsed; open what's unfamiliar.</p>
+    </div>
+
+    <div class="card" style="background:var(--paper-2)">
+      <h3 style="margin-bottom:10px">Quick glossary — acronyms used throughout</h3>
+      <div class="gloss">
+        <div class="term-def"><b>RPC</b><span>Remote Procedure Call — a request sent from one service to another over the network.</span></div>
+        <div class="term-def"><b>QPS</b><span>Queries Per Second — the traffic rate of an RPC or service.</span></div>
+        <div class="term-def"><b>TPU</b><span>Tensor Processing Unit — Google's ML accelerator; a cost metric QProf tracks alongside CPU.</span></div>
+        <div class="term-def"><b>SLO</b><span>Service-Level Objective — a latency/availability target that determines a job's priority tier.</span></div>
+        <div class="term-def"><b>HT estimator</b><span>Horvitz–Thompson estimator — the inverse-probability-weighting formula ("unsampling") that turns a handful of samples into a fleetwide total.</span></div>
+        <div class="term-def"><b>TLS</b><span>Thread-Local Storage — where a TraceContext is installed so the current thread can find it.</span></div>
+        <div class="term-def"><b>DAG</b><span>Directed Acyclic Graph — the shape a request takes when it fans in (batching) rather than strictly tree-branches.</span></div>
+        <div class="term-def"><b>GWP</b><span>Google-Wide Profiling — an older single-process fleetwide profiler; QProf is "GWP for RPCs."</span></div>
+        <div class="term-def"><b>TRA</b><span>Transitive Resource Accounting — a prior system with similar goals, compared in Related Work.</span></div>
+        <div class="term-def"><b>LLM</b><span>Large Language Model — appears in one case study (long-running calls with misconfigured RPC deadlines).</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:24px">
+      <span><i style="background:var(--dram)"></i> skeletal tracing (accurate, invisible)</span>
+      <span><i style="background:var(--honey-deep)"></i> cost metrics ($, CPU, TPU)</span>
+      <span><i style="background:var(--ltram)"></i> QProf's own machinery</span>
+      <span><i style="background:var(--optane)"></i> normal tracing / observer effects (the baseline problem)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Warehouse-scale services and RPCs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A modern cloud program isn't one binary — it's a "web of microservices" talking over the network via <b>RPCs</b>. A single user query (e.g. a search) might touch dozens of independently-owned services, each doing a slice of the work.</p>
+          <p>This mesh runs across thousands of datacenters — "the data center is the computer." Understanding performance means understanding the whole mesh, not any one service in isolation.</p>
+          <div class="ready"><b>Now you're ready:</b> QProf's whole premise is treating this mesh of RPCs as if it were the call stack of one giant program.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Traces, spans, and the trace tree<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>trace</b> represents one distributed computation (like one search query), identified by a 64-bit trace ID. It's built from <b>spans</b> — each a logical unit of work (usually one RPC), with its own 64-bit span ID and a pointer to its parent span. Traces are (usually) trees of spans.</p>
+          <p>This is the Dapper tracing model, and it's normally used to debug why one particular request was slow.</p>
+          <div class="ready"><b>Now you're ready:</b> QProf repurposes this same tree structure, but sums <i>cost</i> across it instead of just displaying <i>latency</i> for one request.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Why you sample instead of tracing everything<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Tracing every single RPC at fleet scale would be prohibitively expensive. So systems sample: trace 1-in-N requests, chosen either <b>uniformly</b> (probability 1/N, good for statistics) or by <b>forced</b> business logic (e.g. "always trace requests from this debug tool").</p>
+          <p>The sampling decision is usually made at the root of a request and propagated down — but a middleware service partway through can override it, producing a <b>partial trace</b> that's missing everything above it.</p>
+          <div class="ready"><b>Now you're ready:</b> QProf can only build reliable fleetwide statistics from traces that are both uniformly sampled <i>and</i> rooted — Section 3 is entirely about why the other kinds of samples can't be used.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Cost is summable; latency isn't<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>If service A calls B and C in parallel, the request's <i>latency</i> is roughly max(B, C) — you can't just add wait times. But <i>cost</i> metrics like CPU-seconds, TPU-seconds, or disk ops are additive no matter how the work was scheduled: A's transitive cost is simply its own cost plus B's plus C's.</p>
+          <p>This is why traces — built for latency debugging — can be repurposed as a <i>cost</i> profiler far more easily than as a general performance profiler.</p>
+          <div class="ready"><b>Now you're ready:</b> QProf deliberately restricts itself to cost metrics (CPU/TPU/disk/$) for exactly this reason — it's the tractable half of the problem.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Transitive cost: a query's whole bill<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A service's <b>self cost</b> is what it spends running its own code. Its <b>transitive cost</b> also includes everything it triggers downstream — every backend RPC, and their backends, all the way to the leaves.</p>
+          <p>Most existing tools only show self cost per-service. Transitive cost answers the more useful question: "if I turn this feature off, how much of the fleet's total spend actually disappears?"</p>
+          <div class="ready"><b>Now you're ready:</b> transitive cost is the entire point of QProf — it's what lets a single frontend feature be blamed for CPU burned four hops away.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Ambient (background) CPU profilers<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A sampling CPU profiler periodically interrupts a running process (here, every 10 ms of CPU time) and records what it was doing. Run continuously, "ambient," on every process, it needs no manual setup — it has existed at Google for over a decade.</p>
+          <p>Normally it just tags samples with the currently-running RPC method name to get <i>self</i>-cost breakdowns per RPC.</p>
+          <div class="ready"><b>Now you're ready:</b> QProf's trick is hooking this profiler's interrupt handler into the trace machinery, so each tick gets credited to a specific query, not just a specific RPC method.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>The observer effect<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An <b>observer effect</b> is when measuring something changes it. Tracing is supposed to be passive, but if application code checks "am I being traced?" and does extra work only when the answer is yes (e.g. writing debug logs), the trace no longer reflects normal behavior.</p>
+          <p>Worse, because that extra RPC only ever shows up in traced (and thus statistically over-weighted) requests, naively summing trace data massively over-counts its true cost.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the single biggest reason a "just sum up what's in the traces" cost profiler doesn't work out of the box — Section 3.3 walks through a real 100× overestimate caused by exactly this.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>"Room-at-the-top": doing less work<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Most performance tools help you do the <i>same</i> work <i>faster</i> — optimize a hot loop, cut a lock, shrink a critical path. "Room-at-the-top" is the other lever: skip work entirely. "The fastest memcpy is the one you don't do; the cheapest search query is the one whose results were cached."</p>
+          <p>This kind of opportunity (empty results, unnecessary retries, cache misses that shouldn't have missed) is invisible to per-function CPU profiling — you need to see the whole request's fate to spot it.</p>
+          <div class="ready"><b>Now you're ready:</b> this is QProf's stated mission — it's a profiler built specifically to surface "found money" that ordinary profilers can't see, and the case studies tab is full of examples.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>QProf in a nutshell</h2>
+      <p class="sub">The mismatch between what traces are built for and what a cost profiler needs, and the four fixes that close the gap.</p>
+    </div>
+    <div class="prose">
+      <p>Distributed traces exist to debug latency — finding the one slow request out of a haystack. A cost profiler needs the opposite: an unbiased view of the <i>entire haystack's</i> resource spend. Naively summing cost data out of ordinary traces breaks in at least three ways: users can force traces in ways that destroy well-defined sampling probabilities, tracing overhead makes traced requests artificially more expensive, and applications can behave differently when they know they're being watched (the <span class="mem-chip chip-lru">observer effect</span>).</p>
+      <p><strong>QProf</strong> fixes all three by inventing <span class="mem-chip chip-hi">skeletal tracing</span>: an ultra-lightweight, root-only, independently-and-uniformly-sampled trace mode that is completely invisible to application code — <code>is_traced()</code> always returns false, and every public annotation API becomes a no-op. What survives is enough structure (spans + a handful of restricted, cost-only annotations) to compute a reliable statistical population.</p>
+      <p>To fill in <em>cost</em> without asking any of the fleet's thousands of services to add instrumentation, QProf wires a <span class="mem-chip chip-sat">per-query ambient CPU profiler</span> directly into the trace's <code>TraceContext</code>: every 10 ms interrupt increments a counter on whichever query happens to be running, and that counter is written straight into the trace when the query finishes. New <span class="mem-chip chip-ucp">fan-in / batching APIs</span> give batched requests (which merge many logical queries into one RPC) a well-defined sampling probability, so their cost can be split back across the requests inside. Finally, an offline pipeline processes trillions of spans a day, expanding them into per-callstack cost, weighting each sample by its inverse sampling probability (the Horvitz–Thompson "unsampling" estimator), and aggregating down to a queryable dataset.</p>
+      <p><strong>The payoff:</strong> despite being built entirely from sampled data, QProf measures QPS within 10% for 73% of all RPC profiles and CPU within 10% for 47% — both substantially tighter than what ordinary tracing gives you — with zero manual instrumentation, deployed fleetwide for years, credited with saving millions of CPU cores, thousands of TPUs, and large amounts of disk I/O.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Traces are built for latency (haystack → needle); a cost profiler needs the whole haystack, unbiased.</li>
+        <li><b>Skeletal tracing</b> = invisible + independently/uniformly sampled + root-only + minimal annotations.</li>
+        <li>An <b>ambient CPU profiler</b>, wired into the <code>TraceContext</code>, gives per-query CPU with zero manual instrumentation.</li>
+        <li><b>Fan-in / <code>BatchedTraceContext</code></b> APIs give batched requests well-defined sampling semantics.</li>
+        <li>The offline pipeline expands spans into callstacks, applies Horvitz–Thompson <b>"unsampling"</b> weights, then aggregates 10–20× smaller.</li>
+        <li>Validated against ground-truth self-cost from the background profiler: QPS/CPU accuracy both improve substantially over normal tracing.</li>
+        <li>Deployed fleetwide for years; used to find "room-at-the-top" — caching, batching, wasted work, priority inversion — saving millions of cores.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Treating a distributed request as one flame graph</div>
+      <div class="viz-kicker">billions of traces → callstacks tagged with cost → one aggregated view</div>
+      <div class="legend">
+        <span><i style="background:var(--ltram)"></i> QProf machinery (spans, pipeline)</span>
+        <span><i style="background:var(--honey-deep)"></i> cost annotation ($) at each hop</span>
+        <span><i style="background:var(--optane)"></i> the expensive path (cache miss → backend fetch)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="A flame-graph style callstack showing transitive cost accumulating from frontend down through a cache miss to a backend fetch">
+        <rect x="30" y="30" width="700" height="42" rx="6" fill="#E7E3F7" stroke="#6659BE" stroke-width="1.6"/>
+        <text x="380" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="13" font-weight="700" fill="#332C24">Frontend.HandleQuery — transitive cost $120</text>
+
+        <rect x="30" y="86" width="460" height="42" rx="6" fill="#E7E3F7" stroke="#6659BE" stroke-width="1.4"/>
+        <text x="260" y="111" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#332C24">Mixer.Query — $95</text>
+        <rect x="500" y="86" width="230" height="42" rx="6" fill="#D9EAF0" stroke="#1F7A93" stroke-width="1.4"/>
+        <text x="615" y="111" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#123a45">Cacher.Hit — $5 (skips backend)</text>
+
+        <rect x="30" y="142" width="300" height="42" rx="6" fill="#D9EAF0" stroke="#1F7A93" stroke-width="1.4"/>
+        <text x="180" y="167" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#123a45">Leaf0.Search — $60</text>
+        <rect x="340" y="142" width="150" height="42" rx="6" fill="#E7E3F7" stroke="#6659BE" stroke-width="1.4"/>
+        <text x="415" y="167" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#332C24">Leaf1.Rank — $30</text>
+
+        <rect x="30" y="198" width="150" height="42" rx="6" fill="#F7DED4" stroke="#C1543C" stroke-width="1.6"/>
+        <text x="105" y="223" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#8a3222">Cacher.BackendFetch — $40</text>
+        <rect x="190" y="198" width="140" height="42" rx="6" fill="#F8E7C0" stroke="#AD7A16" stroke-width="1.4"/>
+        <text x="260" y="223" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">DB.Read — $40 (self)</text>
+
+        <text x="30" y="272" font-family="Mulish" font-size="12.5" fill="#6E6456">Width ∝ cost. The $40 spent on <tspan fill="#8a3222" font-weight="700">Cacher.BackendFetch</tspan> only happens on a cache <tspan font-weight="700">miss</tspan> — the parallel $5 <tspan fill="#123a45" font-weight="700">Cacher.Hit</tspan> path shows what's avoided when it hits (§6.1.1).</text>
+      </svg>
+      <figcaption>Rebuilt from the paper's Figure 1 concept: every span in every trace gets a cost annotation; QProf sums matching callstacks across billions of traces per day to build views like this one — a whole distributed request read as a single flame graph.</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → four fixes → aggregate → find room-at-the-top</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Ordinary traces are biased by user control, overhead, and observer effects</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Skeletal tracing</div><div class="nd">Invisible, independently &amp; uniformly sampled, root-only</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Ambient CPU profiler</div><div class="nd">10ms ticks credited to the live TraceContext — zero instrumentation</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Fan-in / batching APIs</div><div class="nd"><code>BatchedTraceContext</code> gives batches well-defined sampling probability</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Postprocessing pipeline</div><div class="nd">Expand → unsample (HT weights) → aggregate, 10–20× smaller</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Room-at-the-top</div><div class="nd">Caching ROI, wasted work, priority inversion — millions of cores saved</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Seven everyday pictures</div>
+      <h2>How to think about QProf</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with an honest note about where the picture breaks.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="40" r="20" fill="#F7DED4" stroke="#C1543C" stroke-width="2.5"/>
+          <circle cx="70" cy="34" r="6" fill="#C1543C"/>
+          <rect x="60" y="46" width="20" height="14" rx="3" fill="#C1543C"/>
+          <path d="M20 78 q50 -18 100 0" stroke="#6659BE" stroke-width="2.2" fill="none" stroke-dasharray="3 4"/>
+          <path d="M35 60 l6 -8 M105 60 l-6 -8" stroke="#332C24" stroke-width="2" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">The core danger · Observer effect</span>
+        <h3>The security camera that changes the room</h3>
+        <p>Install a visible camera in a break room and people behave differently the moment the red light is on — the footage no longer shows normal behavior. Some services do exactly this: they check "am I being watched?" and log extra data only when traced. Sum that up naively and you conclude everyone always does the extra logging — QProf once overestimated a real RPC's cost by <b>100×</b> this way.</p>
+        <div class="breaks"><b>Where it breaks:</b> the analogy suggests malice; in practice it's a reasonable-looking debug convenience (<code>if (traced) log_extra()</code>) that nobody realized would poison fleetwide statistics.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="66" width="100" height="14" rx="3" fill="#F3EADA" stroke="#D8C8AC"/>
+          <circle cx="34" cy="73" r="5" fill="#D9EAF0" stroke="#1F7A93" stroke-width="1.6"/>
+          <circle cx="50" cy="73" r="5" fill="#D9EAF0" stroke="#1F7A93" stroke-width="1.6"/>
+          <circle cx="66" cy="73" r="5" fill="#D6A23A"/>
+          <circle cx="82" cy="73" r="5" fill="#D9EAF0" stroke="#1F7A93" stroke-width="1.6"/>
+          <circle cx="98" cy="73" r="5" fill="#D9EAF0" stroke="#1F7A93" stroke-width="1.6"/>
+          <path d="M66 68 v-34" stroke="#AD7A16" stroke-width="2" stroke-dasharray="2 3"/>
+          <text x="66" y="28" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">×5000</text>
+        </svg></div>
+        <span class="term">Turning samples into totals · HT estimator</span>
+        <h3>An exit poll, not a full recount</h3>
+        <p>Pollsters don't survey every voter — they poll a fraction and multiply each response by how many real voters it represents. QProf does the same: a query sampled at 1/10,000 stands in for 10,000 real queries, so each sample's cost gets multiplied by its inverse sampling probability before being summed (the Horvitz–Thompson estimator, "unsampling"). Miscount who was eligible to be polled, and the whole extrapolation is wrong.</p>
+        <div class="breaks"><b>Where it breaks:</b> a pollster knows every voter's turnout probability. Force-traced requests have <i>no</i> defined probability at all — there's no honest multiplier, so they simply can't be polled (§3.1).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="22" width="48" height="60" rx="6" fill="#fff" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3"/>
+          <circle cx="40" cy="38" r="8" fill="none" stroke="#9A8E7C" stroke-width="2"/>
+          <path d="M28 66 q12 -10 24 0" stroke="#9A8E7C" stroke-width="2" fill="none"/>
+          <rect x="76" y="22" width="48" height="60" rx="6" fill="#D9EAF0" stroke="#1F7A93" stroke-width="2.4"/>
+          <circle cx="100" cy="38" r="8" fill="none" stroke="#1F7A93" stroke-width="2.4"/>
+          <path d="M88 66 q12 -10 24 0" stroke="#1F7A93" stroke-width="2.4" fill="none"/>
+          <path d="M100 46 v4" stroke="#1F7A93" stroke-width="2"/>
+        </svg></div>
+        <span class="term">The fix · Skeletal tracing</span>
+        <h3>A bare mannequin, not a dressed-up one</h3>
+        <p>A shop mannequin shows a garment's silhouette without any of the styling that makes a live model act self-conscious. Skeletal tracing is the mannequin version of a trace: it keeps only the bones (span structure + a few restricted cost annotations) and none of the "clothing" (custom annotations, force-trace hooks) that let application code notice or influence it. <code>is_traced()</code> always returns false, so the app can't even tell it's being measured.</p>
+        <div class="breaks"><b>Where it breaks:</b> a mannequin is permanently bare. Skeletal tracing can co-occur with a full "dressed" normal trace on the very same request — they're independent, layered decisions, not mutually exclusive outfits.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="30" fill="none" stroke="#6659BE" stroke-width="2" stroke-dasharray="4 4"/>
+          <line x1="70" y1="48" x2="70" y2="22" stroke="#D6A23A" stroke-width="3" stroke-linecap="round"/>
+          <circle cx="70" cy="48" r="4" fill="#332C24"/>
+          <path d="M40 76 l6 6 M100 76 l-6 6 M40 20 l6 -6 M100 20 l-6 -6" stroke="#9A8E7C" stroke-width="2" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">Zero-instrumentation cost · Ambient profiler</span>
+        <h3>A strobe light flashing every 10ms</h3>
+        <p>Instead of asking every dancer to self-report what they're doing, a strobe flashes at a fixed interval and a camera notes who's lit up each time. Over enough flashes, whoever dances longest accumulates the most photos. QProf's CPU profiler is that strobe: it fires every 10ms and increments a counter on whichever query's <code>TraceContext</code> happens to be installed on that thread right then — no dancer has to cooperate.</p>
+        <div class="breaks"><b>Where it breaks:</b> a strobe catches everyone equally; a 10ms sampling interval is coarse enough that most individual spans get <i>zero</i> flashes and look like they cost nothing — only in aggregate across trillions of spans does the picture resolve.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="52" width="26" height="18" rx="3" fill="#D6A23A"/>
+          <rect x="44" y="52" width="26" height="18" rx="3" fill="#D6A23A"/>
+          <rect x="74" y="52" width="26" height="18" rx="3" fill="#D6A23A"/>
+          <path d="M12 44 h96 l-8 -10 M108 44 l-8 10" stroke="#6659BE" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <rect x="14" y="72" width="86" height="14" rx="4" fill="none" stroke="#1F7A93" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Amortizing overhead · Batching / fan-in</span>
+        <h3>Carpooling to split the toll</h3>
+        <p>Three commuters driving separately each pay a full toll; carpooled, they split one toll three ways. Batching does the same for RPCs: instead of paying per-request overhead three times, a service merges requests into one bigger RPC. QProf's <code>BatchedTraceContext</code> flips an independent sampling coin for the batch itself, so — unlike the carpool — the cost of the ride can still be honestly measured and attributed back to each rider.</p>
+        <div class="breaks"><b>Where it breaks:</b> carpool cost splits evenly by definition. QProf instead <i>assumes</i> even splitting (linear cost in batch size) and validates it empirically — it isn't guaranteed, and the paper flags that very large batches can behave non-linearly.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 h100" stroke="#9A8E7C" stroke-width="2"/>
+          <path d="M30 70 v-30 l20 -14 l20 14 v30" fill="none" stroke="#1F7A93" stroke-width="2.4"/>
+          <path d="M110 40 q6 -18 -10 -22" stroke="#C1543C" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+          <text x="95" y="24" font-family="monospace" font-size="16" fill="#C1543C">✕</text>
+        </svg></div>
+        <span class="term">The mission · Room-at-the-top</span>
+        <h3>The cheapest flight is the one you never book</h3>
+        <p>The paper's own line: the fastest memcpy is the one you don't do; the cheapest search query is the one whose results were cached. Most performance tools help you fly faster; QProf helps you notice trips you didn't need to take at all — a feature that always returns empty, a retry that fires needlessly, a request that a cache should have absorbed.</p>
+        <div class="breaks"><b>Where it breaks:</b> some "unnecessary" trips are load-bearing — e.g. MapReduce jobs must read from reliable low-priority-tolerant storage even though it looks wasteful from a pure cost lens (§6.3). Room-at-the-top still needs a human to judge which room is safe to remove.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="50" width="60" height="22" rx="4" fill="#F8E7C0" stroke="#AD7A16" stroke-width="2"/>
+          <text x="50" y="65" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">express</text>
+          <rect x="90" y="50" width="30" height="22" rx="4" fill="#F7DED4" stroke="#C1543C" stroke-width="2"/>
+          <text x="105" y="65" text-anchor="middle" font-family="monospace" font-size="16" fill="#8a3222">🥛</text>
+          <path d="M20 44 h100" stroke="#332C24" stroke-width="2" stroke-dasharray="2 3"/>
+        </svg></div>
+        <span class="term">Wasteful cross-tier demand · Priority inversion</span>
+        <h3>A limo called out for a milk run</h3>
+        <p>A limo is provisioned and priced for urgent, guaranteed-fast trips. Sending it to fetch groceries doesn't slow the groceries down, but it monopolizes an expensive resource that should be idle and ready for the next real emergency. A throughput-oriented batch job issuing high-priority disk requests is the same pattern: it works fine, but it quietly consumes capacity meant for latency-sensitive, high-priority traffic (§6.3.1).</p>
+        <div class="breaks"><b>Where it breaks:</b> sometimes calling the limo is intentional and correct — e.g. a MapReduce job legitimately must read from high-reliability storage tiers. Priority inversion is a <i>smell</i> QProf can surface, not automatically a bug.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key diagrams rebuilt as visuals.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Why plain traces can't be a cost profiler</h3>
+      <p>Three separate problems corrupt naive "just sum the traces" cost accounting: (1) users can force-trace requests via arbitrary business logic, which have no well-defined sampling probability and are often non-root, producing partial trees; (2) tracing overhead makes traced requests measurably more expensive than untraced ones; (3) applications can behave differently when traced at all (the observer effect). Any one of these can silently invalidate an entire RPC's cost estimate.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Root-sampled vs. non-root-sampled trace</div>
+      <div class="viz-kicker">rebuilt from Fig. 3 — a partial trace hides everything above the sampling point</div>
+      <svg class="full" viewBox="0 0 700 210" role="img" aria-label="root sampled full trace vs mid sampled partial trace">
+        <text x="20" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Frontend samples the request → full trace</text>
+        <rect x="20" y="36" width="120" height="30" rx="5" fill="#E7E3F7" stroke="#6659BE" stroke-width="1.6"/><text x="80" y="55" text-anchor="middle" font-family="monospace" font-size="10">Frontend</text>
+        <line x1="80" y1="66" x2="80" y2="86" stroke="#9A8E7C"/>
+        <rect x="20" y="86" width="120" height="30" rx="5" fill="#E7E3F7" stroke="#6659BE" stroke-width="1.6"/><text x="80" y="105" text-anchor="middle" font-family="monospace" font-size="10">Mixer</text>
+        <line x1="80" y1="116" x2="45" y2="136" stroke="#9A8E7C"/><line x1="80" y1="116" x2="115" y2="136" stroke="#9A8E7C"/>
+        <rect x="10" y="136" width="70" height="30" rx="5" fill="#D9EAF0" stroke="#1F7A93" stroke-width="1.6"/><text x="45" y="155" text-anchor="middle" font-family="monospace" font-size="9">Leaf0</text>
+        <rect x="90" y="136" width="70" height="30" rx="5" fill="#D9EAF0" stroke="#1F7A93" stroke-width="1.6"/><text x="125" y="155" text-anchor="middle" font-family="monospace" font-size="9">Leaf1</text>
+
+        <text x="380" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Mixer force-samples instead → partial trace</text>
+        <rect x="380" y="36" width="120" height="30" rx="5" fill="#fff" stroke="#D8C8AC" stroke-width="1.6" stroke-dasharray="3 3"/><text x="440" y="55" text-anchor="middle" font-family="monospace" font-size="10" fill="#9A8E7C">Frontend (missing)</text>
+        <line x1="440" y1="66" x2="440" y2="86" stroke="#C1543C" stroke-dasharray="3 3"/>
+        <rect x="380" y="86" width="120" height="30" rx="5" fill="#F7DED4" stroke="#C1543C" stroke-width="1.8"/><text x="440" y="105" text-anchor="middle" font-family="monospace" font-size="10" fill="#8a3222">Mixer (root of trace)</text>
+        <line x1="440" y1="116" x2="405" y2="136" stroke="#9A8E7C"/><line x1="440" y1="116" x2="475" y2="136" stroke="#9A8E7C"/>
+        <rect x="370" y="136" width="70" height="30" rx="5" fill="#D9EAF0" stroke="#1F7A93" stroke-width="1.6"/><text x="405" y="155" text-anchor="middle" font-family="monospace" font-size="9">Leaf0</text>
+        <rect x="450" y="136" width="70" height="30" rx="5" fill="#D9EAF0" stroke="#1F7A93" stroke-width="1.6"/><text x="485" y="155" text-anchor="middle" font-family="monospace" font-size="9">Leaf1</text>
+        <text x="380" y="190" font-family="JetBrains Mono" font-size="10.5" fill="#8a3222">Frontend's cost is invisible; leaves are over-represented relative to the full tree.</text>
+      </svg>
+      <figcaption>A partial trace is missing cost coverage for everything above where it was force-sampled — unusable for fleetwide statistics. (Paper, Fig. 3)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Skeletal tracing — invisible, independently sampled</h3>
+      <p><b>Skeletal tracing</b> samples a request uniformly and independently of every other tracing decision — including whether it's also normally traced. Crucially, it's <i>invisible</i>: <code>is_traced()</code> always returns false and all public annotation APIs become no-ops, so application code cannot detect or react to it. Only a restricted, passkey-guarded API (used by RPC frameworks and the profiler itself) can write critical cost annotations. Sampling always happens at the request root, guaranteeing every skeletal trace represents the entire computation.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Sampling the population, not just the traced fraction</div>
+      <div class="viz-kicker">rebuilt from Fig. 6 — ignore tracing status entirely to stay unbiased</div>
+      <svg class="full" viewBox="0 0 700 200" role="img" aria-label="Three sampling strategies of a mixed population, only one unbiased">
+        <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Population: mostly untraced requests (gray), a few traced &amp; costlier ones (amber)</text>
+        <g>
+          <circle cx="60" cy="90" r="8" fill="#D8C8AC"/><circle cx="90" cy="90" r="8" fill="#D8C8AC"/><circle cx="120" cy="90" r="8" fill="#D6A23A"/><circle cx="150" cy="90" r="8" fill="#D8C8AC"/><circle cx="180" cy="90" r="8" fill="#D8C8AC"/><circle cx="210" cy="90" r="8" fill="#D6A23A"/>
+        </g>
+        <text x="60" y="118" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">the full population</text>
+
+        <rect x="30" y="140" width="180" height="34" rx="6" fill="#F7DED4" stroke="#C1543C" stroke-width="1.6"/>
+        <text x="120" y="161" text-anchor="middle" font-family="monospace" font-size="10" fill="#8a3222">✕ sample only traced → overestimate cost</text>
+
+        <rect x="270" y="140" width="200" height="34" rx="6" fill="#F7DED4" stroke="#C1543C" stroke-width="1.6"/>
+        <text x="370" y="161" text-anchor="middle" font-family="monospace" font-size="10" fill="#8a3222">✕ sample only untraced → underestimate cost</text>
+
+        <rect x="510" y="140" width="180" height="34" rx="6" fill="#D9EAF0" stroke="#1F7A93" stroke-width="2"/>
+        <text x="600" y="161" text-anchor="middle" font-family="monospace" font-size="10" fill="#123a45">✓ sample regardless of status → unbiased</text>
+      </svg>
+      <figcaption>The only unbiased strategy is sampling every request with equal probability regardless of tracing status — which is exactly what skeletal tracing's independence guarantees. (Paper, Fig. 6)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · Per-query CPU without manual instrumentation</h3>
+      <p>Manually instrumenting every service to report per-query CPU doesn't scale across millions of lines of code owned by different teams. Instead, QProf adds a single atomic counter to the (already per-query) <code>TraceContext</code>. The fleet's existing always-on ambient profiler fires a 10ms interrupt, checks which <code>TraceContext</code> is currently installed on that thread, and increments its counter. When the <code>TraceContext</code>'s refcount finally drops to zero — meaning all synchronous <i>and</i> asynchronous work for that query is done — the accumulated tick count is written to the trace as its CPU cost.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why write CPU straight into the trace instead of tagging profiler samples with trace/span IDs (as other tools do)?</b> At warehouse scale, tagging every CPU sample with a high-cardinality trace_id destroys the profiler's ability to aggregate identical samples together, ballooning storage — and &gt;99.9999% of traces are never individually viewed anyway, so that detail is wasted. Writing the aggregate cost into the trace avoids an enormous join at query time too.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Fan-in: giving batches well-defined sampling semantics</h3>
+      <p>Batching merges several logical requests into one RPC — a fan-in, not a strict tree. Naively, "trace the batch if any request inside is traced" seems reasonable, but it makes the batch's sampling probability depend on the (often unknown or undefined) probabilities of the requests inside — exactly the kind of non-uniform sampling QProf must avoid.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Stitching a batch back to a fairly-chosen parent</div>
+      <div class="viz-kicker">rebuilt from Fig. 8 — <code>BatchedTraceContext</code> flips its own independent coin</div>
+      <svg class="full" viewBox="0 0 700 210" role="img" aria-label="Two requests joining a batch, one randomly chosen as the parent during callstack conversion">
+        <rect x="20" y="20" width="90" height="32" rx="5" fill="#E7E3F7" stroke="#6659BE" stroke-width="1.6"/><text x="65" y="40" text-anchor="middle" font-family="monospace" font-size="10">Request A</text>
+        <rect x="20" y="66" width="90" height="32" rx="5" fill="#fff" stroke="#D8C8AC" stroke-width="1.4" stroke-dasharray="3 3"/><text x="65" y="86" text-anchor="middle" font-family="monospace" font-size="9" fill="#9A8E7C">Request B (untraced)</text>
+        <rect x="20" y="112" width="90" height="24" rx="5" fill="#fff" stroke="#D8C8AC" stroke-width="1.2" stroke-dasharray="2 3"/><text x="65" y="128" text-anchor="middle" font-family="monospace" font-size="8" fill="#9A8E7C">+ 9 more</text>
+
+        <path d="M110 36 h60 M110 82 h60 M110 124 h60" stroke="#9A8E7C" stroke-width="1.6" fill="none"/>
+        <rect x="180" y="60" width="130" height="40" rx="6" fill="#F8E7C0" stroke="#AD7A16" stroke-width="2"/>
+        <text x="245" y="84" text-anchor="middle" font-family="monospace" font-size="10" fill="#6e4a09">BatchedRequest, size=11</text>
+
+        <path d="M310 80 h60" stroke="#1F7A93" stroke-width="2" fill="none"/>
+        <rect x="380" y="60" width="150" height="40" rx="6" fill="#D9EAF0" stroke="#1F7A93" stroke-width="2"/>
+        <text x="455" y="84" text-anchor="middle" font-family="monospace" font-size="10" fill="#123a45">HandleBatch (traced)</text>
+
+        <path d="M65 52 C 65 130, 400 150, 400 100" stroke="#C1543C" stroke-width="2" fill="none" stroke-dasharray="4 3"/>
+        <text x="230" y="168" font-family="JetBrains Mono" font-size="10.5" fill="#8a3222">3 · During callstack conversion, randomly sample one traced parent (A) — weighted by 1/p — to stitch to the batch.</text>
+        <text x="20" y="192" font-family="JetBrains Mono" font-size="10.5" fill="#6E6456">1 · Requests join the batch  ·  2 · Batch's own coin flip decides if it's skeletally sampled, independent of A/B</text>
+      </svg>
+      <figcaption>Because the batch context gets its own fair coin flip, its cost can be measured honestly — and then fairly redistributed to a randomly-chosen sampled parent request, weighted by that parent's inverse sampling probability. (Paper, Fig. 8)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · The postprocessing pipeline</h3>
+      <p>Raw data arrives as one row per span. <b>Callstack expansion</b> walks every span up to its root, producing one row per (span, ancestor) pair — an O(N·M) blowup for N spans of average depth M. <b>Unsampling</b> assigns each row a statistical weight = (1/sampling probability) ÷ seconds-per-day, converting counts into a daily <i>rate</i> (Eq. 3), then sums <code>weight × cost</code> across matching callstacks to get total cost or QPS for any operation in the trace (Eq. 4). Finally, <b>aggregation</b> shrinks the now-huge dataset 10–20× by keeping all non-zero-cost spans verbatim, but downsampling the (much more numerous) zero-cost spans at a fixed rate and scaling their weights back up — since summed weight alone is enough to reconstruct QPS even after discarding most of them.</p>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">1 · Expand</div><div class="nd">1 span → M rows (one per ancestor), O(N·M) total</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">2 · Unsample</div><div class="nd">weight = (1/p) ÷ 86400; total = Σ weight × cost</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">3 · Aggregate</div><div class="nd">group by callstack signature; downsample zero-cost rows; 10–20× smaller</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces through the paper's formulas — unsampling a single sample, seeing why forced traces break it, and pricing two real "room-at-the-top" wins. Illustrative example numbers are labeled as such; sampling rates and result percentages are the paper's own.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Unsampling one skeletal trace (Eq. 3–4)</h3>
+      <p style="color:var(--ink-soft)">Skeletal tracing samples at the paper's example rate p = 1/10,000. Suppose one sampled query shows a CPU cost of 5 core-seconds on some RPC. What daily rate of CPU does that single sample represent?</p>
+      <ol class="seq">
+        <li><b>Compute the weight</b> (Eq. 3): weight = (1/p) ÷ (60·60·24) = 10,000 ÷ 86,400 ≈ <b>0.1157</b> "queries per second represented" per sample.</li>
+        <li><b>Apply it to this sample's cost</b> (Eq. 4, one term of the sum): weight × cost = 0.1157 × 5 ≈ <b>0.579 cores</b> of estimated fleetwide rate contributed by this one sample.</li>
+        <li><b>Scale up:</b> a real RPC profile is estimated by summing this term over every sample that hit it that day — thousands of such terms average out sampling noise.</li>
+        <li><b>Sanity check the units:</b> dividing by seconds-per-day converts a raw "cost × how-many-you-represent" number into a steady-state <i>rate</i> (cores, not core-days) — which is what engineers actually want to compare against machine budgets.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> every sample carries its own multiplier baked into its sampling probability — "unsampling" is just carefully bookkeeping that multiplier through the sum.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Why a high retry rate can zero out usable data (§3.1, Fig. 4)</h3>
+      <p style="color:var(--ink-soft)">Retry code force-traces every retry attempt for debuggability. If retries are common, what fraction of traffic becomes unusable for cost analysis, and why can't we just estimate a probability for it?</p>
+      <ol class="seq">
+        <li><b>Force-traced ⇒ no defined p.</b> A forced trace's probability depends on "what fraction of all requests happen to meet this business logic" — impossible to know at runtime and infeasible to reconstruct afterward.</li>
+        <li><b>Every forced trace must be discarded</b> from the statistical population (§3.1) — not down-weighted, <i>excluded</i>, since there's no honest multiplier to apply.</li>
+        <li><b>Illustrative scenario:</b> if, say, 90% of an endpoint's traffic ends up going through at least one force-traced retry, only the remaining 10% is usable — the sample population effectively shrinks 10×, and this specific endpoint's true cost becomes far noisier or entirely invisible.</li>
+        <li><b>The paper's real example:</b> this exact retry pattern was found in production code, and the intent (trace failures for debugging) was reasonable — the statistical damage was an unintended side effect nobody had reasoned through.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is why skeletal tracing's sampling decisions are deliberately walled off from any public "force trace" API (§4.1.4) — the bug in example ② simply cannot happen to a skeletal trace.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Pricing a response cache with QProf (Eq. 6, §6.1.1)</h3>
+      <p style="color:var(--ink-soft)">Illustrative numbers matched to the paper's method: a job sees QPS = 2,000, a cache hit rate of 70%, a cache-hit cost of 0.001 cores/query, and a (transitive) cache-miss cost of 0.05 cores/query. What are the savings from caching for this one job?</p>
+      <ol class="seq">
+        <li><b>Cost saved per hit:</b> miss_cost − hit_cost = 0.05 − 0.001 = <b>0.049 cores</b> avoided per cache hit.</li>
+        <li><b>Hits per second:</b> QPS × hit_rate = 2,000 × 0.70 = <b>1,400</b> hits/sec.</li>
+        <li><b>Job's savings</b> (Eq. 6, one term): 1,400 × 0.049 ≈ <b>68.6 cores</b> saved for this job alone.</li>
+        <li><b>Scaling up:</b> Eq. 6 sums exactly this term over every job using response caching; summed across the whole fleet, this is the calculation behind the paper's reported "millions of cores + HDD ops and thousands of TPUs" saved by caching.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> none of these four numbers (QPS, hit rate, hit cost, miss cost) were previously measurable together per-job before QProf — hit rate came from monitoring, but transitive miss cost needed a cost profiler.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Pricing request aggregation (Eq. 7, real batch-size stats from Fig. 14)</h3>
+      <p style="color:var(--ink-soft)">The paper reports the most common batch size is 1 (44% of batches — no batching happened), and for the rest, the average batch size is 23. Suppose (illustrative) an unbatched baseline query costs 10 CPU-ms, and a real batch of 23 costs 120 CPU-ms total. What are the savings, and what happens for size-1 batches?</p>
+      <ol class="seq">
+        <li><b>Baseline cost if unbatched:</b> batch_size × cost_baseline = 23 × 10 = <b>230 CPU-ms</b> (what 23 separate requests would have cost).</li>
+        <li><b>Actual batch cost:</b> 120 CPU-ms (per-request overhead amortized across the 23).</li>
+        <li><b>Savings for this batch</b> (Eq. 7): 230 − 120 = <b>110 CPU-ms</b>, roughly 48% cheaper than going unbatched.</li>
+        <li><b>Now a size-1 "batch":</b> 1 × 10 − 10 = <b>0</b>. Exactly as the paper states: "no resource savings are achieved here" — with nobody to amortize overhead against, batching a single request buys nothing.</li>
+        <li><b>Fleet scale:</b> summing Eq. 7 across every batch (weighted by 1/p as always) is how the paper arrives at request aggregation saving O(100k) cores fleetwide, even though 44% of batches individually contribute zero.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The <code>BatchedTraceContext</code> API is also how the paper measures the unbiased <code>cost_baseline</code> itself: it periodically flushes an already-sampled request in a batch of its own, rather than trusting whatever size-1 batches happen to occur naturally (which would be biased toward slow-to-fill traffic patterns).</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A request is both force-traced (a debug tool set a flag) and, independently, selected by skeletal tracing. Should its cost be counted in QProf's fleetwide statistics?</div>
+      <details><summary>Show answer</summary><div class="ans">Yes — but only the <b>skeletal</b> half of it matters for statistics. The skeletal sampling decision is independent of the force-trace flag and always has a well-defined probability, so that portion is usable. The normal/forced trace data sitting alongside it is simply extra debugging detail that plays no role in the cost totals.<span class="mis">Misconception: that "traced" is one binary status. A single request can carry multiple, independent tracing decisions at once — only skeletal tracing's decision is guaranteed statistically clean.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Skeletal tracing samples at 1/10,000 while normal tracing's effective fleetwide rate is about 1/4,000. Which one produces more raw trace volume, and does that explain why skeletal tracing's data is more accurate?</div>
+      <details><summary>Show answer</summary><div class="ans">Normal tracing actually produces <i>more</i> traces (1/4,000 ≫ 1/10,000 — roughly 2.5× the rate), yet skeletal tracing is still the more accurate source. So the improvement isn't from having more samples — it's from each skeletal sample being unbiased (no observer effects, no forced-trace pollution, lower overhead), which the paper explicitly notes.<span class="mis">Misconception: that accuracy comes from sample count. Here it comes from sample <i>quality</i> — a smaller, cleaner population beats a larger, contaminated one.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">A batch's sampling probability could in principle be computed as p_batch = 1 − ∏(1−p_i) (Eq. 2) over the requests inside it. Why is this formula useless in practice?</div>
+      <details><summary>Show answer</summary><div class="ans">Because p_i is unknowable for the vast majority of requests: if a request wasn't traced, nothing recorded its p_i at all, and if it was non-uniformly (forced) sampled, it has no well-defined p_i to begin with. The formula is mathematically correct but requires data that doesn't exist, which is exactly why QProf instead gives the batch its <i>own</i> independent coin flip rather than trying to derive one from its contents.<span class="mis">Misconception: that a correct formula is automatically a usable one. Eq. 2 is right in theory and unusable in practice — the paper's real fix sidesteps needing it at all.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">A service logs metadata via an RPC only when a request is traced, and the sampling probability of that trace is 1%. If that RPC shows up in every traced sample, by roughly what factor will naive summation overestimate its true fleetwide cost?</div>
+      <details><summary>Show answer</summary><div class="ans">About <b>100×</b>. Each traced sample gets weighted by 1/0.01 = 100 when unsampled, so a span that appears in <i>every</i> traced sample (but in reality only ever fires for that 1% of traced requests) gets counted as if 100× as many real requests trigger it — when the true trigger rate is only the traced fraction itself. This is the paper's actual reported observer-effect incident.<span class="mis">Misconception: that any span present in a trace reflects normal behavior. A span caused by the act of tracing itself gets inflated by exactly the inverse of the sampling probability — the rarer the trace, the bigger the distortion.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">The postprocessing pipeline downsamples zero-cost spans at, say, 10% but keeps all non-zero-cost spans. Why doesn't this bias the QPS estimate for a span that's almost always zero-cost?</div>
+      <details><summary>Show answer</summary><div class="ans">Because QPS is computed purely from summed statistical <i>weights</i>, not from raw row counts. When a zero-cost row survives the 10% downsampling, its weight is scaled up by 10× to compensate — so the total weight (and hence estimated QPS) is preserved even though 90% of the rows were discarded. Only the cost sum needs the actual rows; cost is zero either way, so nothing about the cost total is lost either.<span class="mis">Misconception: that dropping 90% of rows must lose 90% of the signal. Downsampling with weight rescaling is designed precisely so that summed statistics survive intact — it's compression, not data loss, for the metrics that matter.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">"Small" services (low, spiky QPS) show much wider CPU-error distributions than medium/large ones, even under skeletal tracing. Why does service size affect sampling accuracy at a fixed sampling probability?</div>
+      <details><summary>Show answer</summary><div class="ans">A fixed sampling probability applied to a low-traffic, unpredictable service yields very few actual samples per unit time, and those samples are drawn from a bursty, non-smooth traffic pattern. Medium/large services use global load balancers that spread traffic evenly across jobs and regions, producing smooth, predictable patterns that a fixed-rate sample estimates well. Small services get both fewer samples <i>and</i> a lumpier population to estimate from — compounding the error. The paper notes small services are only ~2% of RPC profiles, so this doesn't hurt overall accuracy much.<span class="mis">Misconception: that sampling error only depends on the sampling rate. It also depends on traffic smoothness/volume — the same 1/10,000 rate is far noisier for a spiky, low-QPS service than for a load-balanced, high-QPS one.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 7 · medium</span>
+      <div class="qtext">A team discovers via QProf that 30% of a service's CPU footprint is spent computing empty ad-candidate sets that return nothing to users. Is fixing this a "make it faster" optimization or a "room-at-the-top" optimization, and why does the distinction matter?</div>
+      <details><summary>Show answer</summary><div class="ans">It's room-at-the-top: the fix isn't to make the empty-set computation run faster, it's to recognize the work produced no useful output and skip or avoid it. A conventional CPU profiler would show exactly where those cycles go (a hot function), tempting a team to micro-optimize that function — but the actual 30% win comes from not doing the computation at all when it's known to be futile.<span class="mis">Misconception: that a profiler pointing at "hot code" always means "optimize that code." Sometimes the honest fix is to stop calling it under conditions where it can't help — a distinction only a whole-request cost view like QProf's makes visible.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 8 · easy</span>
+      <div class="qtext">QProf's ground truth for validation is the background CPU profiler's self-cost measurements. Why can't the paper directly validate transitive cost the same way?</div>
+      <details><summary>Show answer</summary><div class="ans">Because there is no independent, trusted profiler that already measures transitive cost across an entire distributed system — if one existed, QProf itself wouldn't be needed. The paper instead validates the piece it <i>can</i> check (self cost per RPC, against the background profiler) and argues that if self cost is accurate and the trace structure is unbiased, transitive cost (which is just self costs correctly summed up the tree) follows.<span class="mis">Misconception: that "validated" means every claim was independently checked end-to-end. Here it means the accurate primitive (self cost) plus an argument about unbiasedness, not a direct ground-truth comparison for the headline metric.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Eleven questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is QProf a replacement for normal distributed tracing?<span class="chev">▾</span></summary><div class="a">No. Skeletal traces are deliberately stripped of everything except structure and cost — they can't be used for interactive latency debugging of one specific request. Normal ("fat") traces still exist for that job; QProf's skeletal traces exist purely to support statistically clean, fleetwide cost aggregation.</div></details>
+      <details><summary><span class="q">Q2</span>Why does making tracing "invisible" matter so much?<span class="chev">▾</span></summary><div class="a">Because applications can and do change behavior when they know they're traced — most commonly, logging extra debug metadata via an RPC only when traced. If the trace itself reveals whether it's being observed, that observation contaminates the very data being collected. Invisibility (a permanently-false <code>is_traced()</code>, no-op annotation APIs) removes the application's ability to react at all.</div></details>
+      <details><summary><span class="q">Q3</span>How does QProf get CPU cost for every service without asking teams to instrument anything?<span class="chev">▾</span></summary><div class="a">It piggybacks on an already-existing, always-on ambient CPU profiler that every C++/Java process runs. QProf adds one atomic counter to the per-query <code>TraceContext</code>; the profiler's periodic interrupt increments whichever counter is currently installed on that thread. Since the RPC framework guarantees correct <code>TraceContext</code> propagation fleetwide, coverage is automatic.</div></details>
+      <details><summary><span class="q">Q4</span>Why is a single CPU sample usually reported as zero cost?<span class="chev">▾</span></summary><div class="a">The profiler only fires every 10ms. Most individual spans live for far less time than that, so the interrupt simply never lands during their lifetime — recording zero. This isn't a bug; over trillions of spans per day, the law of large numbers still produces an accurate aggregate picture for any given RPC.</div></details>
+      <details><summary><span class="q">Q5</span>Why write CPU data directly into the trace instead of tagging CPU samples with trace/span IDs (like other observability tools)?<span class="chev">▾</span></summary><div class="a">Tagging every CPU sample with a high-cardinality trace_id prevents identical samples from being aggregated together, which balloons storage at warehouse scale — and it requires an expensive join between two huge tables at query time. Writing the already-summed cost straight into the trace avoids both problems, at the cost of losing the ability to inspect individual raw CPU samples later (which the paper argues is rarely needed — most traces are never viewed).</div></details>
+      <details><summary><span class="q">Q6</span>What exactly makes a "forced" trace unusable for cost statistics?<span class="chev">▾</span></summary><div class="a">Two separate problems: it typically has no well-defined sampling probability (it depends on arbitrary business logic that can't be measured after the fact), and it's frequently non-root (middleware decided to force it), producing a partial trace missing upstream cost. Either problem alone makes the Horvitz–Thompson "unsampling" math invalid.</div></details>
+      <details><summary><span class="q">Q7</span>How does batching get a well-defined sampling probability if the requests inside are unpredictable?<span class="chev">▾</span></summary><div class="a">By not deriving it from the requests inside at all. <code>BatchedTraceContext</code> flips its own independent, uniform coin when the batch is created. If the batch wasn't already sampled but a request added to it later turns out to be traced, the batch retroactively becomes non-uniformly sampled too — matching the intuitive "trace if anything inside is traced" behavior, while being excluded from clean statistics exactly like any other forced trace.</div></details>
+      <details><summary><span class="q">Q8</span>How accurate is QProf, really?<span class="chev">▾</span></summary><div class="a">With skeletal tracing, 73% of RPC profiles measure QPS within 10% of ground truth (up from 65% with normal tracing), and 47% measure CPU within 10% (up from 32%). For Java services specifically — hit hardest by tracing overhead — accuracy within 10% jumped from 24% to 61%.</div></details>
+      <details><summary><span class="q">Q9</span>What causes QProf to underestimate cost?<span class="chev">▾</span></summary><div class="a">Three main causes: throttling (overloaded trace collectors drop data), tracing API misuse (forced traces excluded from the usable population), and huge traces exceeding the in-memory assembly limit on a single machine. All three remove data rather than distort it, so they bias estimates downward.</div></details>
+      <details><summary><span class="q">Q10</span>Does QProf measure latency too?<span class="chev">▾</span></summary><div class="a">Not as its primary focus. Cost metrics (CPU, TPU, disk) are trivially summable regardless of concurrency, which is what makes trace-based aggregation tractable. Latency requires reasoning about parallelism (e.g. max, not sum, across concurrent branches) and has no single agreed-upon definition for related concepts like lock contention — the paper notes this is ongoing work.</div></details>
+      <details><summary><span class="q">Q11</span>How is QProf different from Transitive Resource Accounting (TRA), the most similar prior system?<span class="chev">▾</span></summary><div class="a">TRA also attaches cost-per-query to traces and aggregates offline, but it relies on modeling historical tracing overhead and subtracting it after the fact, rather than reducing overhead at the source — and it doesn't address observer effects at all. QProf instead eliminates most overhead and observer effects up front via skeletal tracing, which the paper argues is far more reliable than post-hoc correction across a hugely diverse fleet.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper, then exactly which numbers are the paper's own.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>QProf</b><span>The paper's cost profiler: builds on RPC tracing to measure transitive cost across an entire distributed service, treated as one program.</span></div>
+      <div class="term-def"><b>Skeletal tracing</b><span>An invisible, independently &amp; uniformly sampled, root-only, minimal-annotation tracing mode built specifically for unbiased cost statistics.</span></div>
+      <div class="term-def"><b>Transitive cost</b><span>A query's total resource spend, including everything it triggers downstream — not just its own self cost.</span></div>
+      <div class="term-def"><b>Observer effect</b><span>When the act of tracing changes application behavior (e.g. logging extra data only when traced), contaminating the trace-derived statistics.</span></div>
+      <div class="term-def"><b>Unsampling (HT estimator)</b><span>Weighting each sample by 1/sampling_probability and summing — the Horvitz–Thompson estimator — to recover a fleetwide total from sparse samples.</span></div>
+      <div class="term-def"><b>Fan-in / <code>BatchedTraceContext</code></b><span>The API that gives a batched (merged) request its own independent sampling decision, then stitches it to a fairly-chosen sampled parent.</span></div>
+      <div class="term-def"><b>Ambient CPU profiler</b><span>An always-on, per-thread sampling profiler (10ms interrupts) wired into the <code>TraceContext</code> to attribute CPU to individual queries with zero manual instrumentation.</span></div>
+      <div class="term-def"><b>Room-at-the-top</b><span>Optimization by doing less work for the same result (skipping, caching, batching) rather than doing the same work faster.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Trace / span</b><span>A trace is a whole distributed computation (tree of spans); a span is one logical unit of work, usually one RPC.</span></div>
+      <div class="term-def"><b>TraceContext</b><span>The reference-counted, per-query runtime object (installed in thread-local storage) representing the currently active span.</span></div>
+      <div class="term-def"><b>Uniform vs. forced sampling</b><span>Uniform = fixed probability 1/N, statistically usable. Forced = arbitrary business logic, no well-defined probability.</span></div>
+      <div class="term-def"><b>Partial trace</b><span>A trace sampled starting mid-tree (by middleware, not the root) — missing all cost above the sampling point.</span></div>
+      <div class="term-def"><b>Callstack expansion</b><span>Postprocessing step turning each span into a full ancestor chain, producing O(N·M) rows from N spans of average depth M.</span></div>
+      <div class="term-def"><b>Priority inversion</b><span>Low-priority work (e.g. a batch job) inducing demand on expensive, high-priority resources it wasn't provisioned to consume.</span></div>
+      <div class="term-def"><b>RPC profile</b><span>The unit QProf reports on: the tuple (RPC name, job user) — roughly O(10k) distinct profiles fleetwide.</span></div>
+      <div class="term-def"><b>Symmetric error</b><span>QProf's evaluation metric (Eq. 5): reports how far QProf's estimate is from ground truth, in the same relative units whether it over- or under-estimates.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance — skeletal vs. normal tracing</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What switching to skeletal tracing buys (accuracy gains)</div>
+      <div class="viz-kicker">percentage-point improvement in "% of RPC profiles measured within 10% of ground truth"</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">QPS accuracy<small>within 10%</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="8"><span>+8pp (65%→73%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">CPU accuracy<small>within 10%</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="15"><span>+15pp (32%→47%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Zero-error peak<small>QPS, exact match</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="12"><span>+12pp (40%→52%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Java CPU accuracy<small>within 10%</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="25"><span>+37pp (24%→61%) — off the chart</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ +25 percentage points</p>
+      <figcaption><b>Skeletal tracing's gains compound across metrics:</b> Java services — hit hardest by tracing overhead under normal tracing — see the largest jump, since skeletal tracing removes most of that overhead entirely. (Paper §5, Figs. 9–12)</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>Distributed tracing fundamentals (Dapper-style) <span class="diff easy">easy</span></h4><div class="meta">explainer · 20–30 min</div><p>Trace/span structure, sampling, and how tracing propagates across RPC boundaries — the foundation QProf repurposes for cost.</p></div>
+    <div class="read-item reveal"><h4>Horvitz–Thompson estimation / inverse probability weighting <span class="diff med">medium</span></h4><div class="meta">explainer · 20–30 min</div><p>The general statistics behind "unsampling" — why weighting by 1/p recovers an unbiased population total.</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Dapper, a Large-Scale Distributed Systems Tracing Infrastructure <span class="diff med">medium</span></h4><div class="meta">Sigelman, Barroso, Burrows, et al. · Google Technical Report · 2010</div><p>The tracing infrastructure QProf is built on top of — trace/span model, sampling mechanisms.</p></div>
+    <div class="read-item reveal"><h4>Canopy: An End-to-End Performance Tracing And Analysis System <span class="diff hard">hard</span></h4><div class="meta">Kaldor, Mace, et al. · SOSP · 2017</div><p>A general trace-processing system (Facebook); QProf notes it lacks a trace-wide "verbosity control" comparable to skeletal tracing.</p></div>
+    <div class="read-item reveal"><h4>End-2-End Resource Accounting Leveraging Distributed Tracing (TRA) <span class="diff med">medium</span></h4><div class="meta">Bansal, Cornew · AtScale Conference · 2022</div><p>The closest prior system — attaches cost to Canopy traces but corrects overhead via historical modeling rather than reducing it at the source.</p></div>
+    <div class="read-item reveal"><h4>A Generalization of Sampling Without Replacement from a Finite Universe <span class="diff hard">hard</span></h4><div class="meta">Horvitz, Thompson · JASA · 1952</div><p>The seven-decade-old statistical result behind "unsampling" — the inverse-probability-weighted estimator QProf's pipeline applies at trillions-of-spans scale.</p></div>
+    <div class="read-item reveal"><h4>There's Plenty of Room at the Top <span class="diff med">medium</span></h4><div class="meta">Leiserson, Thompson, Emer, et al. · Science · 2020</div><p>Origin of the "room-at-the-top" framing QProf explicitly adopts as its mission — optimization by doing less work, not just doing it faster.</p></div>
+    <div class="read-item reveal"><h4>Google-Wide Profiling: A Continuous Profiling Infrastructure for Data Centers (GWP) <span class="diff med">medium</span></h4><div class="meta">Ren, Tune, Moseley, et al. · IEEE Micro · 2010</div><p>The single-process fleetwide profiler QProf generalizes to whole distributed services — "GWP for RPCs."</p></div>
+
+    <div class="subhead">Source notes — what's the paper's vs. this guide's framing</div>
+    <div class="card" style="background:var(--paper-2)">
+      <p style="margin-bottom:10px"><b>From the paper, verbatim or near-verbatim:</b> all formulas (Eqs. 1–7); the accuracy percentages in the Results bars and FAQ (65%→73% QPS, 32%→47% CPU, 24%→61% Java, 40%→52% zero-error peak); skeletal sampling rate ≈1/10,000 vs. normal ≈1/4,000; the 10ms profiler interrupt interval; the 100× Logger.Log observer-effect incident; batch-size statistics (44% size 1, average 23 for size&gt;1); savings figures (millions of cores + thousands of TPUs from caching, O(100k) cores from batching, O(10k) and O(100k) cores from the two wasted-work case studies); &gt;99.9999% of traces never individually viewed; O(10k) unique RPC profiles; 10–20× aggregation storage reduction.</p>
+      <p style="margin:0"><b>This guide's framing (not the paper's words):</b> all analogies (limo/milk-run, carpooling, exit poll, security camera, strobe light, bare mannequin, unbooked flight); the signature flame-graph figure's specific dollar amounts and service names (illustrative, built to match the mechanism of Fig. 1 and §6.1.1, not literal fleet data); Worked Examples ①–④'s specific plug-in numbers (clearly labeled illustrative, computed with the paper's real formulas and, where available, the paper's real rates/stats); the eight-tab pedagogical structure itself.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Xi, Alexandrov, Sheikh, Wang, Lankhaar, Moseley, Ranganathan, "QProf: Fleetwide Transitive Cost Profiling of Warehouse-Scale Services" (SOSP '26)</span>
+    <span><b>Source:</b> paper text as provided for this study aid</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PARTITION EXPLORER (guarded no-op on this page; no matching elements) ---- */
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Not optimal.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#6659BE">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
