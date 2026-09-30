@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<!-- Meld field guide — Cross-SM Kernel Fusion via SM Cooperation and JIT Reduction (He et al., SOSP'26).
+     Semantic colors: teal = SM cooperation / cross-SM fusion (the fix) · amber = dynamic workload / phase (split-KV, combine, MoE)
+     · indigo = Meld's machinery (scheduler, runtime, operators) · rust = kernel boundary / off-chip HBM round trip (the baseline problem). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Taming Dynamism on GPUs — Cross-SM Kernel Fusion, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98A3D; --honey-deep:#B36A1D; --honey-soft:#F6E4C7;
+  --dram:#1F8F86; --dram-soft:#D8F0EC;
+  --ltram:#6B4FC7; --ltram-soft:#E9E3F8;
+  --optane:#B23A2E; --optane-soft:#F6DCD6;
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,143,134,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,199,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,138,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(107,79,199,.05) 31px,rgba(107,79,199,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,138,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#134f49;font-size:.96rem}
+.primer .ready b{color:#0d3a35}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#134f49}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3f2f8e}
+.chip-lru{background:var(--optane-soft);color:#7a2a20}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #ADE0D9;color:#134f49}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3ada5;color:#7a2a20}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9ed9d1;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c7bced;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3ada5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#ddd3f7}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#7f5cd6,#6B4FC7)}
+.bf-hi{background:linear-gradient(90deg,#28a89e,#1F8F86)}
+.bf-lru{background:linear-gradient(90deg,#c94a3c,#B23A2E)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#134f49}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#7a2a20}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#9d8ce8}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#134f49}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#7a2a20}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,143,134,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,199,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,138,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Let SMs <span class="swash">cooperate</span> instead of waiting at a <span class="swash" style="color:var(--optane)">kernel boundary</span></h1>
+    <p class="lede">MoE routing and variable-length batches make GPU kernel shapes wildly dynamic. The fix isn't a smarter single kernel — it's letting Streaming Multiprocessors hand off work to each other directly, mid-flight.</p>
+    <div class="hero-meta">
+      <span>📄 "Taming Dynamism on GPUs" · He, Sun, Li, Du, Xia, Chen</span>
+      <span>🎓 GPU architecture basics assumed — primers cover them</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🔗</div>
+      <p>Don't enforce cross-phase dependencies with <span class="wo">separate kernels and HBM round-trips</span> — enforce them with <span class="ro">direct SM-to-SM handoff</span>, reduced the instant data lands.<br><em style="font-size:.9rem">Fuse the whole GPU, not just one SM.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary + eight primers</h2>
+      <p class="sub">Acronyms first, then the concepts the paper assumes. Skip anything you already know.</p>
+    </div>
+
+    <div class="card">
+      <h3>Quick glossary</h3>
+      <div class="gloss">
+        <div class="term-def"><b>SM</b><span>Streaming Multiprocessor — a GPU's core compute unit; a modern GPU has 80–150+ of them.</span></div>
+        <div class="term-def"><b>SIMT</b><span>Single-Instruction-Multiple-Thread — the GPU execution model; warps of 32 threads run in lockstep.</span></div>
+        <div class="term-def"><b>GPC</b><span>Graphics Processing Cluster — a physical group of SMs; only SMs in the same GPC have direct on-chip links.</span></div>
+        <div class="term-def"><b>BSP</b><span>Bulk Synchronous Parallel — everyone finishes phase N before phase N+1 starts. The classic (and limiting) GPU kernel model.</span></div>
+        <div class="term-def"><b>TMA</b><span>Tensor Memory Accelerator — hardware unit for async, high-bandwidth memory transfers, offloaded from compute.</span></div>
+        <div class="term-def"><b>CTA</b><span>Cooperative Thread Array — CUDA's term for a thread block.</span></div>
+        <div class="term-def"><b>MoE</b><span>Mixture-of-Experts — a model layer that routes each token to a subset of "expert" sub-networks.</span></div>
+        <div class="term-def"><b>MLA / GQA / NSA</b><span>Attention variants (Multi-head Latent, Grouped-Query, Native Sparse) used in modern LLMs like DeepSeek/Qwen.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> SM cooperation / cross-SM fusion (the fix)</span>
+      <span><i style="background:var(--honey)"></i> dynamic phase (split-KV, combine, MoE)</span>
+      <span><i style="background:var(--ltram)"></i> Meld's machinery</span>
+      <span><i style="background:var(--optane)"></i> kernel boundary / HBM round trip (the problem)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>The thread → warp → block → grid hierarchy<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>thread</b> runs on a core; 32 threads in lockstep form a <b>warp</b>; several warps scheduled onto one SM form a <b>thread block</b>; many blocks form a <b>grid</b> (one kernel launch). Traditionally, each block runs independently on one SM — SMs don't talk to each other.</p>
+          <div class="ready"><b>Now you're ready:</b> Meld's whole premise is breaking that "SMs don't talk" rule.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>The memory hierarchy, and why HBM is slow<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Registers (thread-private) → shared memory/L1 (per block) → L2 (chip-wide) → HBM/GDDR (off-chip, the slowest hop). On H100, HBM-proxied SM-to-SM transfer runs ~20 GB/s; the new on-chip SM-to-SM interconnect runs 81 GB/s with 1/7 the latency.</p>
+          <div class="ready"><b>Now you're ready:</b> every time a kernel boundary forces a store-then-reload through HBM, that's the slow 20 GB/s path. Meld's fix routes around it.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Kernel launches and BSP-style boundaries<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A kernel boundary is a hard synchronization point: every block of kernel N finishes before any block of kernel N+1 starts (<b>BSP</b>). It's the only tool traditional GPU programming has for enforcing "phase 2 needs phase 1's results."</p>
+          <div class="ready"><b>Now you're ready:</b> that hard barrier is the root inefficiency Meld attacks — it forces correctness at kernel granularity when the real dependency is much finer-grained.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Dynamic workloads: why shapes stopped being fixed<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Pretraining had uniform, static shapes. Inference doesn't: continuous batching mixes sequences of very different lengths, reasoning models skew that further, and MoE activates a different, skewed set of experts per batch.</p>
+          <div class="ready"><b>Now you're ready:</b> a kernel tuned for one shape pads or idles badly on another — this is the "long tail" problem Fig.1(a) shows.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Multi-phase execution (split-KV / combine)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To fight the long tail, modern kernels split a task into sub-tasks run in parallel (<b>partial</b> phase, e.g. split-KV attention across sub-sequences), then merge the partial results (<b>reduce</b> phase, e.g. combine). This is the dominant pattern across attention, MoE, RMSNorm, top-k, and more (Table 1).</p>
+          <div class="ready"><b>Now you're ready:</b> the reduce/combine phase is exactly the low-parallelism bottleneck Meld targets — FlashMLA's combine phase gets only 10.3% SM occupancy.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>On-chip SM-to-SM interconnects &amp; clusters<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Starting with Hopper, CUDA exposes a <b>thread block cluster</b>: a group of up to 16 SMs that can read/write each other's shared memory directly, with hardware <code>mbarrier</code> synchronization. But the underlying physical grouping (GPC) is fixed and undisclosed by NVIDIA — and heterogeneous in size.</p>
+          <div class="ready"><b>Now you're ready:</b> a naive "always use cluster size 16" wastes most of the chip (§2.4) — Meld has to reverse-engineer and work around the real topology.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Kernel fusion — intra-SM vs. cross-SM<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Traditional fusion merges operators <i>within</i> a thread block's computation (e.g. fusing matmul + softmax), because a block only ever talks to itself. It cannot fuse across a phase boundary that spans different blocks/SMs.</p>
+          <div class="ready"><b>Now you're ready:</b> "cross-SM kernel fusion" is exactly what the name says — pushing fusion's scope from one SM to the whole GPU.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Declarative vs. coupled programming<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Compilers like Triton/TileLang let you write <code>Y = F(X)</code>, but the mapping of work onto blocks/SMs is usually decided once, at compile time (e.g. a fixed split-K). That mapping can't adapt when <code>X</code>'s shape changes every batch.</p>
+          <div class="ready"><b>Now you're ready:</b> Meld's "decoupled execution" defers that mapping to runtime, informed by the actual input shape.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Meld in a nutshell</h2>
+      <p class="sub">The problem, the two insights that fix it, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>Dynamic LLM workloads (MoE routing, variable-length batching) force kernels into multiple phases — a parallel <b>partial</b> phase and a merging <b>reduce</b> phase. Because SMs traditionally can't talk to each other, the only way to guarantee phase 1 finishes before phase 2 starts is a <span class="mem-chip chip-lru">kernel boundary</span> — a full-GPU synchronization barrier. That barrier is expensive in three ways: it can't rebalance load within a phase, it leaves the reduce phase badly underutilized (FlashMLA's combine phase: 37% of time, 10.3% SM occupancy), and it forces every intermediate result through slow off-chip memory.</p>
+      <p>Meld's fix is <strong>cross-SM kernel fusion</strong>: use the on-chip SM-to-SM interconnect (4× the bandwidth, 1/7 the latency of HBM) to let a producer SM forward its intermediate result directly into a consumer SM's shared memory and move on to its next sub-task, instead of stopping and materializing to HBM. Because the transfer is asynchronous and hardware-tracked (<code>mbarrier</code>), the result is usually there before the consumer needs it — <b>just-in-time reduction</b>: wait-free, local, in SRAM.</p>
+      <p>This only works if the mapping of sub-tasks to SMs is decided at runtime, not compile time — so Meld pairs it with a <span class="mem-chip chip-ucp">decoupled execution model</span>: developers declare computation as composed operators (<code>Iter</code>, <code>Map</code>, <code>Reduce</code>, …); the runtime scheduler decides the actual hardware mapping and cooperation plan per input shape.</p>
+      <p><strong>The payoff:</strong> Meld beats the best existing hand-tuned kernel or compiler by <b>1.3× on average (up to 2.04×)</b> across attention, MoE, NSA, RMSNorm, and cross-entropy loss, translating to up to <b>1.4×</b> end-to-end inference throughput.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🔗 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Kernel boundaries enforce dependencies at the wrong granularity — coarse, phase-level, whole-GPU.</li>
+        <li>SM-to-SM interconnects let dependencies be enforced at <b>sub-task</b> granularity instead, via direct handoff.</li>
+        <li><b>Just-in-time reduction</b>: async transfer + hardware barriers make the merge step wait-free and local.</li>
+        <li>GPU on-chip topology is <b>heterogeneous and localized</b> (GPC groups of 2–20 SMs) — naive clustering fragments the chip.</li>
+        <li><b>Decoupled execution</b>: developers declare logic (operators); the runtime decides mapping per input shape.</li>
+        <li>Meld bypasses the GPU's own scheduler with per-SM instruction queues for precise, topology-aware mapping.</li>
+        <li>Result: 1.3× avg (up to 2.04×) kernel speedup; up to 1.4× end-to-end throughput; &lt;1.5× compile-time cost.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">BSP kernel boundary vs. cross-SM fused pipeline</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> kernel boundary (BSP)</span>
+        <span><i style="background:var(--dram)"></i> direct SM-to-SM handoff</span>
+        <span><i style="background:var(--honey)"></i> split-KV / combine sub-task</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="BSP kernel boundary vs fused SM cooperation pipeline">
+        <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">(a) Multi-kernel / BSP — bubble at the boundary</text>
+        <g font-family="JetBrains Mono" font-size="10" fill="#6E6456">
+          <rect x="20" y="40" width="150" height="30" rx="5" fill="#F6E4C7" stroke="#B36A1D"/><text x="95" y="59" text-anchor="middle">split-KV SM0</text>
+          <rect x="20" y="76" width="110" height="30" rx="5" fill="#F6E4C7" stroke="#B36A1D"/><text x="75" y="95" text-anchor="middle">split-KV SM1</text>
+          <rect x="20" y="112" width="80" height="30" rx="5" fill="#F6E4C7" stroke="#B36A1D"/><text x="60" y="131" text-anchor="middle">split-KV SM2</text>
+        </g>
+        <line x1="170" y1="36" x2="170" y2="150" stroke="#B23A2E" stroke-width="2" stroke-dasharray="4 3"/>
+        <text x="178" y="48" font-family="JetBrains Mono" font-size="10" fill="#7a2a20">kernel barrier —</text>
+        <text x="178" y="60" font-family="JetBrains Mono" font-size="10" fill="#7a2a20">SM1/SM2 idle here</text>
+        <rect x="200" y="40" width="200" height="102" rx="6" fill="#F6DCD6" stroke="#B23A2E" stroke-dasharray="3 3"/>
+        <text x="300" y="95" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#7a2a20">HBM store + reload</text>
+        <text x="300" y="110" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#7a2a20">of intermediate state</text>
+        <rect x="420" y="60" width="150" height="30" rx="5" fill="#F6DCD6" stroke="#B23A2E"/><text x="495" y="79" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#7a2a20">combine (low SM util.)</text>
+
+        <text x="20" y="188" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">(b) Cross-SM fused pipeline — no bubble</text>
+        <g font-family="JetBrains Mono" font-size="10" fill="#134f49">
+          <rect x="20" y="204" width="150" height="30" rx="5" fill="#D8F0EC" stroke="#1F8F86"/><text x="95" y="223" text-anchor="middle">SM0: split-KV → combine</text>
+          <rect x="20" y="240" width="110" height="30" rx="5" fill="#D8F0EC" stroke="#1F8F86"/><text x="75" y="259" text-anchor="middle">SM1: split-KV → next task</text>
+        </g>
+        <path d="M170 219 C 220 219, 220 270, 270 270" fill="none" stroke="#1F8F86" stroke-width="2.4" marker-end="url(#arrow)"/>
+        <rect x="270" y="255" width="150" height="30" rx="5" fill="#E9E3F8" stroke="#6B4FC7"/><text x="345" y="274" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3f2f8e">just-in-time reduce (SRAM)</text>
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#1F8F86"/></marker></defs>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> in (a), a hard kernel barrier stalls fast SMs and routes intermediates through HBM before the combine phase even starts, which itself runs at only ~10% SM occupancy for FlashMLA. In (b), the producer SM forwards its result directly over the on-chip link the moment it's ready — no barrier, no HBM round trip, no idle combine phase. (Fig.1)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Five everyday pictures</div>
+      <h2>How to think about cross-SM fusion</h2>
+      <p class="sub">Each stands alone. Every card ends with where it breaks down.</p>
+    </div>
+    <div class="analogy-grid">
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="35" cy="50" r="14" fill="#D8F0EC" stroke="#1F8F86" stroke-width="2.5"/>
+          <circle cx="105" cy="50" r="14" fill="#D8F0EC" stroke="#1F8F86" stroke-width="2.5"/>
+          <path d="M49 47 q28 -6 42 0" stroke="#1F8F86" stroke-width="2.5" fill="none"/>
+          <rect x="60" y="70" width="20" height="8" rx="2" fill="#B23A2E"/>
+        </svg></div>
+        <span class="term">SM cooperation vs BSP</span>
+        <h3>A relay race with a mid-track handoff</h3>
+        <p>Old-style relays wait for every runner to cross a painted finish line before the next leg starts. Meld's cooperation is a baton passed hand-to-hand, mid-stride, the instant the next runner is ready — no line, no waiting for the slowest lane.</p>
+        <div class="breaks"><b>Where it breaks:</b> real relay legs are fixed in order; SM cooperation is much more flexible — any SM in a cluster can hand off to any other, in either direction.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="15" y="30" width="30" height="36" rx="3" fill="#F6E4C7" stroke="#B36A1D" stroke-width="2"/>
+          <rect x="55" y="30" width="30" height="36" rx="3" fill="#E9E3F8" stroke="#6B4FC7" stroke-width="2"/>
+          <path d="M45 48 h10" stroke="#6B4FC7" stroke-width="2.5"/>
+          <path d="M45 48 l6 -4 M45 48 l6 4" stroke="#6B4FC7" stroke-width="2.5"/>
+        </svg></div>
+        <span class="term">Just-in-time reduction</span>
+        <h3>A sous chef plating as dishes arrive</h3>
+        <p>Instead of waiting for every station to finish before assembling the plate, the sous chef gets each component the moment it's ready and folds it in immediately — no dish sits cooling on a pass-through shelf (HBM) waiting to be picked up.</p>
+        <div class="breaks"><b>Where it breaks:</b> the "arrival" isn't guesswork — a hardware barrier (<code>mbarrier</code>) tells the consumer exactly when data is ready, so nothing is ever used before it lands.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="20" fill="none" stroke="#1F8F86" stroke-width="2"/>
+          <circle cx="45" cy="30" r="4" fill="#1F8F86"/><circle cx="60" cy="55" r="4" fill="#1F8F86"/><circle cx="30" cy="55" r="4" fill="#1F8F86"/>
+          <circle cx="105" cy="48" r="4" fill="#B23A2E"/>
+          <path d="M65 48 h30" stroke="#B23A2E" stroke-width="2" stroke-dasharray="3 3"/>
+        </svg></div>
+        <span class="term">Heterogeneous topology</span>
+        <h3>Neighborhood streets vs. the post office</h3>
+        <p>Houses on the same block (a GPC) can hand a package straight to a neighbor. Send it across town and it has to go through the post office (HBM) — slower, and a shared bottleneck. GPC group sizes vary from 2 to 20 SMs per GPU, so "the same block" means different things in different places.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real map is fixed; NVIDIA's firmware actually masks manufacturing-defect-driven topology differences so every chip of a given model looks identical to software.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="24" width="100" height="20" rx="4" fill="#E9E3F8" stroke="#6B4FC7" stroke-width="2"/>
+          <text x="70" y="38" text-anchor="middle" font-family="monospace" font-size="9" fill="#3f2f8e">recipe (operators)</text>
+          <rect x="20" y="56" width="100" height="20" rx="4" fill="#D8F0EC" stroke="#1F8F86" stroke-width="2"/>
+          <text x="70" y="70" text-anchor="middle" font-family="monospace" font-size="9" fill="#134f49">chef decides mapping</text>
+        </svg></div>
+        <span class="term">Decoupled execution</span>
+        <h3>A recipe card, not a rigid factory script</h3>
+        <p>A recipe says "reduce the sauce," not "SM #12 must do it at cycle 4000." Developers write <i>what</i> to compute (operators like <code>Iter</code>/<code>Reduce</code>); Meld's runtime — like a chef reading the room — decides who does what, and when, based on tonight's actual orders (input shapes).</p>
+        <div class="breaks"><b>Where it breaks:</b> the runtime's "improvising" is not ad hoc — it follows a scheduling algorithm (hierarchical, hybrid-cut) that's deterministic given the input shape and cached across steps.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="16" rx="3" fill="#fff" stroke="#332C24" stroke-width="1.5"/>
+          <rect x="24" y="34" width="20" height="8" fill="#1F8F86"/>
+          <rect x="47" y="34" width="20" height="8" fill="#B36A1D"/>
+          <rect x="70" y="34" width="20" height="8" fill="#6B4FC7"/>
+          <path d="M30 54 v10 M53 54 v6 M77 54 v14" stroke="#9A8E7C" stroke-width="1.5"/>
+        </svg></div>
+        <span class="term">Instruction queue, bypassing the scheduler</span>
+        <h3>A dispatcher's clipboard, not a lottery</h3>
+        <p>The GPU's own block scheduler is a black box — you can't tell it "put this exact task on that exact SM." Meld sidesteps it entirely with a per-SM instruction queue: a dispatcher's clipboard each SM reads down, task by task, exactly as planned.</p>
+        <div class="breaks"><b>Where it breaks:</b> this only works because Meld also launches one wrapper block per SM to "hold the seat" — it still has to fully saturate the GPU first to guarantee that placement.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">From the problem's root cause to the runtime that executes the fix.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Root cause — dynamic cross-SM dependencies</h3>
+      <p>Multi-phase kernels (split-KV → combine, MoE's GEMM-1 → GEMM-2 → weighted-sum) exist to fight the long tail of dynamic workloads. But the dependency between phases is enforced only by a kernel boundary, causing three costs: <b>(I-1)</b> intra-phase imbalance from static, pre-defined tiling; <b>(I-2)</b> a low-utilization reduce phase — FlashMLA's combine is 37% of time at 10.3% SM occupancy, NSA's top-k is 51% of time at 9.4%; <b>(I-3)</b> memory traffic — FlashMLA's intermediate state is 32 KB per sub-task, forced through HBM.</p>
+    </div>
+
+    <div class="prose">
+      <h3>2 · The fix — SM cooperation and just-in-time reduction</h3>
+      <p>Instead of a kernel boundary, the producer SM finishes its split-KV sub-task, asynchronously forwards the result over the on-chip link into the consumer's shared memory, and immediately proceeds to its next sub-task. The transfer uses TMA (async, hardware-tracked) and an <code>mbarrier</code>; the consumer performs the reduction directly in local SRAM once the barrier reports the data has arrived — <b>waiting-free because it's already there</b>. This decomposes one coarse, kernel-level dependency into many fine, sub-task-level ones, which is what lets long tasks be shared across SMs and short tasks fill the gaps.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">GPU on-chip topology is lumpy, not uniform</div>
+      <div class="viz-kicker">H100: reverse-engineered GPC groups (Fig.7)</div>
+      <svg class="full" viewBox="0 0 700 170" role="img" aria-label="H100 GPC group sizes">
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24">
+          <rect x="20" y="30" width="160" height="34" rx="6" fill="#E9E3F8" stroke="#6B4FC7"/><text x="100" y="51" text-anchor="middle">2 × 18-SM GPC</text>
+          <rect x="200" y="30" width="140" height="34" rx="6" fill="#E9E3F8" stroke="#6B4FC7"/><text x="270" y="51" text-anchor="middle">5 × 16-SM GPC</text>
+          <rect x="360" y="30" width="90" height="34" rx="6" fill="#E9E3F8" stroke="#6B4FC7"/><text x="405" y="51" text-anchor="middle">1 × 8-SM</text>
+          <rect x="470" y="30" width="180" height="34" rx="6" fill="#F6DCD6" stroke="#B23A2E"/><text x="560" y="51" text-anchor="middle">4 × 2-SM (fragments)</text>
+        </g>
+        <text x="20" y="96" font-family="JetBrains Mono" font-size="11" fill="#6E6456">Full SM-to-SM mesh only within each box. Bandwidth 81 GB/s intra-cluster vs. ~20 GB/s inter-cluster (HBM-proxied).</text>
+        <text x="20" y="120" font-family="JetBrains Mono" font-size="11" fill="#7a2a20">Naively fixing cluster size = 10–16 idles 20–62 of H100's 132 SMs (§2.4).</text>
+      </svg>
+      <figcaption>SMs are physically grouped into GPCs of very different sizes (2–20 on different GPUs). Meld reverse-engineers this via a probing kernel + MILP solve (Appendix A), then mixes 2–3 cluster sizes per GPU to cover every SM without fragmentation.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · Programming model — operators, not hand-mapped kernels</h3>
+      <p>Developers compose <code>Iter</code>/<code>Map</code> (partial), <code>Reduce</code>, <code>Reshard</code>, <code>Gather</code>, and <code>Finalize</code> operators. The chaining syntax only declares dataflow — actual sub-task partitioning and cooperation are resolved at runtime (Fig.6).</p>
+      <pre class="sketch"><span class="kw">with</span> ParallelTasks(NUM_HEAD, batch) <span class="kw">as</span> (head, seq):
+    partial(attnSplitKV(seq, head, Q, K, V))
+      .reduce(attnCombine())
+      .finalize(attnFinalize(seq, head, Output))</pre>
+      <div class="callout why"><span class="ic">💡</span><div>The <code>affinity</code> abstraction on <code>Iter</code> also marks ranges eligible for <b>copy absorption</b> — one SM loads shared data (e.g. a common KV-cache prefix) and broadcasts it over the on-chip link, instead of every SM redundantly refetching from HBM.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Hierarchical scheduling</h3>
+      <p>Tier-1 assigns task groups to hardware clusters via a hybrid cut of a batch-level and task-level traffic graph, minimizing off-chip traffic. Tier-2, inside each cluster, orders sub-tasks longest-first and interleaves short ones into the gaps — the fluid pipeline from tab 2's figure (b).</p>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Runtime — instruction queues and stall-less pipelining</h3>
+      <p>Meld compiles operators into handlers plus one wrapper kernel that fully saturates the GPU (one wrapper block per SM). Each wrapper drains a per-SM <b>instruction queue</b> written by the CPU-side scheduler — this is how Meld bypasses the GPU's opaque hardware scheduler for precise, topology-aware placement. Instruction prefetching fuses the intra-SM pipeline across consecutive handlers so loading for the next sub-task overlaps the current one's compute, avoiding stalls. Scheduling itself runs asynchronously ahead of execution, with a <b>plan cache</b> reusing splits across transformer layers/decoding steps.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Three traces through the paper's own measurements.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① How idle is FlashMLA's combine phase, really?</h3>
+      <p style="color:var(--ink-soft)">Paper facts: combine takes 37% of total kernel time, at 10.3% SM occupancy.</p>
+      <ol class="seq">
+        <li>Think of "useful SM-work done" as time-share × occupancy: 0.37 × 0.103 ≈ <b>0.038</b>.</li>
+        <li>So only ~3.8% of the theoretical SM-time available during that 37%-of-total-time window is doing useful work.</li>
+        <li>The other ~96% of that window is SMs sitting idle, waiting for the phase's few busy blocks to finish — exactly the tail Meld's fused pipeline eliminates by letting other sub-tasks fill those SMs.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> a phase can dominate wall-clock time while barely using the hardware — time-share and occupancy are two different axes, and BSP boundaries let a low-occupancy phase stall the whole GPU regardless.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Why HBM round-trips cost more than on-chip handoff</h3>
+      <p style="color:var(--ink-soft)">Paper facts: FlashMLA's intermediate state is 32 KB per sub-task (TP=4); on-chip link ≈81 GB/s, HBM-proxied ≈20 GB/s, with 1/7 the latency on-chip.</p>
+      <ol class="seq">
+        <li><b>Via HBM (store + reload):</b> 32 KB / 20 GB/s ≈ 1.6 µs one-way; a round trip (write then read back) roughly doubles that to ≈3.2 µs, plus the 7× larger latency overhead per hop.</li>
+        <li><b>Via on-chip link (direct):</b> 32 KB / 81 GB/s ≈ 0.4 µs, one hop, no second trip.</li>
+        <li>That's roughly an <b>8× reduction</b> in raw transfer time for this one intermediate — before even counting the latency and kernel-launch savings from not needing a second kernel at all.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Multiply this by every sub-task, every layer, every decoding step, and the HBM round-trip tax on multi-phase kernels adds up fast — which is exactly why MoE's intermediate-state traffic alone is 20% of its total memory traffic in the baseline.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ A toy version of the topology reverse-engineering (Appendix A)</h3>
+      <p style="color:var(--ink-soft)">Simplify to S_max = 2. Probing finds N₁ = 10 max concurrent clusters of size 1, N₂ = 6 of size 2. Recover hardware group sizes x₂ (pairs) and x₄ (quads).</p>
+      <ol class="seq">
+        <li>Constraint for s=1: ⌊2/1⌋x₂ + ⌊4/1⌋x₄ = N₁ → 2x₂ + 4x₄ = 10.</li>
+        <li>Constraint for s=2: ⌊2/2⌋x₂ + ⌊4/2⌋x₄ = N₂ → x₂ + 2x₄ = 6.</li>
+        <li>Both equations are the same line scaled by 2 — so the MILP's real job (in the actual paper) is picking the <i>minimum</i> total groups (x₂+x₄) consistent with <i>all</i> S_max=16 constraints at once, which pins down a unique answer for real GPUs (e.g. H100 → 2×18, 5×16, 1×8, 4×2).</li>
+      </ol>
+      <div class="callout note"><span class="ic">📝</span><div>This is a simplified illustration, not the paper's actual H100 numbers (Eq. 1–7) — it's meant to show <i>why</i> more than 2 sample sizes are needed to pin down a unique topology.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try before opening the answer. Each ends with the misconception it checks.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Why can't a kernel boundary simply be made "faster" (e.g. cheaper launch) to fix the issues in §2.2?</div>
+      <details><summary>Show answer</summary><div class="ans">Launch/termination cost is only one of three issues (I-1/I-2/I-3). Even with instant launches, the boundary still forces (1) static, pre-defined tiling that can't rebalance to the actual input shape, and (2) a full round trip of intermediate state through HBM. Cheaper launches don't touch either.<span class="mis">Misconception: that kernel boundaries are only expensive because of launch overhead — the deeper cost is the rigidity and memory traffic they force.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">H100 has 132 SMs. If you fix CUDA's cluster size to 12 for every kernel, roughly how many SMs on H100 (whose GPCs are sized 2×18, 5×16, 1×8, 4×2) can actually host a full cluster of that size?</div>
+      <details><summary>Show answer</summary><div class="ans">Only GPCs with ≥12 SMs can fit even one 12-SM cluster: the 18-SM GPCs fit one each (12 of 18 used, 6 idle), the 16-SM GPCs fit one each (12 of 16 used, 4 idle); the 8-SM and 2-SM GPCs can't fit a 12-SM cluster at all and sit entirely idle. That's a large fraction of the chip left unusable by a single uniform cluster size — the exact fragmentation problem §2.4 describes.<span class="mis">Misconception: that CUDA's cluster-size knob maps cleanly onto hardware. The physical GPC sizes are fixed and heterogeneous; a uniform software cluster size can't fit them all.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">"Just-in-time reduction is wait-free — it never uses synchronization." True or false, and why?</div>
+      <details><summary>Show answer</summary><div class="ans">False. It's wait-free in the sense that the consumer doesn't sit idle waiting — but it still relies on hardware <code>mbarrier</code>s so the consumer only reads the shared-memory slot once the barrier confirms all bytes have arrived. "Wait-free" describes the scheduling outcome (data is ready when needed), not the absence of synchronization.<span class="mis">Misconception: conflating "no stall" with "no synchronization." The synchronization is still there — it's just overlapped with useful work instead of blocking it.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Fine-grained partitioning (more, smaller sub-tasks) should always improve load balance. Why does the paper call this a genuine cost tradeoff (Challenge-3, §2.3) rather than a free win?</div>
+      <details><summary>Show answer</summary><div class="ans">Smaller sub-tasks mean more intermediate results are produced and exchanged, increasing communication/synchronization overhead relative to the useful compute in each sub-task. If partitioning is too fine, this overhead can outweigh the load-balance gains, degrading rather than improving performance — hence Meld's scheduler works within a per-SM workload budget rather than partitioning maximally.<span class="mis">Misconception: that finer granularity is strictly better for balance. Past a point, the communication cost of granularity itself becomes the bottleneck.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">MegaKernel systems (e.g. MPK) also fuse phases into one kernel. Why doesn't that alone solve the dynamic-workload problem the way Meld does (§6.3)?</div>
+      <details><summary>Show answer</summary><div class="ans">Fusing into one kernel removes launch overhead, but MPK still uses a <i>static</i> partition method (a pre-defined max chunk length) and starts reduction for a long sequence only after all its partial tasks complete — so long sequences still create a tail, and SMs still wait. The fix Meld provides isn't fusion per se, it's the fine-grained, dynamically-scheduled cooperation within the fused kernel.<span class="mis">Misconception: that "fused into one kernel" implies dynamic and balanced. Fusion removes kernel-boundary overhead but doesn't automatically remove static partitioning or tail effects.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">For a workload with uniform, static shapes (e.g. a dense GEMM in pretraining), should you reach for Meld's runtime?</div>
+      <details><summary>Show answer</summary><div class="ans">Not necessarily. The paper explicitly scopes Meld to dynamic workloads needing SM cooperation and precise topology mapping; for homogeneous, static workloads like GEMM, relying on the GPU's native hardware scheduler (with CLC) is typically simpler and just as efficient (§6.6).<span class="mis">Misconception: that a more sophisticated runtime is always better. Meld's benefits come from adapting to dynamism — there's nothing to adapt to in a static, uniform workload.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly is "cross-SM kernel fusion"?<span class="chev">▾</span></summary><div class="a">Fusing operations that traditionally required separate kernels — because they span different SMs and phases — into one execution, using direct SM-to-SM cooperation to enforce the dependency instead of a kernel boundary.</div></details>
+      <details><summary><span class="q">Q2</span>How is this different from ordinary kernel fusion?<span class="chev">▾</span></summary><div class="a">Ordinary fusion (in Triton, TileLang, etc.) merges operators within one thread block's computation — intra-SM scope. Cross-SM fusion extends fusion's scope to the entire GPU, spanning many SMs and phases via the on-chip interconnect.</div></details>
+      <details><summary><span class="q">Q3</span>What actually makes just-in-time reduction possible?<span class="chev">▾</span></summary><div class="a">Two hardware pieces: async TMA transfers directly between SMs' shared memories, and hardware <code>mbarrier</code>s that track when a transfer completes — so the consumer can proceed the instant its data is ready, without polling or blocking.</div></details>
+      <details><summary><span class="q">Q4</span>Why not just use CUDA's native thread block cluster feature?<span class="chev">▾</span></summary><div class="a">Because it forces one uniform cluster size for the whole kernel, and the real hardware groups (GPCs) are heterogeneous (2–20 SMs). A size that fits some GPCs perfectly leaves others fragmented and idle — up to 62 of 132 SMs on H100 with cluster size 10.</div></details>
+      <details><summary><span class="q">Q5</span>What do developers actually have to write?<span class="chev">▾</span></summary><div class="a">Computation logic as composed operators (<code>Iter</code>/<code>Map</code>/<code>Reduce</code>/<code>Reshard</code>/<code>Gather</code>/<code>Finalize</code>), similar in spirit to Spark's RDD operators. Table 5 reports this adds only 19–37 lines of code versus an equivalent TileLang implementation.</div></details>
+      <details><summary><span class="q">Q6</span>How does Meld avoid the GPU's own (opaque) scheduler?<span class="chev">▾</span></summary><div class="a">It launches a wrapper kernel that fully saturates the GPU (one persistent block per SM), then has each block read a CPU-populated, per-SM instruction queue and execute exactly the handlers/communication it's told to — bypassing hardware block scheduling entirely.</div></details>
+      <details><summary><span class="q">Q7</span>Does Meld replace Triton or TileLang?<span class="chev">▾</span></summary><div class="a">No — it's built on top of TileLang as its intra-SM compiler backend, adding the cross-SM cooperation, scheduling, and runtime layers TileLang doesn't have.</div></details>
+      <details><summary><span class="q">Q8</span>What's the overhead of all this dynamism?<span class="chev">▾</span></summary><div class="a">Scheduling takes under 2 ms (overlappable via async scheduling + plan caching); compilation takes 1.3–2.2× longer than TileLang's (one-time cost, since it generates handlers for multiple sub-task-shape ranges).</div></details>
+      <details><summary><span class="q">Q9</span>Does Meld work on GPUs without on-chip SM links?<span class="chev">▾</span></summary><div class="a">Yes, with reduced benefit — it falls back to global-memory-based communication and flag-based synchronization, still gaining from decoupled, dynamic scheduling alone (the "+decouple" ablation bar, Fig.12), just without the "+cooperate" gains from the interconnect.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Cross-SM kernel fusion</b><span>Fusing phases that traditionally required separate kernels into one, using direct SM-to-SM cooperation instead of a kernel boundary to enforce ordering.</span></div>
+      <div class="term-def"><b>Just-in-time (JIT) reduction</b><span>Merging intermediate results directly in local SRAM the moment they arrive via async transfer — wait-free because the barrier confirms readiness.</span></div>
+      <div class="term-def"><b>Decoupled execution</b><span>Separating declared computation logic (operators) from the hardware mapping/cooperation plan, which is decided at runtime per input shape.</span></div>
+      <div class="term-def"><b>Operator-based abstraction</b><span>Meld's programming model: compose <code>Iter</code>, <code>Map</code>, <code>Reduce</code>, <code>Reshard</code>, <code>Gather</code>, <code>Finalize</code> to express DNN computation + cooperation semantics.</span></div>
+      <div class="term-def"><b>Hierarchical scheduling</b><span>Tier-1: assign task groups to hardware clusters minimizing off-chip traffic. Tier-2: intra-cluster stage fusion + JIT reduction ordering.</span></div>
+      <div class="term-def"><b>Instruction queue / wrapper kernel</b><span>A per-SM list of (handler, args, comm) instructions written by the CPU scheduler; the wrapper kernel's block on each SM drains and executes it, bypassing the GPU's hardware scheduler.</span></div>
+      <div class="term-def"><b>Copy absorption</b><span>Using the on-chip interconnect to broadcast data loaded once (e.g. a shared KV-cache prefix) to multiple SMs, avoiding redundant HBM fetches.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Split-KV / combine</b><span>The partial/reduce phases of decoding attention: compute local attention per sub-sequence, then merge into the final output.</span></div>
+      <div class="term-def"><b>GPC</b><span>A physically interconnected group of SMs (2–20 on current GPUs); full on-chip mesh connectivity exists only within a GPC.</span></div>
+      <div class="term-def"><b>mbarrier</b><span>Hardware-managed barrier primitive used for fine-grained cross-SM synchronization, paired with async TMA transfers.</span></div>
+      <div class="term-def"><b>Plan cache</b><span>Reuse of a scheduling plan across transformer layers / consecutive decoding steps sharing the same shape, avoiding re-scheduling cost.</span></div>
+      <div class="term-def"><b>BSP</b><span>Bulk Synchronous Parallel — the classic kernel-boundary execution model Meld moves away from.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What Meld buys (vs. best baseline)</div>
+      <div class="viz-kicker">across attention, MoE, NSA, RMSNorm, cross-entropy</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Kernel speedup<small>average</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="1.3"><span>1.3×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Kernel speedup<small>best case</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="2.04"><span>up to 2.04×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">End-to-end<small>inference throughput</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="1.4"><span>up to 1.4×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Effective HBM BW<small>vs FlashInfer fused-MoE</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="2.5"><span>2.5× (2688 vs 1070 GB/s)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 2.5×</p>
+      <figcaption>Meld reaches 97% of specialized MegaMoE's effective bandwidth while using a general operator DSL instead of MoE-specific hand tuning (§6.3, §6.5.2).</figcaption>
+    </figure>
+
+    <div class="subhead">Related reading</div>
+    <div class="read-item reveal"><h4>FlashAttention / FlashAttention-3 <span class="diff med">medium</span></h4><div class="meta">Dao et al. · NeurIPS'22 / NeurIPS'24</div><p>The intra-SM pipelining/warp-specialization foundation that Meld's per-handler tiling builds on.</p></div>
+    <div class="read-item reveal"><h4>TileLang <span class="diff med">medium</span></h4><div class="meta">Wang et al. · ICLR'26</div><p>Meld's intra-SM compiler backend; Meld adds cross-SM cooperation and a dynamic runtime on top.</p></div>
+    <div class="read-item reveal"><h4>Mirage Persistent Kernel (MPK) <span class="diff hard">hard</span></h4><div class="meta">Cheng et al. · arXiv 2025</div><p>A megakernel compiler compared in §6.3 — fuses phases but keeps static chunk-length partitioning, which Meld's dynamic cooperation improves on.</p></div>
+    <div class="read-item reveal"><h4>ClusterFusion <span class="diff hard">hard</span></h4><div class="meta">Luo et al. · arXiv 2025</div><p>Manually fuses attention stages via clusters but keeps a rigid, phase-by-phase, one-cluster-per-head mapping — the specialized point Meld generalizes.</p></div>
+    <div class="read-item reveal"><h4>PagedAttention / vLLM <span class="diff easy">easy</span></h4><div class="meta">Kwon et al. · SOSP'23</div><p>Source of one of the paper's motivating measurements: 39% GPU idleness in decoding attention (Fig.4).</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="read-item reveal">
+      <p><b>From the paper:</b> all cited numbers (FlashMLA 67% occupancy / 37%–10.3% combine split; NSA 51%–9.4%; H100 bandwidths 81 vs ~20 GB/s; GPC layouts in Fig.7; speedups 1.3× avg/2.04× max/1.4× end-to-end; effective bandwidth 2688 vs 1070 vs 2781 GB/s; dev effort +19–37 LoC; compile 1.3–2.2×) are taken directly from the abstract, §2, §6, Table 4/5, and Fig.1/4/7/10–14.</p>
+      <p><b>My framing:</b> the analogies (relay handoff, sous chef, neighborhood streets, recipe card, dispatcher's clipboard), the simplified toy MILP example, and the bandwidth/latency arithmetic in Worked Example ② are original explanatory devices, not the paper's own language.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> He, Sun, Li, Du, Xia, Chen — "Taming Dynamism on GPUs: Cross-SM Kernel Fusion via SM Cooperation and Just-in-Time Reduction" (SOSP'26)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 2.5;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
