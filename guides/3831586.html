@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<!-- Lost Bytes field guide — memory lost at the user/kernel allocator boundary (Fistanto, Tempel, Dietrich, PLOS'26).
+     Semantic colors: teal = returnable "body" pages (good) · indigo = allocator machinery (mallocng/H_min) ·
+     terracotta = lost bytes (sub/head/tail, bad) · amber = kernel/page boundary (madvise, VMA). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Where Do the Bytes Go? — Lost Memory at the Allocator/Kernel Boundary</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D68910; --honey-deep:#A9650B; --honey-soft:#F7E3BF;
+  --dram:#1E8F6F; --dram-soft:#D9F0E7;
+  --ltram:#6C5CE0; --ltram-soft:#E6E2FA;
+  --optane:#C0392B; --optane-soft:#F7DCD6;
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,143,111,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(108,92,224,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(214,137,16,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(108,92,224,.05) 31px,rgba(108,92,224,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(214,137,16,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#0e5340;font-size:.96rem}
+.primer .ready b{color:#0a3d2f}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:100px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong);font-size:2.4rem}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#0e5340}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a2e9a}
+.chip-lru{background:var(--optane-soft);color:#8f2318}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D2;color:#0e5340}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#8f2318}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c1;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c2bbf0;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcd6f7}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#7c6ee8,#6C5CE0)}
+.bf-hi{background:linear-gradient(90deg,#2fa07f,#1E8F6F)}
+.bf-lru{background:linear-gradient(90deg,#cf6659,#C0392B)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#0e5340}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#8f2318}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#D68910} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8f85e8}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#0e5340}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#8f2318}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,143,111,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(108,92,224,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(214,137,16,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>PLOS 2026 · A Field Guide</span>
+    <h1>The heap says it's <span class="swash">free</span>. The kernel begs to <span class="swash" style="color:var(--optane)">differ</span></h1>
+    <p class="lede">Your allocator frees a block, RSS doesn't move, and DRAM keeps getting pricier. This is the story of why — and a classification scheme that measures exactly how many bytes are stuck at the user/kernel boundary.</p>
+    <div class="hero-meta">
+      <span>📄 "Lost Bytes At The Crossroads..." · Fistanto, Tempel, Dietrich (TU Braunschweig)</span>
+      <span>🎓 Assumes OS/mm background — primers focus on paper-specific vocabulary</span>
+      <span>⏱ ~20 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🗄️</div>
+      <p>A byte only becomes <span class="ro">ELIGIBLE FOR RECLAIM</span> once its <span class="ro">WHOLE page</span> (P — 4KiB in the paper's setup) is empty, and even then the kernel may not reclaim it right away (e.g. lazy MADV_FREE) — a hole that merely <span class="wo">touches a page boundary</span> is lost, not reclaimable.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Vocabulary before content</div>
+      <h2>Quick glossary + six primers</h2>
+      <p class="sub">You know VMAs and page tables — these primers only cover the paper-specific pieces: the tools it uses to measure loss, and the allocator behavior it's measuring.</p>
+    </div>
+    <div class="gloss" style="margin:24px 0">
+      <div class="term-def"><b>VMA</b><span>Virtual memory area — the kernel's coarse unit for mmap()/munmap(); the boundary allocators must request memory across.</span></div>
+      <div class="term-def"><b>RSS</b><span>Resident set size — physical frames actually mapped for a process, regardless of what the allocator thinks is "free."</span></div>
+      <div class="term-def"><b>madvise(DONTNEED/FREE)</b><span>Sub-VMA hints that release physical frames within an existing VMA without unmapping it.</span></div>
+      <div class="term-def"><b>mincore()</b><span>Syscall that reports, per page, whether it is currently backed by physical memory — the paper's measurement instrument.</span></div>
+      <div class="term-def"><b>H<sub>alloc</sub> / H<sub>min</sub></b><span>The paper's notation: the allocator's real hole list vs. the same holes merged wherever adjacent — an upper bound on returnability.</span></div>
+      <div class="term-def"><b>mallocng</b><span>musl libc's slab-style allocator, the paper's case study; supports optional madvise(FREE) release.</span></div>
+    </div>
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Two granularities of kernel control<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>mmap()/munmap() operate on whole VMAs — expensive, and require extensive locking [15,13]. madvise(WILLNEED/DONTNEED) operates on page-aligned <i>sub-ranges</i> of an existing VMA, changing physical backing without touching the VMA structure.</p>
+          <div class="ready"><b>Now you're ready:</b> allocators use the fine-grained madvise() path to return memory — but only if the range they want to release happens to be page-aligned.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>DONTNEED vs. FREE — eager vs. lazy<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>DONTNEED removes pages immediately, forcing a TLB shootdown. Linux 4.16 added MADV_FREE: pages are marked reclaimable but stay mapped until real memory pressure hits, avoiding the shootdown cost.</p>
+          <div class="ready"><b>Now you're ready:</b> mallocng optionally uses FREE for cheaper releases — but "reclaimable" is not the same as "already reclaimed," which matters for the paper's RSS measurements.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Size classes misalign with pages on purpose<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Allocators like TCMalloc [27] round requests to fixed, deliberately "uneven" size classes (e.g. class 22 covers 1153–1408B) to cut internal fragmentation — a standard technique [27,4,6].</p>
+          <div class="ready"><b>Now you're ready:</b> uneven sizes are good for fragmentation, bad for page alignment — every third 1408B block in that class crosses a 4KiB boundary.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>How the paper actually measures loss<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An LD_PRELOAD'd sampling thread reads mallocng's internal hole list directly, and calls mincore() on the heap region to see which of those hole-bytes are still physically resident.</p>
+          <div class="ready"><b>Now you're ready:</b> "lost" in this paper is a precise, measured quantity — bytes in an unallocated hole that mincore() reports as still backed.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>H<sub>alloc</sub> vs. H<sub>min</sub>: real vs. best-case<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>mallocng's own hole list (H<sub>alloc</sub>) does some adjacent-slot merging, but it isn't page-aware — it doesn't target producing page-sized, page-aligned holes. The paper also builds H<sub>min</sub> — the same holes merged wherever they touch, with no such limitation — via a red-black tree, O(log N) per merge, purely for evaluation.</p>
+          <div class="ready"><b>Now you're ready:</b> the gap between H<sub>alloc</sub> and H<sub>min</sub> results is the headroom a smarter allocator could capture.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Same mismatch, bigger granularity<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><em>Framing, not from the paper:</em> the page-alignment mismatch described here recurs at 2MB huge-page granularity — cited related work on adaptive huge-page subrelease [18] tackles exactly that scaled-up version of this problem.</p>
+          <div class="ready"><b>Now you're ready:</b> this paper's classification vocabulary (sub/head/body/tail) is a clean lens for reasoning about any "can the OS reclaim this range" question, at any granularity.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole paper in one place</div>
+      <h2>Lost bytes, in a nutshell</h2>
+      <p class="sub">Why memory efficiency (not just speed) matters now, and what exactly gets stuck.</p>
+    </div>
+    <div class="prose">
+      <p>Since late 2025, DRAM prices have risen sharply due to AI-datacenter demand [10], reviving interest in memory-efficient allocators — after a decade where allocator research optimized almost exclusively for speed [12,20,16,27].</p>
+      <p>The paper's core observation: a memory allocator manages <b>blocks</b> at arbitrary byte granularity, but the kernel can only reclaim physical memory at <b>page</b> granularity via madvise(). When an allocator frees a block, the resulting <b>hole</b> — an unallocated region still requested from the OS — usually doesn't align to page boundaries. The paper classifies every byte of every hole into one of four categories relative to the page grid: <span class="mem-chip chip-lru">sub</span> (whole hole inside one page), <span class="mem-chip chip-lru">head</span>/<span class="mem-chip chip-lru">tail</span> (partial pages at the hole's edges), and <span class="mem-chip chip-hi">body</span> (full pages in the middle — the only class directly returnable via madvise()).</p>
+      <p><strong>The headline result:</strong> in <b>mallocng</b> (musl libc's allocator), merging holes wherever they're adjacent (H<sub>min</sub>) unlocks <b>up to 75 percent</b> more returnable ("body") bytes than the allocator's real hole list ever finds on its own — most dramatically in LuaJIT. For a 300-second Redis benchmark, integrated over time the allocator returned <b>195.58 MiB·seconds</b> of memory but wasted <b>1 070.45 MiB·seconds</b> — over 5× more lost than reclaimed.</p>
+    </div>
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>The kernel reclaims at <b>page</b> granularity; allocators track free space at <b>block</b> granularity — the mismatch is the whole story.</li>
+        <li>Only the <b>body</b> class — full pages entirely inside a hole — is directly returnable via madvise().</li>
+        <li><b>H<sub>alloc</sub></b> (what mallocng actually tracks) vs. <b>H<sub>min</sub></b> (merged upper bound) exposes real, measurable headroom.</li>
+        <li>For LuaJIT, merging holes into H<sub>min</sub> raises the returnable "body" share by up to <b>75%</b> of accumulated hole bytes — the potential savings from smarter merging.</li>
+        <li>Existing mitigations exist (madvise(FREE), decay timers, malloc_trim()) but are opt-in, lazy, or barely used (only 120 of ~42,000 Debian packages call malloc_trim()).</li>
+      </ul>
+    </div>
+    <figure class="viz reveal">
+      <div class="viz-title">Where the bytes end up</div>
+      <div class="viz-kicker">a hole spanning three pages · classified against the page grid</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> sub / head / tail — lost</span>
+        <span><i style="background:var(--dram)"></i> body — returnable</span>
+        <span><i style="background:var(--honey)"></i> allocated data — still live</span>
+      </div>
+      <svg class="full" viewBox="0 0 720 200" role="img" aria-label="A hole spanning three pages, classified into head, body, tail against allocated neighbors">
+        <g font-family="JetBrains Mono" font-size="11" fill="#9A8E7C">
+          <text x="70" y="26">page p1</text><text x="290" y="26">page p2</text><text x="510" y="26">page p3</text>
+        </g>
+        <rect x="30" y="36" width="220" height="70" fill="none" stroke="#D8C8AC" stroke-width="1.4" stroke-dasharray="3 3"/>
+        <rect x="250" y="36" width="220" height="70" fill="none" stroke="#D8C8AC" stroke-width="1.4" stroke-dasharray="3 3"/>
+        <rect x="470" y="36" width="220" height="70" fill="none" stroke="#D8C8AC" stroke-width="1.4" stroke-dasharray="3 3"/>
+        <rect x="30" y="36" width="90" height="70" fill="var(--honey)" opacity="0.28"/>
+        <rect x="120" y="36" width="130" height="70" fill="var(--optane)" opacity="0.55"/>
+        <rect x="250" y="36" width="220" height="70" fill="var(--dram)" opacity="0.55"/>
+        <rect x="470" y="36" width="110" height="70" fill="var(--optane)" opacity="0.55"/>
+        <rect x="580" y="36" width="110" height="70" fill="var(--honey)" opacity="0.28"/>
+        <text x="185" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#8f2318" font-weight="700">head</text>
+        <text x="360" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#0e5340" font-weight="700">body (1 full page)</text>
+        <text x="525" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#8f2318" font-weight="700">tail</text>
+        <line x1="120" y1="120" x2="580" y2="120" stroke="var(--ltram)" stroke-width="2"/>
+        <text x="350" y="140" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="var(--ltram)">the hole (freed block), offsets [120,580)</text>
+        <text x="185" y="176" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">shares page p1 with allocated data → unreturnable</text>
+        <text x="525" y="176" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">shares page p3 with allocated data → unreturnable</text>
+      </svg>
+      <figcaption><b>Only the middle page (body) can be madvise()'d away.</b> Head and tail are stuck because they share a page with still-allocated neighbors — no matter how the allocator merges free lists, that page stays resident. (Following the paper's Sec. 3 classification, illustrative offsets.)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Four everyday pictures</div>
+      <h2>How to think about lost bytes</h2>
+      <p class="sub">Each stands alone. Every card ends with where the picture breaks.</p>
+    </div>
+    <div class="analogy-grid">
+      <div class="analogy reveal">
+        <div class="ill">🏬</div>
+        <span class="term">The core mismatch</span>
+        <h3>Kerbside recycling picks up whole bins</h3>
+        <p>You can sort a single glass bottle out of a mixed-waste bin, but the truck only ever lifts <em>whole bins</em>. If your bin still has one non-recyclable item in it, the whole bin goes to landfill — no matter how much of it is technically sortable. The kernel's madvise() is the truck: it only ever picks up whole pages.</p>
+        <div class="breaks"><b>Where it breaks:</b> real bins don't have "size classes" chosen to reduce waste — TCMalloc's uneven size classes are a deliberate trade that <i>worsens</i> this specific problem to <i>improve</i> a different one (fragmentation).</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill">🏨</div>
+        <span class="term">head / body / tail</span>
+        <h3>A hotel only certifies whole vacant floors</h3>
+        <p>Guests check out of individual rooms whenever they like, but housekeeping can only tell the landlord "floor 4 is fully empty" once every room on it is vacant. A floor that's empty except for one lingering guest at the very top stays fully staffed — that's your head/tail. A floor that's entirely empty (body) can be shut down completely.</p>
+        <div class="breaks"><b>Where it breaks:</b> real floors don't get created mid-hole the way a hole can straddle a page it never asked to touch — the analogy needs a floor plan that's decided by the guest, not the building.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill">💺</div>
+        <span class="term">H<sub>alloc</sub> vs. H<sub>min</sub></span>
+        <h3>Empty airline seats vs. a shuffled-full row</h3>
+        <p>Ten scattered empty seats across a plane are useless to close off. The same ten seats consolidated into one full empty row could be roped off entirely. mallocng usually leaves free slots where they land (H<sub>alloc</sub>); the paper additionally computes what happens if the airline aggressively reseated everyone into contiguous blocks (H<sub>min</sub>) — showing how much is recoverable in principle.</p>
+        <div class="breaks"><b>Where it breaks:</b> reseating live passengers (live allocated objects) isn't possible without compaction — H<sub>min</sub> only merges <i>already-free</i> slots, it never moves allocated ones.</div>
+      </div>
+      <div class="analogy reveal">
+        <div class="ill">🕰️</div>
+        <span class="term">MADV_FREE laziness</span>
+        <h3>A "for sale" sign, not a moving truck</h3>
+        <p>DONTNEED is calling the movers immediately: expensive, disruptive, but the apartment is empty tonight. FREE is putting up a "for sale" sign: cheap, no disruption, but the previous tenant's furniture stays until a buyer (memory pressure) actually shows up. jemalloc waits a 10-second decay timer before even putting up the sign.</p>
+        <div class="breaks"><b>Where it breaks:</b> the sign only ever gets posted on <i>body</i>-class apartments — a head/tail apartment can never be listed, sign or no sign, until the neighboring live tenant moves out too.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The mechanics</div>
+      <h2>How it actually works</h2>
+      <p class="sub">The formal classification, the measurement pipeline, and why H<sub>alloc</sub> undercounts.</p>
+    </div>
+    <div class="prose">
+      <h3>1 · The formal classification (§3)</h3>
+      <p>For page size <code>P</code> and a hole <code>h = [v_s, v_e)</code>, define page-aligned floor/ceiling helpers ⌈v⌉<sub>P</sub> and ⌊v⌋<sub>P</sub>. A hole entirely within one page is a <b>sub-page hole</b>. Otherwise it splits into three parts:</p>
+      <pre class="sketch"><span class="hl">head(h) = [v_s, ⌈v_s⌉_P)</span>     <span class="cm">// partial page at the start</span>
+<span class="hl">body(h) = [⌈v_s⌉_P, ⌊v_e⌋_P)</span>  <span class="cm">// whole pages in the middle — only these are returnable</span>
+<span class="hl">tail(h) = [⌊v_e⌋_P, v_e)</span>     <span class="cm">// partial page at the end</span></pre>
+      <p>Intersecting this classification with the set of pages <b>mincore()</b> reports as physically mapped gives, per category, exactly how many bytes are stuck vs. genuinely reclaimable.</p>
+    </div>
+    <div class="prose">
+      <h3>2 · Measurement pipeline</h3>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">1 · LD_PRELOAD</div><div class="nd">Load a shim over mallocng; spawn a periodic sampling thread</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">2 · Read H<sub>alloc</sub></div><div class="nd">Extract mallocng's real hole list from its internal slot bitfields</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">3 · Merge to H<sub>min</sub></div><div class="nd">Sort into a red-black tree, merge adjacent holes, O(log N) per op</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">4 · mincore()</div><div class="nd">Query which heap pages are still physically resident</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">5 · Classify & intersect</div><div class="nd">Apply sub/head/body/tail formulas, intersect with resident pages</div></div>
+      </div>
+    </div>
+    <div class="prose">
+      <h3>3 · Why H<sub>alloc</sub> already undercounts</h3>
+      <p>mallocng is a slab-style allocator that groups up to 32 adjacent slots into one area, and it does merge some adjacent free slots — but not in a page-aware way, so the merged holes it produces aren't targeted at page-sized, page-aligned regions. The paper observed this directly in LuaJIT: mallocng's own merging produced a suspicious spike of holes sized exactly <b>2032 bytes</b> (size class 23), even though the benchmark and JIT never requested that size — a sign of partial, non-page-aware merging happening under the hood.</p>
+      <div class="callout warn"><span class="ic">⚠</span><div>This is exactly the TCMalloc-style problem from the primers: uneven size classes (chosen to reduce internal fragmentation) actively work against page alignment, and are baked into how the allocator merges free slots long before madvise() ever gets a chance.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Real numbers from the paper</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Three calculations, following the paper's definitions and reported measurements.</p>
+    </div>
+    <div class="card reveal">
+      <h3>① Classifying a hole with the §3 formulas</h3>
+      <p style="color:var(--ink-soft)">Page size P = 4096 B. A hole spans offsets [3000, 13000) — illustrative numbers, using the paper's own floor/ceiling definitions.</p>
+      <ol class="seq">
+        <li><b>Check sub-page:</b> ⌊3000⌋<sub>4096</sub> = 0, ⌊13000⌋<sub>4096</sub> = 12288 ≠ 0 → not a sub-page hole.</li>
+        <li><b>head = [3000, ⌈3000⌉<sub>4096</sub>)</b> = [3000, 4096) = <b>1096 B</b>, stuck on the first page.</li>
+        <li><b>body = [⌈3000⌉<sub>4096</sub>, ⌊13000⌋<sub>4096</sub>)</b> = [4096, 12288) = <b>8192 B = 2 whole pages</b> — returnable via madvise().</li>
+        <li><b>tail = [⌊13000⌋<sub>4096</sub>, 13000)</b> = [12288, 13000) = <b>712 B</b>, stuck on the last page.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div>Of a 10000B hole, only 8192B (82%) is returnable — and only if the allocator actually calls madvise() on those pages; with lazy MADV_FREE, they can stay resident until real memory pressure forces the reclaim.</div></div>
+    </div>
+    <div class="card reveal">
+      <h3>② Why TCMalloc's class 22 crosses pages</h3>
+      <p style="color:var(--ink-soft)">TCMalloc's size class 22 handles objects sized 1153–1408 B; the paper notes "every third 1408-byte block crosses a 4KiB page boundary."</p>
+      <ol class="seq">
+        <li><b>Pack 1408B blocks back-to-back:</b> block 1 ends at 1408, block 2 ends at 2816, block 3 ends at 4224.</li>
+        <li><b>4224 mod 4096 = 128</b> — block 3 starts at offset 2816 (inside page 0) and ends at 4224 (128 B into page 1).</li>
+        <li><b>4096 / 1408 ≈ 2.91</b> — confirming a page holds just under three blocks, so the pattern of crossings repeats every 3 blocks (≈ 4224 B ≈ ~1.03 pages).</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The allocator picked 1408B to minimize internal fragmentation for a class covering up to 1408B objects — a completely sound choice by classic fragmentation metrics [24,4], but it guarantees a fraction of freed blocks will always straddle a page.</div></div>
+    </div>
+    <div class="card reveal">
+      <h3>③ Redis: 5× more wasted than returned</h3>
+      <p style="color:var(--ink-soft)">Over a 300s run, mallocng returns 195.58 MiB·seconds of memory to the OS while 1070.45 MiB·seconds sit wasted (Fig. 2). About 20% of RSS is holes, and 82% of those holes stay physically backed.</p>
+      <ol class="seq">
+        <li><b>Waste-to-return ratio:</b> 1070.45 / 195.58 ≈ <b>5.47×</b> more wasted than actually reclaimed.</li>
+        <li><b>Instantaneous "held hostage" fraction:</b> 20% holes × 82% still-backed ≈ <b>16.4% of RSS</b> at any moment is a free-but-resident hole.</li>
+        <li><b>H<sub>min</sub> headroom:</b> merging Redis's holes grows the body class 2.85× (0.83 → 2.38 MiB average, Table 1) — to <b>63%</b> of accumulated H<sub>min</sub> hole size.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div>For LuaJIT the gap is starker still: body goes from <b>0 MiB</b> under H<sub>alloc</sub> to <b>181.04 MiB</b> under H<sub>min</sub> — <b>75%</b> of accumulated hole size becomes theoretically returnable once you allow merging.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one names the misconception it checks.</p>
+    </div>
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Your glibc program calls free() heavily and RSS never drops. Will calling madvise() manually fix it?</div>
+      <details><summary>Show answer</summary><div class="ans">Only partially, and only via malloc_trim() — glibc doesn't return holes surrounded by allocated blocks unless explicitly told to. Even then, only body-class pages within those holes actually shrink RSS; head/tail/sub bytes stay resident regardless.<span class="mis">Misconception: that free() automatically informs the kernel. It only updates the allocator's internal bookkeeping.</span></div></details>
+    </div>
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Page size 4096 B. A hole spans [3000, 13000). Compute head, body, and tail sizes.</div>
+      <details><summary>Show answer</summary><div class="ans">head = [3000, 4096) = <b>1096 B</b>. body = [4096, 12288) = <b>8192 B (2 pages)</b>. tail = [12288, 13000) = <b>712 B</b>. Total = 1096+8192+712 = 10000B, matching the hole size. Only the 8192B body is a madvise() candidate.<span class="mis">Misconception: rounding the hole size down/up to the nearest page gives the returnable amount. It doesn't — you must align to the boundaries the hole actually crosses, not its own start/end.</span></div></details>
+    </div>
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">mallocng merges small free slots into 2032B blobs (observed in LuaJIT). Does merging alone make those bytes returnable?</div>
+      <details><summary>Show answer</summary><div class="ans">Not necessarily. 2032B is well under a 4096B page, so a merged hole of that size is almost always still a sub-page hole — entirely stuck if it shares its page with any live allocation. Merging only helps once the <i>combined</i> hole spans a full page's worth of contiguous, page-aligned free space.<span class="mis">Misconception: any merging = progress toward returnability. Merging that stays within one page changes nothing about what the OS can reclaim.</span></div></details>
+    </div>
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">A sub-page hole sits on a page that also holds one live, still-allocated object. Can any amount of adjacent-hole merging (H<sub>min</sub>-style) ever make that page returnable?</div>
+      <details><summary>Show answer</summary><div class="ans">No — not without moving the live object (compaction), which H<sub>min</sub> explicitly does not do; it only merges already-free slots. As long as one live allocation remains on that physical page, the whole page stays resident, no matter how the free bytes around it are grouped.<span class="mis">Misconception: H<sub>min</sub> represents "what a smarter allocator could achieve." It's an upper bound on merging free space only — real returnability additionally requires the page to have zero live occupants.</span></div></details>
+    </div>
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 5 · easy</span>
+      <div class="qtext">For Redis, 20% of RSS is holes and 82% of those holes are still physically backed. What fraction of total RSS is "free but resident" right now?</div>
+      <details><summary>Show answer</summary><div class="ans">0.20 × 0.82 = <b>0.164 → 16.4% of RSS</b> is memory the allocator considers free but the kernel is still holding physical frames for.<span class="mis">Misconception: "20% holes" already tells you how much is wasted. You must also account for how much of that hole space is still physically backed — some hole bytes may already have been reclaimed.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Six questions readers ask first.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Why doesn't the allocator just madvise() on every free()?<span class="chev">▾</span></summary><div class="a">Cost. madvise() is a syscall, and calling it on every free() would be catastrophic on the hot path — this is exactly why jemalloc waits a default 10-second decay timeout and mallocng's madvise(FREE) support is optional rather than eager.</div></details>
+      <details><summary><span class="q">Q2</span>What's the difference between H<sub>alloc</sub> and H<sub>min</sub>, concretely?<span class="chev">▾</span></summary><div class="a">H<sub>alloc</sub> is mallocng's actual, currently-in-use hole list — what the allocator really "knows" right now. H<sub>min</sub> is the paper's own construction: the same holes, virtually merged wherever adjacent, computed purely for evaluation to show the headroom a more aggressive allocator could capture.</div></details>
+      <details><summary><span class="q">Q3</span>Does this only matter for tiny objects?<span class="chev">▾</span></summary><div class="a">No — the paper shows it across the mimalloc-bench suite, including a Redis key-value store, LuaJIT's garbage collector, and even a Clang/SQLite3 compilation job (which lost 74.3% of its H<sub>min</sub> hole bytes to the sub class alone).</div></details>
+      <details><summary><span class="q">Q4</span>Doesn't MADV_FREE already solve this?<span class="chev">▾</span></summary><div class="a">No — MADV_FREE changes <i>when</i> and how cheaply a body-class page gets reclaimed (lazily, without a TLB shootdown), but it does nothing about head/tail/sub-page bytes, which were never eligible for madvise() in the first place.</div></details>
+      <details><summary><span class="q">Q5</span>Is this the same thing as classic internal/external fragmentation?<span class="chev">▾</span></summary><div class="a">Related but distinct. Classic fragmentation [24,1] describes virtual-memory waste inside the allocator. This paper adds an orthogonal axis: given already-fragmented free space, how much of it is even <i>visible</i> to the kernel as reclaimable? The two compound — bad fragmentation plus bad alignment is worse than either alone.</div></details>
+      <details><summary><span class="q">Q6</span>Why would a CXL/huge-page researcher care about a userspace allocator paper?<span class="chev">▾</span></summary><div class="a"><em>Framing, not the paper's claim:</em> the exact same "granularity mismatch" reasoning applies wherever a fine-grained bookkeeping structure meets a coarse-grained reclaim/migrate mechanism — the paper's own related work cites adaptive huge-page subrelease [18] and learning-based placement [17] as the 2MB-scale analogue of this same problem.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results, and provenance</h2>
+    </div>
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Hole</b><span>A block-sized region the allocator has freed but still holds as part of a VMA requested from the OS.</span></div>
+      <div class="term-def"><b>sub / head / body / tail</b><span>The paper's four-way classification of hole bytes relative to the page grid; only body is directly returnable.</span></div>
+      <div class="term-def"><b>Area (mallocng)</b><span>Up to 32 adjacent, independently-tracked slots grouped in one memory region — the unit mallocng requests, not the unit it returns.</span></div>
+      <div class="term-def"><b>malloc_trim()</b><span>glibc API that aggressively returns holes surrounded by allocated blocks; called by only ~120 of ~42,000 Debian source packages.</span></div>
+      <div class="term-def"><b>Size class</b><span>A fixed allocation size an allocator rounds requests up to, chosen to reduce internal fragmentation — often deliberately misaligned to pages.</span></div>
+    </div>
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What the classification finds (H<sub>alloc</sub> → H<sub>min</sub>, mimalloc-bench)</div>
+      <div class="viz-kicker">selected benchmark highlights, not suite-wide averages (Tables 1–2)</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">LuaJIT body<small>of H<sub>min</sub> hole bytes</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="75"><span>75% returnable</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Redis body<small>of H<sub>min</sub> hole bytes</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="63"><span>63% returnable</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">SQLite3 compile<small>lost to sub-class alone</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="74"><span>74.3% lost (sub)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Redis backed holes<small>of instantaneous RSS</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="16"><span>16.4% "held hostage"</span></div></div></div>
+      </div>
+      <figcaption>Body class grows <b>+229%</b> (geometric mean) and subhole class shrinks <b>−38%</b> going from H<sub>alloc</sub> to H<sub>min</sub> across the suite (§4.4) — the paper's headroom estimate for smarter merging; the bars above are individual benchmark rows, not suite-wide geometric means. (Paper, Tables 1–2)</figcaption>
+    </figure>
+    <div class="subhead">Related papers cited</div>
+    <div class="read-item reveal"><h4>The Memory Fragmentation Problem: Solved? <span class="diff med">medium</span></h4><div class="meta">Johnstone & Wilson · ISMM · 1998</div><p>The classic fragmentation-rate study this paper's "lost bytes" axis complements.</p></div>
+    <div class="read-item reveal"><h4>Worst-Case Fragmentation of First-Fit and Best-Fit <span class="diff hard">hard</span></h4><div class="meta">Robson · The Computer Journal · 1977</div><p>Theoretical worst-case bounds motivating why size-class rounding exists at all.</p></div>
+    <div class="read-item reveal"><h4>Mesh: Compacting Memory Management for C/C++ <span class="diff hard">hard</span></h4><div class="meta">Powers, Tench, Berger, McGregor · PLDI · 2019</div><p>A compaction-based approach — moves live objects to consolidate free space, unlike this paper's non-moving classification.</p></div>
+    <div class="read-item reveal"><h4>Adaptive Huge-Page Subrelease for Non-Moving Allocators <span class="diff hard">hard</span></h4><div class="meta">Maas, Kennelly, Nguyen, Gove, McKinley, Turner · ISMM · 2021</div><p>The 2MB-huge-page analogue of this paper's page-granularity reclaim problem, in TCMalloc.</p></div>
+    <div class="subhead">Source notes</div>
+    <div class="callout note"><span class="ic">📎</span><div><b>From the paper:</b> all numbers in Tabs 2/5/8 (Table 1, Table 2, Fig. 2/3 text, benchmark parameters, related-work citations) are taken directly from Fistanto, Tempel & Dietrich, "Lost Bytes At The Crossroads Between User- And Kernel-Level Memory Management," PLOS 2026. Artifact: Zenodo DOI 10.5281/zenodo.21772263. Funded by DFG grants 468988364, 501887536.<br><b>Framing (mine):</b> the "hotel," "recycling," and "airline seats" analogies, the huge-page/CXL connection in primer 6 and FAQ Q6, and the worked-example illustrative offsets in Tab 5/6 (explicitly labeled) are my own explanatory additions, not paper claims.</div></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Fistanto, Tempel & Dietrich, "Lost Bytes At The Crossroads..." (PLOS 2026)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>

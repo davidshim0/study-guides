@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<!-- LMTracer field guide — Graph-Embedded Probing for Real-Time LLM Profiling (Liu et al., SOSP'26).
+     Semantic colors: teal = LMTracer's mechanism (probe kernels, graph-embedded) · indigo = GPU async/graph machinery ·
+     terracotta = existing profilers / barriers (the villain) · honey = accent / production outcomes. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Watching Every GPU Cycle Without Ever Stopping It — LMTracer, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E0A23D; --honey-deep:#B8760F; --honey-soft:#FAE8C6;
+  --dram:#1E8F6F; --dram-soft:#DAF0E6;      /* teal  = LMTracer's mechanism (probe kernels)      */
+  --ltram:#4B5FBF; --ltram-soft:#E3E6F7;    /* indigo = GPU async execution / graph machinery     */
+  --optane:#C1442E; --optane-soft:#F6DFD8;  /* terracotta = existing profilers / barriers (villain) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,143,111,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(75,95,191,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(224,162,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(75,95,191,.05) 31px,rgba(75,95,191,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(224,162,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:20ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:46ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#124d3c;font-size:.96rem}
+.primer .ready b{color:#0d3a2d}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#124d3c}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#31377f}
+.chip-lru{background:var(--optane-soft);color:#832c1c}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #A9DCC9;color:#124d3c}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b0a3;color:#832c1c}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#96cdb9;background:var(--dram-soft)}
+.node.n-ucp{border-color:#b7bde6;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3ac9c;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:180px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6874d1,#4B5FBF)}
+.bf-hi{background:linear-gradient(90deg,#33a184,#1E8F6F)}
+.bf-lru{background:linear-gradient(90deg,#d26a52,#C1442E)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#124d3c;border:1px solid #96cdb9}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#124d3c}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#832c1c}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e0a23d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#124d3c}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#832c1c}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(30,143,111,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(75,95,191,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(224,162,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Watching every GPU cycle without ever <span class="swash">stopping</span> it</h1>
+    <p class="lede">Profiling a production LLM cluster the usual way means putting stopwatches on the GPU — and every stopwatch is a barrier that stalls the thing it's timing. This is the plain-English story of <strong>LMTracer</strong>, which turns the stopwatch into just another kernel riding the same execution graph.</p>
+    <div class="hero-meta">
+      <span>📄 "LMTracer: Fine-Grained and Real-Time Performance Profiling for Production LLM Systems" · Liu et al.</span>
+      <span>🎓 GPU/CUDA fluency assumed — primers cover the LLM-serving-specific plumbing</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🛰️</div>
+      <p>Make every profiling probe a <span class="ro">GPU KERNEL that rides the execution graph</span> — never a <span class="wo">BARRIER that stops it to check the time</span>.<br><em style="font-size:.9rem">Measure from inside the stream, not from outside it.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then eight primers</h2>
+      <p class="sub">You already know GPU architecture and the mm stack cold. What's paper-specific is the LLM-serving plumbing (CUDA/HIP Graphs, kernel fusion, TP/PP/DP) and the profiling-overhead problem it creates — that's what these primers target.</p>
+    </div>
+
+    <div class="card reveal" style="background:var(--paper-2)">
+      <h3 style="font-size:1.1rem;color:var(--ink)">Quick glossary — acronyms used everywhere below</h3>
+      <div class="gloss" style="columns:2">
+        <div class="term-def"><b>TP / PP / DP</b><span>Tensor / Pipeline / Data Parallelism — the three ways an LLM's compute is split across GPUs.</span></div>
+        <div class="term-def"><b>TTFT</b><span>Time To First Token — latency from request arrival to the first generated token; the serving-side SLA metric.</span></div>
+        <div class="term-def"><b>MLP</b><span>Multi-Layer Perceptron — the feed-forward block in each transformer layer (up-proj, activation, down-proj).</span></div>
+        <div class="term-def"><b>CUPTI</b><span>CUDA Profiling Tools Interface — NVIDIA's low-level, closed-source GPU profiling API.</span></div>
+        <div class="term-def"><b>RNIC</b><span>RDMA Network Interface Card — the NIC used for inter-GPU collective communication over the fabric.</span></div>
+        <div class="term-def"><b>NVLink</b><span>NVIDIA's high-bandwidth GPU-to-GPU interconnect; its failure is one of LMTracer's production case studies.</span></div>
+        <div class="term-def"><b>KV cache</b><span>Cached key/value attention tensors from prior tokens, reused during autoregressive decoding.</span></div>
+        <div class="term-def"><b>SFT</b><span>Supervised Fine-Tuning — a training workload LMTracer profiles at 256-GPU scale.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> LMTracer's mechanism (probe kernels)</span>
+      <span><i style="background:var(--ltram)"></i> GPU async / graph execution machinery</span>
+      <span><i style="background:var(--optane)"></i> existing profilers / barriers (the villain)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>GPU asynchronous execution<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>CPUs enqueue kernels onto a GPU stream in a <b>non-blocking</b> way — the CPU moves on immediately, and the GPU executes the queue in order without waiting for the CPU to check in. This is what lets a training loop overlap Python-side bookkeeping with GPU compute.</p>
+          <div class="ready"><b>Now you're ready:</b> LMTracer's entire design exists to avoid breaking this non-blocking property. Any profiling technique that forces the CPU to wait on the GPU (or vice versa) mid-stream reintroduces the idle time this model was built to eliminate.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Kernel fusion<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A layer-norm computed naively is four separate ops (power, add, rsqrt, multiply) — four kernel launches, four rounds of memory traffic. Compilers like PyTorch Inductor <b>fuse</b> these into one kernel that does all four in registers, cutting launch overhead and memory round-trips.</p>
+          <div class="ready"><b>Now you're ready:</b> fusion is exactly what makes profiling hard — once four ops become one kernel, a profiler that only sees kernel boundaries loses all visibility into which "op" inside took the time. LMTracer's stack-aware compilation exists to recover that visibility.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>CUDA/HIP Graph execution<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Beyond fusing ops into kernels, frameworks capture an entire <b>sequence</b> of kernels into a graph during a warm-up iteration, then replay the whole graph with a single CPU-side launch call on every subsequent iteration — reported to improve LLM performance up to 3×.</p>
+          <div class="ready"><b>Now you're ready:</b> a probe that isn't itself a normal GPU kernel can't be captured into this graph, so it either falls outside the graph (and reintroduces launch overhead) or forces a break in the replay. Probe kernels are designed to be indistinguishable from user kernels at capture time.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Why timing a kernel usually means a barrier<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The standard way to time a GPU kernel is a CUDA/HIP <b>Event</b>: record a timestamp before and after, then query it. Querying (or synchronizing on) an event from the CPU forces a wait — a barrier — because the CPU can't know the GPU has reached that point without asking and blocking.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the paper's root-cause diagnosis — every existing tool, in one form or another, inserts something that requires the CPU and GPU to rendezvous, and that rendezvous is what costs the 5–90%+ overheads you'll see in §7.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>LLM training/serving pipelines (TP/PP/DP)<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>DP replicates the whole model across GPU groups; PP splits layers into sequential stages across GPUs; TP splits individual layers across GPUs that must communicate (e.g. AllReduce) on every forward/backward pass. Serving adds a <b>prefill</b> phase (build the KV cache) followed by autoregressive <b>decode</b>.</p>
+          <div class="ready"><b>Now you're ready:</b> LMTracer's bottleneck analysis (§5.3) reconstructs exactly this structure from trace data — grouping GPUs by TP/PP role to compute per-stage bubble and straggler metrics.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Compile-time call stacks<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>When a compiler like PyTorch Inductor traces user code to generate kernels, it symbolically executes that code, meaning every operator it emits can be traced back to a <b>call stack</b> of Python source locations — which function, which file, which line — even after the operator is fused away into a larger kernel.</p>
+          <div class="ready"><b>Now you're ready:</b> this compile-time-only information is the raw material LMTracer's stack-aware compilation reads to decide where a fused kernel's boundaries map to user-defined regions like "attention" or "norm."</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>GPU clock registers and drift<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>GPUs expose a free-running clock register readable directly from kernel code (<code>globaltimer</code> on NVIDIA, <code>s_memtime</code> on AMD) — no driver call, no host round-trip. But GPU clocks are not synchronized with the CPU's or with each other's, since deviations don't matter for compute correctness.</p>
+          <div class="ready"><b>Now you're ready:</b> reading this register from inside a kernel is the cheapest possible timestamp (0.7–0.9 µs), but using it across devices requires the one-time clock-offset calibration in §5.2 — otherwise timestamps from different GPUs aren't comparable.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Producer-consumer double buffering<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The classic way to let a fast producer and a slower consumer overlap without either blocking the other: two buffers, the producer fills one while the consumer drains the other, then they swap. This trades a fixed memory cost for eliminating a synchronization point.</p>
+          <div class="ready"><b>Now you're ready:</b> LMTracer's shadow buffers are exactly this pattern, plus a lightweight "doorbell" notification so the consumer (CPU) doesn't have to poll the producer (GPU) constantly — see §5.2.</div>
+        </div>
+      </details>
+    </div>
+
+    <div class="callout note reveal"><span class="ic">🧭</span><div><b>If you're coming from memory-tiering / CXL work:</b> the doorbell-and-shadow-buffer pattern here is the same shape as doorbell registers on RDMA NICs or CXL Type-3 device queues — a producer that writes to a ring buffer and pings the consumer only when there's something to collect, instead of the consumer polling or the producer blocking on an acknowledgment. It's the same low-overhead notification primitive, applied to trace data instead of memory requests.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>LMTracer in a nutshell</h2>
+      <p class="sub">The problem, the fix, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>Production LLM providers need to watch GPU execution closely — a 20% GPU slowdown during training can inflate cost by 38%, and a 1-second latency spike in serving can drop a large fraction of user requests. But the profiling tools available (<span class="mem-chip chip-lru">CUPTI</span>, <span class="mem-chip chip-lru">Nsight Systems</span>, <span class="mem-chip chip-lru">CUDA/HIP Events</span>, <span class="mem-chip chip-lru">PyTorch Profiler</span>) all share a root cause of failure: to get an accurate timestamp, they insert something — an event query, a barrier, a Python-runtime hook — that forces the CPU and GPU to rendezvous. Because modern LLM execution is <b>asynchronous and streamlined</b> (kernels fused together, entire iterations captured into CUDA/HIP Graphs), every rendezvous either breaks that fusion or stalls the pipeline, producing overheads from 5% up past 90%.</p>
+      <p><strong>LMTracer's fix</strong> is <b>graph-embedded probing</b>: make the profiling logic itself a <span class="mem-chip chip-hi">probe kernel</span> — an ordinary GPU kernel, captured into the same execution graph as the code it measures, executed in the same order, with no barrier required to read it. Two engineering problems make this work in practice. First, inserting probes at arbitrary points would break kernel fusion, so <span class="mem-chip chip-ucp">stack-aware compilation</span> statically traces compile-time operator call stacks to find the safe boundary kernels to attach probes to. Second, getting the collected data off the GPU without a barrier requires <span class="mem-chip chip-ucp">doorbell-assisted shadow buffering</span>: two GPU-side buffers that probe kernels fill in turn, with a lightweight doorbell signal telling an async CPU poller when one is ready to drain — no query, no synchronize.</p>
+      <p><strong>The payoff:</strong> deployed in production for eight months across vLLM, SGLang, and Megatron-LM (7B–671B parameters, O(1k) GPUs), LMTracer averages <b>0.9% overhead</b> — an <b>11.6×</b> reduction versus Nsight Systems and PyTorch Profiler at comparable accuracy — while still resolving kernel-level, code-mapped traces. It has proactively caught 15 production issues; fixing them yielded <b>21.2%</b> latency reduction and <b>24.5%</b> throughput improvement.</p>
+    </div>
+
+    <div class="card reveal" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>The root cause of profiling overhead isn't "too much data" — it's <b>barriers</b> forcing CPU-GPU rendezvous, which breaks kernel fusion and graph replay.</li>
+        <li>Probe kernels are ordinary GPU kernels: they get captured into CUDA/HIP Graphs and cost only ~0.7–0.9 µs to read a clock register — vs ≥13 µs for a vendor-tool instrumentation point.</li>
+        <li><b>Stack-aware compilation</b> uses compile-time call stacks (not runtime hooks) to place probes at fused-kernel boundaries without breaking fusion.</li>
+        <li><b>Doorbell-assisted shadow buffering</b> moves data off the GPU with zero synchronization — two buffers, one doorbell flag, one async CPU poller.</li>
+        <li>Bottleneck analysis (bubble fraction, straggling fraction) turns the raw trace into "which GPU/stage is the problem," not just "here's a timeline."</li>
+        <li>Result: 0.9% average overhead, 11.6× lower than rival profilers, 15 production issues found, 21.2%/24.5% latency/throughput gains after fixes.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">a barrier-based profiler vs. LMTracer, on the same kernel sequence</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> existing profilers — barrier stalls the graph</span>
+        <span><i style="background:var(--dram)"></i> LMTracer — probe kernel rides the graph</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="Barrier-based profiling stalls the GPU pipeline; LMTracer's probe kernels ride inside the execution graph with no stall">
+        <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Existing profilers: the query is a wall</text>
+        <g>
+          <rect x="20" y="40" width="90" height="38" rx="6" fill="#F6DFD8" stroke="#C1442E" stroke-width="1.6"/><text x="65" y="63" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#832c1c">attn</text>
+          <rect x="128" y="40" width="14" height="38" fill="#C1442E"/>
+          <rect x="160" y="40" width="90" height="38" rx="6" fill="#F6DFD8" stroke="#C1442E" stroke-width="1.6"/><text x="205" y="63" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#832c1c">MLP</text>
+          <rect x="268" y="40" width="14" height="38" fill="#C1442E"/>
+          <rect x="300" y="40" width="90" height="38" rx="6" fill="#F6DFD8" stroke="#C1442E" stroke-width="1.6"/><text x="345" y="63" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#832c1c">norm</text>
+          <rect x="408" y="40" width="14" height="38" fill="#C1442E"/>
+          <text x="128" y="96" font-family="JetBrains Mono" font-size="9" fill="#832c1c">CPU query</text>
+          <text x="268" y="96" font-family="JetBrains Mono" font-size="9" fill="#832c1c">stall</text>
+          <text x="408" y="96" font-family="JetBrains Mono" font-size="9" fill="#832c1c">stall</text>
+        </g>
+        <text x="20" y="140" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">LMTracer: the probe is a fellow traveler</text>
+        <g>
+          <rect x="20" y="154" width="18" height="38" rx="4" fill="#DAF0E6" stroke="#1E8F6F" stroke-width="1.6"/>
+          <rect x="42" y="154" width="82" height="38" rx="6" fill="#DAF0E6" stroke="#1E8F6F" stroke-width="1.6"/><text x="83" y="177" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#124d3c">attn</text>
+          <rect x="128" y="154" width="14" height="38" rx="3" fill="#1E8F6F"/>
+          <rect x="146" y="154" width="82" height="38" rx="6" fill="#DAF0E6" stroke="#1E8F6F" stroke-width="1.6"/><text x="187" y="177" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#124d3c">MLP</text>
+          <rect x="232" y="154" width="14" height="38" rx="3" fill="#1E8F6F"/>
+          <rect x="250" y="154" width="82" height="38" rx="6" fill="#DAF0E6" stroke="#1E8F6F" stroke-width="1.6"/><text x="291" y="177" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#124d3c">norm</text>
+          <rect x="336" y="154" width="14" height="38" rx="3" fill="#1E8F6F"/>
+          <text x="60" y="210" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#124d3c">probe</text>
+        </g>
+        <path d="M40 192 v20 h-10 M40 212 h300" stroke="#4B5FBF" stroke-width="1.6" fill="none" stroke-dasharray="4 3"/>
+        <path d="M340 212 v-8" stroke="#4B5FBF" stroke-width="1.6" fill="none" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#4B5FBF"/></marker></defs>
+        <rect x="150" y="222" width="180" height="34" rx="8" fill="#E3E6F7" stroke="#4B5FBF" stroke-width="1.4"/>
+        <text x="240" y="243" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#31377f">shadow buffer → async copy to CPU</text>
+        <text x="560" y="70" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle">graph stays paused</text>
+        <text x="560" y="176" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle">graph never stops</text>
+      </svg>
+      <figcaption><b>Same three kernels, two philosophies.</b> A barrier-based profiler inserts a wall the CPU must wait behind after every kernel (top). LMTracer's probe kernels are captured into the same graph, execute in order with zero waiting, and stream their data off-device asynchronously (bottom). (Paper §1, §3, §5.1–5.2)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → place probes safely → move data safely → turn traces into answers</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Barriers (events, hooks, queries) stall async graph execution</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Stack-aware compilation</div><div class="nd">Trace compile-time call stacks to find safe kernel-boundary insertion points</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Doorbell shadow buffering</div><div class="nd">Two GPU buffers + doorbell flag; CPU drains async, GPU never waits</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Executor binding</div><div class="nd">Hook site-import events to attach probes to vLLM/SGLang/Megatron workers transparently</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Bottleneck analysis</div><div class="nd">Reconstruct pipeline dependencies; compute bubble &amp; straggling fraction</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Production, 8 months</div><div class="nd">15 issues found → 21.2% latency ↓, 24.5% throughput ↑</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Seven everyday pictures</div>
+      <h2>How to think about LMTracer</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with where it stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="40" width="112" height="16" rx="4" fill="#DAF0E6" stroke="#1E8F6F" stroke-width="2"/>
+          <circle cx="40" cy="48" r="8" fill="#1E8F6F"/>
+          <rect x="8" y="66" width="30" height="18" rx="3" fill="#F6DFD8" stroke="#C1442E" stroke-width="2"/>
+          <path d="M23 66 v-10" stroke="#C1442E" stroke-width="2"/>
+        </svg></div>
+        <span class="term">The core idea · Probe as fellow traveler</span>
+        <h3>A speed camera embedded in the road, not a checkpoint</h3>
+        <p>A police checkpoint measures your speed accurately — by making you stop. A speed camera embedded flush in the pavement measures it just as accurately while every car drives straight through at full speed. A probe kernel is the camera: it rides in the traffic (the execution graph) instead of blocking it.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real camera captures one instant; a probe kernel still costs a small, nonzero amount of GPU time (0.7–0.9 µs) to execute — it's cheap, not free.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="22" height="50" rx="4" fill="#E3E6F7" stroke="#4B5FBF" stroke-width="2"/>
+          <rect x="58" y="30" width="22" height="50" rx="4" fill="#E3E6F7" stroke="#4B5FBF" stroke-width="2"/>
+          <rect x="96" y="30" width="22" height="50" rx="4" fill="#E3E6F7" stroke="#4B5FBF" stroke-width="2"/>
+          <path d="M42 55 h16 M80 55 h16" stroke="#332C24" stroke-width="2.4" stroke-linecap="round" marker-end="url(#a2)"/>
+          <defs><marker id="a2" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0L6,3L0,6z" fill="#332C24"/></marker></defs>
+        </svg></div>
+        <span class="term">Stack-aware compilation</span>
+        <h3>A relay race baton handoff</h3>
+        <p>Runners don't stop to compare watches at the handoff — the baton (call-stack context: "we're inside attention now") passes cleanly at the zone boundary while both runners keep moving. Stack-aware compilation finds those natural handoff zones — fused-kernel boundaries — and puts the probe exactly there, never mid-stride inside a runner's leg.</p>
+        <div class="breaks"><b>Where it breaks:</b> in a race the baton carries no data, just position; the probe kernel does carry data (a timestamp + region hash), so the "handoff" has real payload, not just semantics.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="20" width="52" height="56" rx="6" fill="#DAF0E6" stroke="#1E8F6F" stroke-width="2"/>
+          <rect x="74" y="20" width="52" height="56" rx="6" fill="#fff" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3"/>
+          <text x="40" y="52" text-anchor="middle" font-family="monospace" font-size="10" fill="#124d3c">fill</text>
+          <text x="100" y="52" text-anchor="middle" font-family="monospace" font-size="10" fill="#6E6456">drain</text>
+        </svg></div>
+        <span class="term">Doorbell-assisted shadow buffering</span>
+        <h3>Two mailboxes, alternating</h3>
+        <p>A busy office worker keeps two out-trays. She fills tray A while the courier empties tray B; when A is full she flips to B and rings a bell for the courier to come collect A. Neither she nor the courier ever waits on the other — GPU probe kernels fill one shadow buffer while the CPU drains the other, swapping on a doorbell signal.</p>
+        <div class="breaks"><b>Where it breaks:</b> if the courier never shows up (both trays fill), the office worker in this analogy would jam; LMTracer instead overwrites old data rather than blocking — a lossy, not a lossless, guarantee.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="22" fill="none" stroke="#E0A23D" stroke-width="2.4"/>
+          <path d="M70 48 l0 -14 M70 48 l10 6" stroke="#B8760F" stroke-width="2.4" stroke-linecap="round"/>
+          <rect x="20" y="80" width="20" height="8" rx="3" fill="#4B5FBF"/>
+        </svg></div>
+        <span class="term">Doorbell vs. polling</span>
+        <h3>A doorbell instead of knocking every five seconds</h3>
+        <p>You could check the front porch every few seconds to see if a package arrived — wasteful, and you're never doing anything else while checking. Or the courier can ring the doorbell exactly once, when it's actually there. LMTracer's CPU poller waits on a lightweight doorbell flag instead of actively querying GPU state.</p>
+        <div class="breaks"><b>Where it breaks:</b> a doorbell is a true interrupt; LMTracer's "doorbell" is still a flag in CPU-GPU mapped memory that a background thread checks — closer to efficient polling of a cheap flag than a hardware interrupt.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="40" cy="48" r="18" fill="#DAF0E6" stroke="#1E8F6F" stroke-width="2"/>
+          <circle cx="100" cy="48" r="18" fill="#F6DFD8" stroke="#C1442E" stroke-width="2"/>
+          <path d="M58 48 h24" stroke="#332C24" stroke-width="1.6" stroke-dasharray="3 3"/>
+          <text x="40" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#124d3c">10:00:02</text>
+          <text x="100" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#832c1c">10:00:05</text>
+        </svg></div>
+        <span class="term">Clock calibration</span>
+        <h3>Comparing watches once at the start of a race</h3>
+        <p>Race officials at different checkpoints don't re-synchronize their watches every mile — they set them together once at the start line and trust the drift is small over the race's duration. LMTracer records each GPU's clock offset relative to a master GPU once, via an AllGather at startup, and reuses that offset for the whole run.</p>
+        <div class="breaks"><b>Where it breaks:</b> race officials' watches barely drift; the paper explicitly notes GPU clock drift up to ~2 ms/month is expected and tolerated — and unusually large drift is itself treated as a symptom of a hardware issue, not just noise to average out.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 h100" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="24" y="50" width="18" height="20" fill="#1E8F6F"/>
+          <rect x="46" y="50" width="18" height="20" fill="#1E8F6F"/>
+          <rect x="68" y="50" width="30" height="20" fill="none" stroke="#C1442E" stroke-width="2" stroke-dasharray="3 3"/>
+          <rect x="102" y="50" width="18" height="20" fill="#1E8F6F"/>
+          <text x="83" y="44" text-anchor="middle" font-family="monospace" font-size="9" fill="#832c1c">bubble</text>
+        </svg></div>
+        <span class="term">Bottleneck analysis</span>
+        <h3>A conveyor line with a hesitant worker</h3>
+        <p>Watch a factory line long enough and you can see who's slow: everyone downstream of them waits, creating a visible gap on the belt. LMTracer's bubble fraction and straggling fraction metrics measure exactly this — idle gaps in the GPU timeline, and skew in when GPUs finish their step relative to each other.</p>
+        <div class="breaks"><b>Where it breaks:</b> a factory worker being slow is usually the direct cause; a GPU "gap" can be caused by something entirely off the belt — a flaky NIC, a scheduling policy — which LMTracer still has to trace back to the actual root cause, not just the symptom.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="20" rx="4" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <text x="70" y="34" text-anchor="middle" font-family="monospace" font-size="9" fill="#332C24">Op1+Op2+Op3+Op4</text>
+          <path d="M70 40 v10" stroke="#4B5FBF" stroke-width="2"/>
+          <rect x="20" y="52" width="22" height="18" rx="3" fill="#E3E6F7" stroke="#4B5FBF" stroke-width="1.6"/>
+          <rect x="46" y="52" width="22" height="18" rx="3" fill="#E3E6F7" stroke="#4B5FBF" stroke-width="1.6"/>
+          <rect x="72" y="52" width="22" height="18" rx="3" fill="#E3E6F7" stroke="#4B5FBF" stroke-width="1.6"/>
+          <rect x="98" y="52" width="22" height="18" rx="3" fill="#E3E6F7" stroke="#4B5FBF" stroke-width="1.6"/>
+        </svg></div>
+        <span class="term">Why plain kernel names aren't enough</span>
+        <h3>A shipping label that only says "Warehouse B"</h3>
+        <p>A package labeled only with the warehouse it left from tells you nothing about which shelf, which order, which customer. A fused kernel named <code>ampere_bf16_s1688gemm...</code> is the same: accurate, but semantically empty. LMTracer's stack-aware mapping is the itemized packing slip stapled back onto that label.</p>
+        <div class="breaks"><b>Where it breaks:</b> a packing slip is static paperwork; the kernel-to-region mapping has to be recomputed at every compilation (fusion decisions can change across runs, models, and frameworks).</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">The two hard engineering problems, then how the traces become actionable answers.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Stack-aware compilation — placing probes without breaking fusion</h3>
+      <p>Users specify code regions to profile at module, function, or line granularity (e.g. an <code>attn</code> region spanning a whole attention module, a <code>norm</code> region around RMSNorm). When the compiler (e.g. PyTorch Inductor) fuses operators into kernels, LMTracer hooks the compilation process: for each fused kernel, it recursively <b>backtracks</b> the call stack of every operator inside it, checking whether that stack passes through a user-defined region's <code>*_start</code>/<code>*_end</code> markers.</p>
+      <p>A fused kernel can therefore be associated with zero, one, or several nested regions. LMTracer inserts an <b>Enter</b> probe the first time a region's call stack is activated by a kernel, and an <b>Exit</b> probe the first time a kernel's operators no longer intersect that region. Adjacent probes at the same kernel boundary (e.g. an <code>Attn Exit</code> and a <code>Norm Enter</code> that both land at the start of the same fused kernel) are <b>merged</b> into a single probe kernel to further cut launch overhead.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Backtracking call stacks to fused-kernel boundaries</div>
+      <div class="viz-kicker">simplified from Fig. 6 · three source regions, three fused kernels</div>
+      <svg class="full" viewBox="0 0 720 260" role="img" aria-label="Stack-aware compilation maps forward/attn/norm regions onto Fused Kernel A, B, C boundaries">
+        <text x="20" y="24" font-family="Fraunces" font-size="13" font-weight="600" fill="#332C24">Source regions (compile-time call stack)</text>
+        <rect x="20" y="34" width="220" height="30" rx="6" fill="#E3E6F7" stroke="#4B5FBF" stroke-width="1.4"/><text x="130" y="53" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#31377f">forward_start … forward_end</text>
+        <rect x="46" y="70" width="160" height="26" rx="6" fill="#DAF0E6" stroke="#1E8F6F" stroke-width="1.4"/><text x="126" y="87" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#124d3c">attn_start … attn_end</text>
+        <rect x="220" y="70" width="160" height="26" rx="6" fill="#FAE8C6" stroke="#B8760F" stroke-width="1.4"/><text x="300" y="87" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">norm_start … norm_end</text>
+        <line x1="126" y1="96" x2="126" y2="120" stroke="#1E8F6F" stroke-width="1.4" stroke-dasharray="3 3"/>
+        <line x1="300" y1="96" x2="300" y2="120" stroke="#B8760F" stroke-width="1.4" stroke-dasharray="3 3"/>
+        <text x="20" y="140" font-family="Fraunces" font-size="13" font-weight="600" fill="#332C24">Compiled (fused) kernels → probe insertion</text>
+        <rect x="20" y="150" width="200" height="60" rx="8" fill="#fff" stroke="#D8C8AC"/><text x="120" y="174" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">Fused Kernel A</text><text x="120" y="192" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#124d3c">Attn Enter probe</text>
+        <rect x="250" y="150" width="200" height="60" rx="8" fill="#fff" stroke="#D8C8AC"/><text x="350" y="174" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">Fused Kernel B</text><text x="350" y="192" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6e4a09">Attn Exit + Norm Enter</text>
+        <rect x="480" y="150" width="200" height="60" rx="8" fill="#fff" stroke="#D8C8AC"/><text x="580" y="174" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">Fused Kernel C</text><text x="580" y="192" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#832c1c">Norm Exit + Forward Exit</text>
+        <path d="M220 180 h30" stroke="#9A8E7C" stroke-width="1.6" marker-end="url(#a3)"/>
+        <path d="M450 180 h30" stroke="#9A8E7C" stroke-width="1.6" marker-end="url(#a3)"/>
+        <defs><marker id="a3" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto"><path d="M0,0L7,3.5L0,7z" fill="#9A8E7C"/></marker></defs>
+        <text x="360" y="234" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">executed in this order — probes ride along, no gaps</text>
+      </svg>
+      <figcaption><b>The call stack is the map.</b> Backtracking from Fused Kernel A's operators finds it's inside <code>attn</code> (itself inside <code>forward</code>) → insert Attn Enter. Kernel B's operators are inside <code>norm</code> but not <code>attn</code> → the region boundary tells LMTracer to close attn and open norm at B's start. (Paper Fig. 6, §5.1)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Doorbell-assisted shadow buffering — moving data with zero barriers</h3>
+      <p>Probe kernels write the region hash + calibrated timestamp into one of two GPU-side shadow buffers. When a buffer fills, LMTracer issues <code>__threadfence_system()</code> (guaranteeing all prior writes are visible system-wide) and then writes a <b>doorbell</b> flag into CPU-GPU mapped memory. A background CPU poller thread watches that flag; on seeing it set, it asynchronously copies the full buffer to CPU memory in a separate stream — while probe kernels keep writing, uninterrupted, into the other buffer.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Doorbell-assisted shadow buffering</div>
+      <div class="viz-kicker">based on Fig. 7 · two buffers alternate, CPU never blocks the GPU</div>
+      <svg class="full" viewBox="0 0 720 220" role="img" aria-label="GPU probe kernels write to shadow buffer A while CPU poller drains buffer B, swapping on a doorbell signal">
+        <rect x="20" y="20" width="330" height="80" rx="10" fill="#fff" stroke="#D8C8AC"/>
+        <text x="185" y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456">GPU</text>
+        <rect x="40" y="50" width="130" height="36" rx="6" fill="#DAF0E6" stroke="#1E8F6F" stroke-width="1.8"/><text x="105" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#124d3c">Buffer A (filling)</text>
+        <rect x="200" y="50" width="130" height="36" rx="6" fill="#F3EADA" stroke="#D8C8AC" stroke-width="1.6" stroke-dasharray="4 3"/><text x="265" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">Buffer B (draining)</text>
+        <rect x="400" y="20" width="300" height="80" rx="10" fill="#fff" stroke="#D8C8AC"/>
+        <text x="550" y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6E6456">CPU</text>
+        <circle cx="440" cy="68" r="16" fill="#E3E6F7" stroke="#4B5FBF" stroke-width="1.8"/><text x="440" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="14">🔔</text>
+        <text x="500" y="60" font-family="JetBrains Mono" font-size="9" fill="#31377f">poller thread</text>
+        <text x="500" y="76" font-family="JetBrains Mono" font-size="9" fill="#31377f">watches doorbell flag</text>
+        <path d="M330 68 h60" stroke="#C1442E" stroke-width="1.8" stroke-dasharray="3 3" marker-end="url(#a4)"/>
+        <text x="360" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#832c1c">doorbell</text>
+        <defs><marker id="a4" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto"><path d="M0,0L7,3.5L0,7z" fill="#C1442E"/></marker></defs>
+        <path d="M265 86 q0 40 -160 40" stroke="#4B5FBF" stroke-width="1.6" fill="none" stroke-dasharray="4 3" marker-end="url(#a5)"/>
+        <defs><marker id="a5" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto"><path d="M0,0L7,3.5L0,7z" fill="#4B5FBF"/></marker></defs>
+        <text x="180" y="140" font-family="JetBrains Mono" font-size="10" fill="#31377f">async copy of Buffer B in a separate stream</text>
+        <text x="20" y="180" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">When A fills, roles swap: probes write to B, CPU drains A — GPU compute never pauses.</text>
+      </svg>
+      <figcaption><b>Two buffers, one flag, zero synchronize calls.</b> A 1 MB shadow buffer holds &gt;200 iterations of trace data for a 671B-parameter model; the paper reports the inactive buffer's occupancy stays under 5% in production, and both buffers filling simultaneously has never been observed. (Paper Fig. 7, §5.2)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · Executor binding — attaching probes transparently</h3>
+      <p>GPU kernels can only be launched from the process that owns the GPU context, so probe kernels must share the user's process. LMTracer uses Python's <b>site-specific configuration hooks</b> to watch package-import events and detect a framework's executor class (e.g. vLLM's <code>Worker</code>, SGLang's <code>ModelRunner</code>) — the component every mainstream LLM framework uses to bind one GPU per process. Once detected, LMTracer patches the executor before initialization so probes share its context, requiring no code changes from the user.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Bottleneck analysis — turning traces into answers</h3>
+      <p>LMTracer reconstructs kernel wait-for dependencies from the trace timeline and groups counterpart operations across GPUs within a parallelism group (TP/PP/DP). Two metrics quantify inefficiency:</p>
+      <pre class="sketch"><span class="hl">BubbleFraction = 1 − ( Σ dᵢ ) / ( t_N − t_1 + d_N )</span>   <span class="cm"># idle-time share of the window; dᵢ = i-th kernel's duration</span>
+<span class="hl">StragglingFraction = (max sg − min sg) / (max eg − min sg)</span>  <span class="cm"># start-time skew across GPUs in a parallel group g</span></pre>
+      <p>A high bubble fraction points to scheduling or data stalls; a high straggling fraction points to an imbalanced or misbehaving GPU. LMTracer also places probes around communication kernels (AllReduce, AllGather), so the same machinery doubles as network observability.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Reading a straggler off the pipeline</div>
+      <div class="viz-kicker">simplified from Fig. 8 · TP=2, PP=2 inference, GPU 1 lagging</div>
+      <svg class="full" viewBox="0 0 720 160" role="img" aria-label="Four-GPU pipeline with attention, MLP, and layer blocks, showing GPU1 running behind and creating a bubble on GPU0">
+        <text x="20" y="18" font-family="JetBrains Mono" font-size="10" fill="#6E6456">GPU 0</text>
+        <g>
+          <rect x="70" y="6" width="34" height="18" rx="3" fill="#DAF0E6" stroke="#1E8F6F"/><rect x="108" y="6" width="34" height="18" rx="3" fill="#FAE8C6" stroke="#B8760F"/>
+          <rect x="146" y="6" width="34" height="18" rx="3" fill="#DAF0E6" stroke="#1E8F6F"/><rect x="184" y="6" width="34" height="18" rx="3" fill="#FAE8C6" stroke="#B8760F"/>
+          <rect x="222" y="6" width="60" height="18" rx="3" fill="#F6DFD8" stroke="#C1442E" stroke-dasharray="3 2"/><text x="252" y="19" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#832c1c">bubble</text>
+          <rect x="286" y="6" width="34" height="18" rx="3" fill="#DAF0E6" stroke="#1E8F6F"/>
+        </g>
+        <text x="20" y="48" font-family="JetBrains Mono" font-size="10" fill="#6E6456">GPU 1</text>
+        <g>
+          <rect x="70" y="36" width="34" height="18" rx="3" fill="#DAF0E6" stroke="#1E8F6F"/><rect x="108" y="36" width="34" height="18" rx="3" fill="#FAE8C6" stroke="#B8760F"/>
+          <rect x="146" y="36" width="50" height="18" rx="3" fill="#DAF0E6" stroke="#1E8F6F"/><text x="171" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#124d3c">slow attn</text>
+          <rect x="200" y="36" width="34" height="18" rx="3" fill="#FAE8C6" stroke="#B8760F"/><rect x="238" y="36" width="34" height="18" rx="3" fill="#DAF0E6" stroke="#1E8F6F"/>
+          <rect x="276" y="36" width="34" height="18" rx="3" fill="#FAE8C6" stroke="#B8760F"/>
+        </g>
+        <line x1="70" y1="0" x2="70" y2="72" stroke="#C1442E" stroke-width="1.4" stroke-dasharray="3 3"/>
+        <line x1="146" y1="0" x2="146" y2="72" stroke="#C1442E" stroke-width="1.4" stroke-dasharray="3 3"/>
+        <text x="108" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#832c1c">start-time skew (→ StragglingFraction)</text>
+        <text x="20" y="118" font-family="JetBrains Mono" font-size="10" fill="#6E6456">GPU 0 finishes attn early, then sits idle (bubble) waiting on GPU 1's TP partner before the next stage — exactly what led to the NVLink case study in §7.5.</text>
+      </svg>
+      <figcaption><b>The metrics are just careful bookkeeping over the trace.</b> LMTracer found a real instance of this pattern in production: one PP instance's GPUs ran consistently slower, straggling fraction flagged it, and the AllReduce probe data pinpointed a failing NVLink. (Paper Fig. 8, Fig. 17, §7.5)</figcaption>
+    </figure>
+
+    <div class="callout takeaway reveal"><span class="ic">🍯</span><div><b>Ablation confirms the design, not just the headline number.</b> Removing probe merging, shadow buffers, the doorbell, or async copy each independently pushes overhead back up (worked out in the Examples tab) — none of the four components is redundant.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces through the paper's real measurements — verifying the headline number, checking tail latency, separating per-probe cost from end-to-end cost, and finding the highest-leverage design choice.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Verifying the 0.9% headline overhead</h3>
+      <p style="color:var(--ink-soft)">Qwen3-32B serving on low-end GPUs, vLLM with TP=8: throughput drops from 3,157 to 3,128 tokens/s with LMTracer enabled. Does that match the paper's claimed 0.9%?</p>
+      <ol class="seq">
+        <li><b>Tokens lost per second:</b> 3157 − 3128 = <b>29 tokens/s</b>.</li>
+        <li><b>Relative degradation:</b> 29 / 3157 = 0.00918 → <b>0.92%</b>, matching the paper's reported "0.9%."</li>
+        <li><b>Cross-check on a second config:</b> vLLM TP=4/PP=2 goes 3743 → 3721, a drop of 22, i.e. 22/3743 = <b>0.59%</b> ≈ paper's "0.6%".</li>
+        <li><b>And SGLang TP=8:</b> 3103 → 3090, drop of 13, i.e. 13/3103 = <b>0.42%</b> ≈ paper's "0.4%".</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the "0.9% average" isn't a single measurement — it's consistent across frameworks (vLLM, SGLang) and parallelism configurations, which is what makes it a credible production number rather than a cherry-picked one.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② TTFT tail impact — LMTracer vs. the alternatives</h3>
+      <p style="color:var(--ink-soft)">GPT-OSS-120B on mid-range GPUs (Fig. 11): Default mean TTFT = 52.70 ms; LMTracer mean = 56.09 ms; PyTorch Profiler mean = 116.21 ms.</p>
+      <ol class="seq">
+        <li><b>LMTracer's absolute TTFT cost:</b> 56.09 − 52.70 = <b>3.39 ms</b> — relative increase 3.39/52.70 = <b>6.4%</b>.</li>
+        <li><b>PyTorch Profiler's absolute cost:</b> 116.21 − 52.70 = <b>63.51 ms</b> — relative increase 63.51/52.70 = <b>120.5%</b>, i.e. it more than doubles TTFT.</li>
+        <li><b>Matches the paper's own framing:</b> "the other profiling tools cause up to 63.5 ms TTFT increase," exactly the PyTorch Profiler delta computed above.</li>
+        <li><b>Nsight Systems' cost, for comparison:</b> mean 80.66 − 52.70 = 27.96 ms, a 53% relative increase — worse than LMTracer's 6.4%, but far better than PyTorch Profiler's 120%.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>3.4 ms is roughly the noise floor of network jitter in most serving stacks — this is the number that makes "always-on in production" a credible claim rather than a lab-only result.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Per-probe speedup vs. end-to-end overhead reduction</h3>
+      <p style="color:var(--ink-soft)">Fig. 4: a vendor-tool instrumentation point costs ≥13 µs; an embedded probe kernel costs 0.7–0.9 µs. The paper separately claims an 11.6× end-to-end overhead reduction. Are these the same number?</p>
+      <ol class="seq">
+        <li><b>Per-instrumentation-point speedup:</b> 13 / 0.9 = <b>14.4×</b> to 13 / 0.7 = <b>18.6×</b> — this measures only the cost of one clock-read-and-record event.</li>
+        <li><b>End-to-end overhead reduction:</b> the paper's 11.6× compares whole-workload overhead (e.g. LMTracer's 0.9% vs. an average rival overhead in the ~8–10% range) — it folds in everything: how many probes fire per iteration, buffer management cost, and how much of total runtime instrumentation touches at all.</li>
+        <li><b>Why 11.6× is lower than 14–19×:</b> not 100% of the overhead gap comes from the per-point read; some GPU-side probe cost and CPU-side buffer draining remain even in LMTracer, so the realized end-to-end ratio is smaller than the idealized per-instrumentation-point ratio.</li>
+      </ol>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Don't conflate the two numbers</b> when citing this paper — 14–19× is a microbenchmark of one design choice (kernel-based clock reads); 11.6× is the true end-to-end result across the whole profiling pipeline.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Ablation — finding the highest-leverage component</h3>
+      <p style="color:var(--ink-soft)">Baseline LMTracer overhead: ≈0.9% (serving) / ≈1.5% (training). Disabling each design choice one at a time (§7.3):</p>
+      <table class="tbl">
+        <thead><tr><th>Disabled</th><th>Serving degradation</th><th>Δ vs. baseline (0.9%)</th><th>Training degradation</th><th>Δ vs. baseline (1.5%)</th></tr></thead>
+        <tbody>
+          <tr><td>Probe merging</td><td class="mono">2.9%</td><td class="mono">+2.0 pts</td><td class="mono">3.0%</td><td class="mono">+1.5 pts</td></tr>
+          <tr><td>Dual shadow buffer</td><td class="mono">12.8%</td><td class="mono">+11.9 pts</td><td class="mono">5.7%</td><td class="mono">+4.2 pts</td></tr>
+          <tr class="best"><td>Doorbell signal</td><td class="mono">16.2%</td><td class="mono"><b>+15.3 pts</b></td><td class="mono">18.2%</td><td class="mono"><b>+16.7 pts</b></td></tr>
+          <tr><td>Async copy</td><td class="mono">13.3%</td><td class="mono">+12.4 pts</td><td class="mono">8.7%</td><td class="mono">+7.2 pts</td></tr>
+        </tbody>
+      </table>
+      <ol class="seq">
+        <li><b>Largest single jump:</b> removing the doorbell signal (forcing active polling instead) costs the most on both workloads — +15.3 and +16.7 percentage points.</li>
+        <li><b>Second-largest:</b> disabling async copy (+12.4 / +7.2 pts) — confirming that even with two buffers, a synchronous copy call reintroduces most of the barrier cost.</li>
+        <li><b>Smallest but still real:</b> probe merging only saves ~2 points, because it reduces kernel-launch count, not the fundamentally cheaper data-movement path.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the doorbell and async copy are doing the real work of eliminating barriers; shadow buffering and probe merging are secondary optimizations layered on top. If you were reimplementing this for a different accelerator, the doorbell + async-copy pair is the part to get right first.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it checks.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A colleague says "just insert a CUDA Event before and after the kernel — reading a hardware timer is basically free." Why does this still cause double-digit overhead in production?</div>
+      <details><summary>Show answer</summary><div class="ans">Reading the event's <i>value</i> from the CPU forces a query or synchronize, which is a genuine CPU-GPU rendezvous — a barrier. Even if writing the timestamp is cheap, an Event also isn't a normal user kernel, so it can't be fused with neighboring operators and can break CUDA/HIP Graph capture, reintroducing per-kernel launch overhead on top of the sync cost.<span class="mis">Misconception: that overhead comes from the cost of reading a clock. It actually comes from breaking asynchrony and graph fusion — which is exactly why LMTracer's fix is a kernel (fuses fine, no query needed), not a smarter event.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Why can't LMTracer just insert a probe kernel immediately before and after every user-defined code region, at the exact source-code boundary?</div>
+      <details><summary>Show answer</summary><div class="ans">By the time the compiler fuses operators into kernels, a code region's operators may be interleaved inside a larger fused kernel alongside operators from unrelated regions — there's no longer a clean boundary at the source-code line. Inserting a probe there would either be impossible without splitting the fused kernel (which the paper says is rare, &lt;2% of trace points, and only used for offline debugging) or would force fusion to break around it, losing the launch-overhead savings fusion existed for.<span class="mis">Misconception: that source-code regions map 1:1 onto kernels. Stack-aware compilation exists precisely because fusion erases that mapping, so LMTracer finds the nearest safe kernel boundary instead.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why does LMTracer use <i>two</i> shadow buffers instead of one large one that's copied out once at the very end of the run?</div>
+      <details><summary>Show answer</summary><div class="ans">One buffer flushed only at the end would need to hold the entire run's trace data in GPU memory — the paper explicitly rejects this as unsuitable for real-time monitoring, since you'd get no data until the job finishes, and memory usage would grow unbounded for long-running production jobs. Two buffers let one be actively written while the other drains continuously, giving both real-time visibility and bounded memory (a 1 MB buffer per monitor).<span class="mis">Misconception: that avoiding barriers just means "collect everything, ship it later." That trades the overhead problem for an observability-latency and memory problem — the two-buffer design solves both at once.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">The doorbell removes the need for the CPU to synchronize with the GPU. Why does removing the doorbell (forcing periodic active queries instead) cost even more overhead (16.2%/18.2%) than removing the dual buffer entirely (12.8%/5.7%)?</div>
+      <details><summary>Show answer</summary><div class="ans">Without a doorbell, the paper's fallback is to have the CPU "actively query the GPU to check whether one of the trace buffers is full after each LLM iteration" — this reintroduces a per-iteration CPU-GPU rendezvous, the exact barrier LMTracer was built to eliminate, regardless of how many buffers exist. Removing dual buffering, by contrast, just forces synchronous flushing after every record — costly, but it doesn't force the constant CPU-GPU check-ins that removing the doorbell does. The doorbell isn't just an optimization on top of the buffers; it's what makes the buffer scheme barrier-free at all.<span class="mis">Misconception: that all four design choices contribute roughly equally. The ablation shows the doorbell and async copy are structural (they remove barriers); probe merging and buffering are incremental refinements on top.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">LMTracer calibrates GPU-CPU clock offsets once, before execution, rather than continuously. Under what condition would this one-time calibration silently produce wrong bottleneck-analysis results?</div>
+      <details><summary>Show answer</summary><div class="ans">If a GPU's clock drifts substantially during the run — beyond the ~2 ms/month the paper treats as typical and tolerable — then timestamps calibrated at start-up would increasingly misalign with reality, and cross-GPU comparisons (like the straggling fraction) could misattribute a clock-drift artifact as a real performance straggler. The paper's own framing turns this into a feature, though: since drift is normally tiny, unusually large drift is itself flagged as evidence of an underlying GPU hardware problem, not just noise to filter out.<span class="mis">Misconception: that a one-time calibration is a shortcut that trades accuracy for speed. The paper argues it's sufficient because distributed LLM workloads only need <i>relative</i> timing, and real GPU clock drift over realistic run lengths is small enough not to matter.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Nine of the 15 production issues LMTracer found "would be missed by sampled Nsight Systems or PyTorch Profiler runs." Why does sampling (running the heavyweight profiler for a short window periodically) fail here, when it's a standard technique elsewhere?</div>
+      <details><summary>Show answer</summary><div class="ans">Sampling assumes the phenomenon you're looking for recurs often enough that a short window has a good chance of catching it. But issues like KV cache eviction storms, prefill blocking, transient RNIC flapping, and imbalanced PP scheduling are tied to specific, intermittent <i>request patterns</i> or runtime conditions — they may not occur at all during a short sampled window, however carefully timed. Always-on, low-overhead tracing is the only way to guarantee you're watching when a rare-but-real event happens.<span class="mis">Misconception: that sampling profiling overhead down to an "acceptable" rate is equivalent to solving the overhead problem. If the profiler is only safe to run intermittently, you've traded overhead for blind spots — LMTracer's whole value proposition is not needing that trade at all.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">Framework-level telemetry (token throughput, iteration time) is nearly free to collect. Why isn't it sufficient on its own for production performance monitoring?</div>
+      <details><summary>Show answer</summary><div class="ans">Telemetry tells you <i>that</i> something is wrong (throughput dropped) but not <i>why</i> — it can't distinguish an inefficient kernel from suboptimal scheduling from a network bottleneck, because it has no visibility below the whole-iteration level. LMTracer's kernel-level, code-mapped granularity is what lets you go from "throughput dropped" to "the AllReduce on GPU 14 is slow because of a flaky NVLink."<span class="mis">Misconception: that overhead is the only axis that matters when choosing a profiling tool. Telemetry has near-zero overhead but also near-zero diagnostic resolution — the paper's contribution is moving the whole overhead/granularity tradeoff curve, not picking a different point on the old one.</span></div></details>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Eleven questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What is a "probe kernel," concretely?<span class="chev">▾</span></summary><div class="a">A lightweight GPU kernel, written in raw GPU assembly, that reads the GPU's hardware clock register (<code>globaltimer</code> on NVIDIA, <code>s_memtime</code> on AMD) and writes the value plus a region identifier into a shadow buffer. It does not touch the registers, shared memory, or local memory of the user kernels it's placed next to, so it doesn't require saving/restoring any user kernel state.</div></details>
+      <details><summary><span class="q">Q2</span>Why is a barrier so much more expensive than the actual work of reading a timestamp?<span class="chev">▾</span></summary><div class="a">Because a barrier forces the CPU and GPU — which are designed to run asynchronously and overlap — to rendezvous, stalling whichever side got there first. It also frequently breaks kernel fusion (only kernels, not events, can be fused) and CUDA/HIP Graph capture, reintroducing per-kernel launch overhead the graph mechanism was built to remove. The timestamp read itself costs under a microsecond; the synchronization around it is what costs tens of microseconds to tens of percent.</div></details>
+      <details><summary><span class="q">Q3</span>How does LMTracer know where to put probes without the user rewriting their model code?<span class="chev">▾</span></summary><div class="a">Stack-aware compilation hooks into the framework's compiler (e.g. PyTorch Inductor) during normal kernel fusion, tracing each operator's compile-time call stack back to user-defined regions in a configuration file. It never requires editing the model's source.</div></details>
+      <details><summary><span class="q">Q4</span>Does profiling with LMTracer change training or inference correctness?<span class="chev">▾</span></summary><div class="a">No — the paper verifies this two ways: training loss curves with and without LMTracer are effectively identical (Fig. 13), and inference output tokens are byte-identical given the same prompts and random seeds. Probe kernels never modify user kernel registers or memory.</div></details>
+      <details><summary><span class="q">Q5</span>What happens if both shadow buffers fill up before the CPU drains either?<span class="chev">▾</span></summary><div class="a">LMTracer uses a "backpressure-free" policy: new trace data overwrites old data rather than blocking GPU execution. In eight months of production use, the authors report never having observed both buffers full simultaneously, and inactive-buffer occupancy stays under 5%.</div></details>
+      <details><summary><span class="q">Q6</span>How is this different from just enabling Nsight Systems' "graph-node profiling" mode?<span class="chev">▾</span></summary><div class="a">Nsight's graph-node profiling can see execution time inside a CUDA graph, but it's still a vendor tool designed for offline analysis — the paper measured it still causing >3.6–17%+ overhead even with this mode enabled, and it has no visibility into user-level source code or fused-kernel semantics the way stack-aware compilation provides.</div></details>
+      <details><summary><span class="q">Q7</span>What are "bubble fraction" and "straggling fraction" actually measuring?<span class="chev">▾</span></summary><div class="a">Bubble fraction is the share of a monitoring window where the GPU has no active kernel running — idle time from stalls, scheduling, or data waits. Straggling fraction is the normalized skew in when different GPUs in the same parallel group (e.g. a TP or PP group) start their work — a proxy for load imbalance or hardware degradation.</div></details>
+      <details><summary><span class="q">Q8</span>Does LMTracer replace tools like Nsight Systems or PyTorch Profiler entirely?<span class="chev">▾</span></summary><div class="a">No — the authors frame it as filling an observability gap for <i>always-on production monitoring</i>, not replacing offline deep-dive tools. Nsight/PyTorch Profiler remain useful when you can afford a controlled offline run and want maximum diagnostic detail; LMTracer is for the always-on case where any nontrivial overhead is unacceptable.</div></details>
+      <details><summary><span class="q">Q9</span>Which frameworks and model scales has LMTracer actually been run on?<span class="chev">▾</span></summary><div class="a">vLLM, SGLang, and Megatron-LM, covering both training and serving, on models from 7B to 671B parameters, across O(1k) GPUs in production, for eight months at the time of writing.</div></details>
+      <details><summary><span class="q">Q10</span>Why does LMTracer's overhead differ between intra-host (TP=8) and inter-host (TP=4,PP=2) configurations?<span class="chev">▾</span></summary><div class="a">The paper observes LMTracer's overhead is often <i>lower</i> under inter-host pipeline-parallel configurations, because the inherent pipeline bubbles between hosts give probe kernels and data transfer more slack to hide inside — whereas other profilers can't exploit this since they rely on intra- and inter-host synchronization regardless of topology.</div></details>
+      <details><summary><span class="q">Q11</span>What kinds of issues has LMTracer actually caught in production?<span class="chev">▾</span></summary><div class="a">Fifteen issues across configuration, framework, and hardware layers — e.g. improper pipeline-stage placement, not using CUDA graphs, unbalanced request scheduling, KV cache eviction storms, prefill blocking raising TTFT, a failing NVLink causing a straggling PP instance, and intermittent RNIC flapping. Fixing all of them yielded 21.2% latency reduction and 24.5% throughput improvement.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>LMTracer</b><span>The paper's system: a fine-grained, real-time profiler for production LLM systems built on graph-embedded probing.</span></div>
+      <div class="term-def"><b>Graph-embedded probing</b><span>The core idea: implement profiling logic as ordinary GPU kernels captured into the same execution graph as the code they measure, instead of external barriers.</span></div>
+      <div class="term-def"><b>Probe kernel</b><span>A lightweight GPU kernel that reads a hardware clock register and writes a timestamp + region ID to a shadow buffer, without touching user kernel state.</span></div>
+      <div class="term-def"><b>Stack-aware compilation</b><span>Compile-time analysis that backtracks operator call stacks through kernel fusion to find safe, fusion-preserving locations to insert probe kernels.</span></div>
+      <div class="term-def"><b>Doorbell-assisted shadow buffering</b><span>Two GPU-side buffers filled in alternation by probe kernels, drained asynchronously by a CPU poller triggered by a lightweight doorbell flag — no CPU-GPU synchronize call.</span></div>
+      <div class="term-def"><b>Bubble fraction</b><span>The fraction of a monitoring window where a GPU has no kernel actively executing — a measure of idle/stall time.</span></div>
+      <div class="term-def"><b>Straggling fraction</b><span>Normalized start-time skew across GPUs in a parallel group — a measure of load imbalance or hardware degradation.</span></div>
+      <div class="term-def"><b>Executor-binder abstraction</b><span>The mechanism that transparently attaches probe kernels to an LLM framework's GPU-owning process by hooking Python import events.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Kernel fusion</b><span>Combining multiple logical operators into a single GPU kernel to cut launch overhead and memory round-trips.</span></div>
+      <div class="term-def"><b>CUDA/HIP Graph</b><span>A captured sequence of GPU kernels replayable with a single CPU-side call, avoiding per-iteration launch overhead.</span></div>
+      <div class="term-def"><b>TP / PP / DP</b><span>Tensor / Pipeline / Data parallelism — the ways LLM compute is split across GPUs during training and serving.</span></div>
+      <div class="term-def"><b>TTFT</b><span>Time To First Token — the serving-side latency metric LMTracer's probes are shown to barely perturb.</span></div>
+      <div class="term-def"><b>Release-acquire ordering</b><span>The memory-ordering guarantee (via <code>__threadfence_system()</code>) ensuring buffer writes are visible to the CPU before the doorbell is set.</span></div>
+      <div class="term-def"><b>Clock offset calibration</b><span>A one-time AllGather-based exchange of GPU clock values relative to a master GPU, used to make cross-device timestamps comparable.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What LMTracer buys (vs. existing profilers)</div>
+      <div class="viz-kicker">selected paper numbers · lower bars = less overhead is better for the top four rows</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">LMTracer overhead<small>avg. across workloads</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="0.9"><span>0.9%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Nsight Systems<small>serving, 671B</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="10.2"><span>10.2%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Runtime events<small>serving</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="12"><span>&gt;12%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">PyTorch Profiler<small>worst case, serving</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="91.7"><span>91.7%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Post-fix throughput<small>training, after fixes</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="24.5"><span>+24.5%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Post-fix latency<small>serving, after fixes</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="21.2"><span>−21.2%</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 100%</p>
+      <figcaption><b>The dramatic gap between the first bar and the rest is the entire paper in one chart:</b> LMTracer's overhead is so much smaller than the alternatives that it's barely visible on the same scale — while the bottom two bars show what that headroom bought in production. (Paper §7.2, §7.5)</figcaption>
+    </figure>
+
+    <div class="subhead">Related work, briefly</div>
+    <div class="read-item reveal"><h4>NeutriNo <span class="diff med">medium</span></h4><div class="meta">Huang &amp; Wu · OSDI 2025</div><p>An open-source GPU-level profiler; the paper notes it's limited to kernels written with raw GPU instructions, missing most high-level-library LLM kernels LMTracer targets.</p></div>
+    <div class="read-item reveal"><h4>Mycroft / Greyhound / SkeletonHunter / Aegis <span class="diff med">medium</span></h4><div class="meta">SOSP/NSDI/SIGCOMM 2025 · LLM failure diagnosis systems</div><p>These localize training failures via NCCL hooks or network probing, but — unlike LMTracer — don't capture GPU-kernel-level performance data, so they can pinpoint <i>which</i> GPU failed without explaining <i>why</i> it was slow.</p></div>
+    <div class="read-item reveal"><h4>PyTorch Inductor / TorchDynamo <span class="diff med">medium</span></h4><div class="meta">PyTorch compiler stack</div><p>The symbolic-execution-based compiler whose call-stack tracking stack-aware compilation reads; worth skimming if you want to see exactly what compile-time information is available to hook into.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="card" style="font-size:.94rem">
+      <p><b>From the paper:</b> all overhead percentages, throughput/TTFT numbers, ablation results, the bubble/straggling-fraction formulas, buffer-size figures, deployment scope (8 months, vLLM/SGLang/Megatron-LM, 7B–671B, O(1k) GPUs), and the list of 15 production issue categories are taken directly from the paper's text, figures, and Table 2.</p>
+      <p><b>My framing (not in the paper):</b> the "speed camera vs. checkpoint," "relay baton," "two mailboxes," and other analogies in the Analogies tab; the explicit distinction drawn in Worked Example ③ between per-instrumentation-point speedup (14–19×) and the paper's end-to-end 11.6× claim; and the callout connecting doorbell-assisted shadow buffering to doorbell registers in RDMA/CXL device queues, which is my own cross-domain framing for a systems reader, not a comparison the paper itself makes.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Liu, He, Zhao, Wang, Li, Zhao, "LMTracer: Fine-Grained and Real-Time Performance Profiling for Production LLM Systems" (SOSP '26)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = 'Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Not optimal.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
