@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<!-- M2K field guide — Making the Model-Kernel Interface Explicit for Reliable CUDA Kernel Verification (He, Xia, Jia, Wu, Song — SOSP'26).
+     Semantic colors: teal = model side (HuggingFace/Python) · honey = kernel side (CUDA implementation assumptions) · indigo = M2K's own machinery (HFProbe + cuKLEE) · terracotta = the memory bug / implicit-interface danger. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Say What You Mean — M2K and the Model-Kernel Interface, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98C3D; --honey-deep:#B06B12; --honey-soft:#F8E4C0;
+  --dram:#2E6F9E; --dram-soft:#DCEAF3;      /* teal  = model side (HF/Python)        */
+  --ltram:#6A4FB0; --ltram-soft:#EDE6F7;    /* indigo = M2K machinery (HFProbe/cuKLEE) */
+  --optane:#C13B3B; --optane-soft:#F8DCDC;  /* terracotta = memory bug / implicit-interface danger */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f4d63;font-size:.96rem}
+.primer .ready b{color:#153b4d}
+
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f4d63}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9D4E0;color:#1f4d63}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fc2d6;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c6bce8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#e3ddf3}
+
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#7d5ec9,#6A4FB0)}
+.bf-hi{background:linear-gradient(90deg,#3d87b7,#2E6F9E)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C13B3B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#153b4d;border:1px solid #9fc2d6}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f4d63}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#9a8ce0}
+
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f4d63}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Verify the kernel against what the <span class="swash">model</span> can send — not against inputs <span class="swash" style="color:var(--optane)">nobody chose</span></h1>
+    <p class="lede">A CUDA kernel and the model that calls it are written by different people, on different schedules, with no contract between them. This is the plain-English story of <strong>M2K</strong>, a tool that writes that contract down and checks it.</p>
+    <div class="hero-meta">
+      <span>📄 "M2K" · He, Xia, Jia, Wu, Song · SOSP'26</span>
+      <span>🎓 CUDA/kernel basics covered in primers — symbolic execution assumed light</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🧩</div>
+      <p>Check the kernel against <span class="ro">what the model can ACTUALLY send</span>, not against <span class="wo">shapes nobody exercises</span> — then prove the found bug is <span class="ro">reachable on real hardware</span>.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then ten minutes of primers</h2>
+      <p class="sub">Acronyms first — reference them anytime. Then eight short primers on the CUDA/verification concepts the paper leans on. Skip anything you already know.</p>
+    </div>
+
+    <div class="gloss" style="margin:20px 0 30px">
+      <div class="term-def"><b>LLM inference</b><span>Running a trained model to generate text, token by token, at serving time.</span></div>
+      <div class="term-def"><b>CUDA kernel</b><span>A function that runs on the GPU across thousands of parallel threads.</span></div>
+      <div class="term-def"><b>Tensor</b><span>A multi-dimensional array (the unit of data models pass to kernels); shape/size often only known at runtime.</span></div>
+      <div class="term-def"><b>HF (Hugging Face)</b><span>The platform hosting model weights/code; also shorthand for the standard model-file format M2K targets.</span></div>
+      <div class="term-def"><b>HFProbe</b><span>M2K's component that traces a model's forward pass without a GPU to learn how it calls kernels.</span></div>
+      <div class="term-def"><b>cuKLEE</b><span>M2K's symbolic execution engine, built on KLEE, specialized for CUDA kernels and tensors.</span></div>
+      <div class="term-def"><b>IO / OOB / DR / NULL</b><span>The four bug classes M2K targets: Integer Overflow, Out-Of-Bounds access, Data Race, Null-pointer dereference.</span></div>
+      <div class="term-def"><b>KV-cache</b><span>Per-token GPU memory an inference server keeps for attention; its size grows with token count.</span></div>
+      <div class="term-def"><b>IR / LLVM IR</b><span>The intermediate, compiler-level representation cuKLEE actually analyzes (compiled from CUDA C++).</span></div>
+      <div class="term-def"><b>SMT / Z3</b><span>A solver that decides whether a set of logical constraints has a satisfying assignment — cuKLEE's backend.</span></div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> model side (HF/Python)</span>
+      <span><i style="background:var(--honey-deep)"></i> kernel side (CUDA)</span>
+      <span><i style="background:var(--ltram)"></i> M2K's machinery</span>
+      <span><i style="background:var(--optane)"></i> the memory bug</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>The layered inference stack<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A user's prompt passes through: a Python model file (defines the architecture), an inference framework (vLLM, Transformers — schedules requests, manages memory), host-side wrapper code (prepares tensors, picks a kernel), and finally a CUDA kernel (does the actual matrix math on the GPU).</p>
+          <div class="ready"><b>Now you're ready:</b> M2K's whole premise is that the boundary between the Python layer and the CUDA layer is where nobody is actually checking anything.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>A CUDA kernel, concretely<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A kernel runs across a <b>grid</b> of <b>blocks</b>, each block a group of <b>threads</b>. Every thread runs the identical code but computes its own array index from built-ins like <code>blockIdx.x</code> and <code>threadIdx.x</code> — typically <code>tid = blockDim.x*blockIdx.x + threadIdx.x</code>. A <b>wrapper function</b> on the CPU computes launch parameters (how many blocks/threads) from tensor sizes and then launches the kernel.</p>
+          <div class="ready"><b>Now you're ready:</b> the same arithmetic that computes <code>tid</code> is exactly where 89% of M2K's detected bugs live — as a 32-bit overflow.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Why tensor shapes are dynamic<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A kernel's buffer sizes depend on batch size and sequence length — both chosen by whoever sends the request. A kernel correct at batch=1, seq=128 can silently misbehave at batch=116, seq=18,079, because the index arithmetic was never checked against that combination.</p>
+          <div class="ready"><b>Now you're ready:</b> this is exactly the combinatorial space HFProbe has to characterize without brute-force testing every combination.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Vectorization and other kernel optimizations<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To go fast, kernels often process 4 elements per memory access (casting pointers to a <code>float4</code>-like type) and use a <b>grid-stride loop</b> — each thread starts at its own index and jumps forward by the total thread count until it runs out of work. These tricks are exactly where off-by-one and divide-by-4 bugs hide.</p>
+          <div class="ready"><b>Now you're ready:</b> cuKLEE has a dedicated technique (Section 4) for grid-stride loops so it doesn't have to unroll them thread-by-thread.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Symbolic execution, briefly<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Instead of running code on one concrete input, symbolic execution runs it on a <em>symbol</em> standing for "any possible value," collecting the logical constraints that describe every path. A solver (like Z3) then asks: "is there a concrete value satisfying <em>these</em> constraints <em>and</em> the condition for a bug?" If yes, it hands back the exact input that triggers it.</p>
+          <div class="ready"><b>Now you're ready:</b> cuKLEE is this technique, specialized so it doesn't choke on GPU tensors and thousands of threads.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>The implicit interface problem<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A kernel's safety depends on assumptions ("token count fits in 21 bits") that are true only because of how models happen to call it today. Nothing forces the model, the framework, or the kernel to state or enforce that assumption — so it silently breaks as models and context windows grow.</p>
+          <div class="ready"><b>Now you're ready:</b> "making the interface explicit" means writing that assumption down as a checkable constraint — that's HFProbe's whole job.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Why analyzing a kernel alone fails<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A kernel analyzed with fully unconstrained inputs reports bugs for shapes that could never actually occur (false positives) — e.g. a scale tensor with zero elements. A kernel analyzed only against inputs a tester happened to try misses bugs that only appear at production scale (false negatives).</p>
+          <div class="ready"><b>Now you're ready:</b> M2K's two components exist precisely to sit between these failure modes — real but comprehensive input constraints.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>State explosion across threads<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A kernel launch can spawn thousands of threads. Symbolically enumerating each one's execution path is intractable. The fix used elsewhere in systems research — and here — is to treat the thread's identifying numbers themselves as symbolic variables, analyzing the code once for "any thread."</p>
+          <div class="ready"><b>Now you're ready:</b> this is cuKLEE's symbolic thread-ID trick (Section 5.3), the reason one analysis pass covers every thread.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>M2K in a nutshell</h2>
+      <p class="sub">The problem, the two-part fix, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>Models and CUDA kernels are developed independently, by different teams, on different release schedules — yet a kernel's correctness silently depends on assumptions about the tensor shapes and input sizes a model will actually produce. When a model grows (bigger hidden size) or serves longer sequences, it can cross a limit the kernel author never wrote down — an implicit 32-bit index cap, a buffer sized for a smaller batch — and the kernel corrupts memory or crashes.</p>
+      <p><strong>M2K</strong>'s fix is to make that interface explicit. <span class="mem-chip chip-hi">HFProbe</span> runs a model's forward pass without any GPU — replacing every CUDA kernel call with a logging stub — and classifies each kernel argument as model-fixed (e.g. hidden size), linear in user input (e.g. token count), tied to another argument by equality, or merely bounded. It turns this classification into symbolic constraints: the model-kernel interface, written down for the first time. <span class="mem-chip chip-ucp">cuKLEE</span> then symbolically executes the kernel under those constraints, modeling every tensor as a separate memory region (so dynamic shapes stay tractable) and every thread ID as symbolic (so one pass covers every thread), to find inputs — still legal under the interface — that overflow an index or write out of bounds.</p>
+      <p><strong>The payoff:</strong> across 120 models and 173 kernels drawn from vLLM, Hugging Face, and four research papers, M2K finds <b>181</b> previously unknown memory bugs — 162 integer overflows, 19 out-of-bounds accesses — with only <b>9</b> false positives. Of 26 bugs reported to vLLM, 8 are already fixed and 4 more confirmed.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Kernels break not because their math is wrong in general, but because their assumptions were never checked against what the model can <em>actually</em> send.</li>
+        <li><b>HFProbe</b> extracts that interface — GPU-free — as four kinds of constraints: fixed, linear, equal, bounded.</li>
+        <li><b>cuKLEE</b> models each tensor as a separate memory region and every thread ID as symbolic, so dynamic shapes and thousands of threads stay tractable.</li>
+        <li>M2K validates every finding by re-profiling the concrete input and checking it fits in a target GPU's memory — no un-triggerable "bugs."</li>
+        <li>Result: 181 real bugs, 9 false positives, across three independent sources of models and kernels.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">a kernel's hidden 21-bit cap vs. what a legal request can push through</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> tested region (unit tests)</span>
+        <span><i style="background:var(--optane)"></i> overflow zone</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 220" role="img" aria-label="number line showing safe range, cap, and overflow">
+        <line x1="60" y1="130" x2="700" y2="130" stroke="#D8C8AC" stroke-width="1.4"/>
+        <rect x="60" y="118" width="558" height="24" fill="#DCEAF3"/>
+        <rect x="618" y="118" width="82" height="24" fill="#F8DCDC"/>
+        <line x1="618" y1="100" x2="618" y2="150" stroke="#C13B3B" stroke-width="2" stroke-dasharray="4 3"/>
+        <text x="618" y="90" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">cap = 2²¹−1 = 2,097,151 tokens</text>
+        <circle cx="70" cy="130" r="5" fill="#fff" stroke="#2E6F9E" stroke-width="2.4"/>
+        <text x="70" y="168" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f4d63">unit test:<tspan x="70" dy="12">BS=1, SL=17 → 17 tokens</tspan></text>
+        <circle cx="637" cy="130" r="6" fill="#fff" stroke="#C13B3B" stroke-width="2.6"/>
+        <text x="637" y="205" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22" font-weight="700">legal request: BS=116, SL=18,079 → 2,097,164 tokens</text>
+        <text x="60" y="30" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">Nothing enforces the cap — a request 13 tokens past it silently corrupts int32 index arithmetic</text>
+      </svg>
+      <figcaption><b>Read it left to right:</b> ordinary unit tests (batch=1, sequence=17) live nowhere near the danger zone. A production-scale but entirely legal request — 116 sequences of 18,079 tokens — crosses the kernel's implicit 2,097,151-token cap by just 13 tokens, flipping <code>tid</code> negative. (Paper §2.3, Fig. 2)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">trace → constrain → verify → validate</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Model and kernel evolve independently with no stated interface</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">HFProbe</div><div class="nd">Trace the model's forward pass GPU-free; classify each kernel arg</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Interface constraints</div><div class="nd">Fixed / linear / equal / bounded — the explicit contract</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">cuKLEE</div><div class="nd">Symbolic execution: tensors as separate regions, thread IDs symbolic</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-lru"><div class="nt">Candidate bug</div><div class="nd">Concrete (batch, seq) that violates a memory-safety constraint</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Validate</div><div class="nd">Replay via HFProbe + check it fits a real GPU's memory</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about M2K</h2>
+      <p class="sub">Each stands alone. Every card is honest about where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="30" width="46" height="46" rx="4" fill="#DCEAF3" stroke="#2E6F9E" stroke-width="2.5"/>
+          <rect x="78" y="30" width="46" height="46" rx="4" fill="#F8E4C0" stroke="#B06B12" stroke-width="2.5"/>
+          <path d="M62 53 h16" stroke="#332C24" stroke-width="2.5" stroke-dasharray="2 4"/>
+          <text x="39" y="58" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f4d63">model</text>
+          <text x="101" y="58" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">kernel</text>
+        </svg></div>
+        <span class="term">The core problem · No contract</span>
+        <h3>Two contractors, no blueprint</h3>
+        <p>A plumber and an electrician each build to their own plan, trusting the other "probably" left enough clearance. It works — until the electrician's team upsizes a panel and clips a pipe nobody told them was there. Models and kernels work the same way: no blueprint states what token counts a kernel must survive, so growth on one side quietly breaks the other.</p>
+        <div class="breaks"><b>Where it breaks:</b> real contractors can eventually talk to each other; models and kernels ship on separate release cycles with no shared review, which is precisely why the mismatch persists for years.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="30" fill="none" stroke="#6A4FB0" stroke-width="2.5"/>
+          <text x="70" y="54" text-anchor="middle" font-family="monospace" font-size="12" fill="#6A4FB0" font-weight="700">x</text>
+          <path d="M30 48 h10 M100 48 h10" stroke="#6A4FB0" stroke-width="2" stroke-dasharray="3 3"/>
+        </svg></div>
+        <span class="term">cuKLEE · Symbolic execution</span>
+        <h3>Solving with algebra, not plugging in numbers</h3>
+        <p>Instead of testing "does the bridge hold at 40 people, 41, 42…", an engineer writes one equation with a variable and solves for the breaking load directly. cuKLEE does the same to kernel code: it runs it once with a symbol for "any batch size, any sequence length" and asks a solver whether some concrete value makes an index go out of bounds.</p>
+        <div class="breaks"><b>Where it breaks:</b> algebra needs the equation to stay solvable — deeply nested loops or huge kernels can make the "equation" too large to solve within cuKLEE's one-hour budget.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="34" width="30" height="30" rx="4" fill="#DCEAF3" stroke="#2E6F9E" stroke-width="2"/>
+          <rect x="58" y="34" width="30" height="30" rx="4" fill="#F8E4C0" stroke="#B06B12" stroke-width="2"/>
+          <rect x="102" y="34" width="30" height="30" rx="4" fill="#EDE6F7" stroke="#6A4FB0" stroke-width="2"/>
+        </svg></div>
+        <span class="term">cuKLEE · Tensor memory model</span>
+        <h3>Numbered parking spots on separate islands</h3>
+        <p>If every parking lot in a city sat on its own island, no car could ever drift onto another lot's numbering by accident — you'd always know instantly which island a car belongs to. cuKLEE puts every tensor in its own far-apart memory region for exactly this reason: any pointer immediately tells you which tensor it came from, so bounds-checking never has to search.</p>
+        <div class="breaks"><b>Where it breaks:</b> real GPU memory doesn't actually work this way — cuKLEE's islands are a deliberate abstraction, not the true layout, so it can't catch cross-tensor aliasing bugs that violate the abstraction itself.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="10" fill="#EDE6F7" stroke="#6A4FB0" stroke-width="2"/>
+          <circle cx="70" cy="48" r="10" fill="#EDE6F7" stroke="#6A4FB0" stroke-width="2"/>
+          <circle cx="95" cy="48" r="10" fill="#EDE6F7" stroke="#6A4FB0" stroke-width="2"/>
+          <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#6A4FB0">N</text>
+        </svg></div>
+        <span class="term">cuKLEE · Symbolic thread IDs</span>
+        <h3>One understudy plays every role</h3>
+        <p>Rather than rehearsing a scene with 10,000 individually cast extras, a director has one understudy read the part symbolically as "whichever extra is speaking," and reasons about the scene once. cuKLEE gives <code>threadIdx.x</code> and friends symbolic values instead of enumerating every thread, so a single analysis pass captures every thread's behavior — including ones the same reasoning shows can misbehave.</p>
+        <div class="breaks"><b>Where it breaks:</b> an understudy assumes every "role" behaves by the same script; cuKLEE's data-race check has to re-introduce a <i>second</i> symbolic thread precisely because two threads can genuinely diverge.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="18" rx="3" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <rect x="20" y="44" width="70" height="14" rx="3" fill="#DCEAF3" stroke="#2E6F9E" stroke-width="1.6"/>
+          <rect x="20" y="64" width="45" height="14" rx="3" fill="#F8E4C0" stroke="#B06B12" stroke-width="1.6"/>
+        </svg></div>
+        <span class="term">HFProbe · Interface constraints</span>
+        <h3>A locksmith's master-key chart</h3>
+        <p>A locksmith doesn't test a lock against infinite keys; they note which pins are fixed and which vary, then cut a master key covering the whole family at once. HFProbe watches a handful of (batch, sequence) runs, notices which kernel arguments never change, which scale linearly with tokens, and which always match another argument — and writes that down as one reusable constraint set instead of testing endlessly.</p>
+        <div class="breaks"><b>Where it breaks:</b> a master key chart is only as good as the pins it observed; HFProbe can miss a relationship that never shows up in the small set of runs it profiles, which is one source of its false positives.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="20" width="80" height="50" rx="6" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <path d="M45 45 l15 15 l35 -35" fill="none" stroke="#2E6F9E" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg></div>
+        <span class="term">Validation · Reachability check</span>
+        <h3>Would it actually fit in the moving truck?</h3>
+        <p>A mover can prove a couch fits through the algebra of doorway dimensions, but still has to check it against the actual truck's cargo size before calling the job done. cuKLEE's solver can prove a batch/sequence combination triggers an overflow, but M2K still estimates the resulting GPU memory footprint (model weights + KV-cache) and only reports the bug once it confirms that combination fits — and is reachable — on a real GPU.</p>
+        <div class="breaks"><b>Where it breaks:</b> the estimate ignores intermediate/temporary buffers as negligible — usually fine, but it means the memory check is an approximation, not a guarantee.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How M2K actually works</h2>
+      <p class="sub">HFProbe first, then cuKLEE, then how a finding gets confirmed.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · HFProbe — tracing a model without a GPU</h3>
+      <p>HFProbe first builds a static, path- and field-sensitive call graph from the model's <code>forward()</code> method to find every CUDA kernel the model can statically reach — standard Python call-graph tools fail here because they don't resolve <code>nn.Module.__call__</code>. It then <em>replaces</em> every registered kernel's Python binding with a logging stub that records the call stack, argument types, tensor shapes/dtypes, and (for integer tensors) observed min/max values, then returns a zero-filled tensor of the right shape. With all GPU computation stripped out, the model runs its full forward pass on a CPU, once per (batch size, sequence length) combination.</p>
+      <div class="callout note"><span class="ic">🌱</span><div><b>Concretely:</b> for the <code>dynamic_scaled_fp8_quant</code> kernel behind Qwen2's FP8 linear layer, HFProbe learns that <code>out</code> and <code>input</code> always share the same shape, that their last dimension is a model-fixed 896 (the hidden size), that their first dimension scales linearly with token count, and that <code>scale</code> always has exactly one element.</div></div>
+      <h3>2 · Turning traces into interface constraints</h3>
+      <p>HFProbe reruns the model over several (batch, sequence) combinations and, per kernel-call-site, sorts each argument into one of four buckets:</p>
+      <pre class="sketch"><span class="hl">model-fixed</span>   <span class="cm">// constant across every run → pin to that value</span>
+<span class="hl">user-linear</span>   <span class="cm">// scales proportionally with token count → the attacker's lever</span>
+<span class="hl">equal</span>         <span class="cm">// always matches another argument's value → link with "="</span>
+<span class="hl">bounded</span>       <span class="cm">// varies, no clean pattern → cap at the max value observed</span></pre>
+      <h3>3 · Configuration mutation — reaching more kernels</h3>
+      <p>Some kernels are statically reachable but never triggered by a model's default config (e.g. a quantization variant, or a smaller <code>n_routed_experts</code> that switches the MoE padding kernel). HFProbe uses an LLM in agent mode — given the model's repo and a target kernel name — to propose a modified <code>config.json</code>; any mutation that crashes at runtime is simply discarded.</p>
+      <h3>4 · cuKLEE — tensors as separate regions</h3>
+      <p>Ordinary symbolic execution (KLEE) treats the heap as one contiguous space, so a dynamically-sized buffer makes every <em>later</em> buffer's base address symbolic too — bounds-checking becomes intractable. cuKLEE instead gives each tensor its own distinct, far-apart region and a set of symbolic fields describing it.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Separate islands, not one heap</div>
+      <div class="viz-kicker">each tensor gets its own symbolic base address, count, dims, element size</div>
+      <svg class="full" viewBox="0 0 700 190" role="img" aria-label="three tensors as separate memory regions with symbolic fields">
+        <rect x="30" y="30" width="180" height="110" rx="10" fill="#DCEAF3" stroke="#2E6F9E" stroke-width="1.6"/>
+        <rect x="260" y="30" width="180" height="110" rx="10" fill="#F8E4C0" stroke="#B06B12" stroke-width="1.6"/>
+        <rect x="490" y="30" width="180" height="110" rx="10" fill="#EDE6F7" stroke="#6A4FB0" stroke-width="1.6"/>
+        <g font-family="JetBrains Mono" font-size="11.5" fill="#332C24" text-anchor="middle">
+          <text x="120" y="52" font-weight="700">input</text><text x="350" y="52" font-weight="700">out</text><text x="580" y="52" font-weight="700">scale</text>
+          <text x="120" y="74">B, N, D</text><text x="350" y="74">B, N, D</text><text x="580" y="74">B, N=1</text>
+          <text x="120" y="94">d₀,d₁ = TC, 896</text><text x="350" y="94">d₀,d₁ = TC, 896</text><text x="580" y="94">S = 4 B</text>
+          <text x="120" y="116">S = 2 B (bf16)</text><text x="350" y="116">S = 1 B (fp8)</text><text x="580" y="116">(fixed)</text>
+        </g>
+        <text x="230" y="165" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">⟵ regions widely separated, never adjacent ⟶</text>
+      </svg>
+      <figcaption><b>Read it as:</b> when line 14 of the kernel dereferences <code>v_out[i]</code>, cuKLEE already knows — from the constraint tying that pointer to <code>out</code>'s base address <code>B</code> — exactly which tensor's bounds to check, with no scan over all allocated objects. (Paper §5.1, Table 2)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <p>With these symbolic fields, cuKLEE supports 140 Tensor/TensorIterator methods across four categories: <b>property queries</b> (e.g. <code>t.numel()</code> → <code>N</code>), <b>tensor-producing</b> methods (e.g. <code>t.sum(0)</code> → new symbolic fields tied to the original's), <b>property checks</b> (e.g. contiguity, encoded as a constraint), and <b>analysis-irrelevant</b> methods (skipped).</p>
+      <h3>5 · cuKLEE — threads without enumeration</h3>
+      <p>cuKLEE introduces symbolic variables for <code>blockIdx</code>/<code>threadIdx</code> (bounded by <code>gridDim</code>/<code>blockDim</code>, themselves fixed at the kernel-launch site) and analyzes the kernel body <em>once</em>. For grid-stride loops — a thread starts at its global index and advances by the total thread count — cuKLEE analyzes the loop body a single time and then adds the loop's exit condition (e.g. <code>i ≥ num_vec_elems</code>) as a constraint on the state that follows, rather than unrolling per thread. Data races are checked by introducing a <em>second</em> symbolic thread, asserting the two differ, and checking for a conflicting write to the same address (with block IDs equated for shared memory, which is block-private).</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Grid-stride loop, analyzed once</div>
+      <div class="viz-kicker">tid and step stay symbolic; the exit condition becomes a constraint</div>
+      <svg class="full" viewBox="0 0 700 160" role="img" aria-label="grid stride loop diagram">
+        <rect x="20" y="20" width="180" height="50" rx="8" fill="#EDE6F7" stroke="#6A4FB0" stroke-width="1.6"/>
+        <text x="110" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">tid = blockDim.x·blockIdx.x</text>
+        <text x="110" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">+ threadIdx.x  (symbolic)</text>
+        <path d="M200 45 h50" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrM2K)"/>
+        <rect x="250" y="20" width="200" height="50" rx="8" fill="#DCEAF3" stroke="#2E6F9E" stroke-width="1.6"/>
+        <text x="350" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f4d63">analyze body once:</text>
+        <text x="350" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f4d63">i = tid; check v_in[i], v_out[i]</text>
+        <path d="M450 45 h50" stroke="#9A8E7C" stroke-width="2" marker-end="url(#arrM2K)"/>
+        <rect x="500" y="20" width="180" height="50" rx="8" fill="#F8E4C0" stroke="#B06B12" stroke-width="1.6"/>
+        <text x="590" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">exit constraint:</text>
+        <text x="590" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">i ≥ num_vec_elems</text>
+        <defs><marker id="arrM2K" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#9A8E7C"/></marker></defs>
+        <text x="350" y="115" text-anchor="middle" font-family="Fraunces" font-size="13" fill="#332C24">Every possible loop index a thread can hit is covered by one symbolic pass.</text>
+      </svg>
+      <figcaption>(Paper §5.3)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>6 · Buggy constraints, input bounds, and validation</h3>
+      <p>cuKLEE injects a bug-condition check at every risky operation, on top of the batch/sequence constraints from HFProbe plus a model's own <code>max_position_embeddings</code> and a practical default (batch ≤ 1,000, sequence ≤ 1,000,000):</p>
+      <pre class="sketch"><span class="cm">// at each pointer dereference</span>
+<span class="kw">assert</span> pointer <span class="hl">outside</span> [base, base+size)   <span class="cm">// out-of-bounds</span>
+<span class="cm">// at each 32-bit add/multiply</span>
+<span class="kw">assert</span> result <span class="hl">exceeds</span> INT32_MAX          <span class="cm">// integer overflow</span>
+<span class="cm">// at each pointer dereference</span>
+<span class="kw">assert</span> pointer <span class="hl">derived from unknown base</span>  <span class="cm">// null-pointer deref</span></pre>
+      <p>A satisfiable result yields concrete (batch, sequence) values. Before reporting, M2K <b>replays</b> them through HFProbe's profiling backend to confirm the framework actually accepts that request and invokes that kernel with matching arguments, and estimates GPU memory as <b>weights + KV-cache</b>, scaled by a fragmentation factor (1.25× vLLM, 1.45× Transformers):</p>
+      <pre class="sketch">KV-cache size = 2 × L × TC × H × sizeof(dtype)
+<span class="cm">// L = layers, TC = token count, H = hidden dim</span>
+<span class="kw">if</span> (weights + KV-cache) × fragmentation &gt; target GPU memory:
+    mark bug <span class="hl">untriggerable</span> on that GPU</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why bother?</b> A solver can prove a huge batch×sequence combination overflows an index while quietly requiring more VRAM than any GPU has. Without this check, M2K would report bugs no attacker could ever actually reach.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the real numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four bugs from the paper, carried through the arithmetic.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The 2²¹−1 token cap (dynamic_scaled_fp8_quant)</h3>
+      <p style="color:var(--ink-soft)">The kernel behind Qwen2's FP8 linear layer computes <code>tid = blockDim.x·blockIdx.x + threadIdx.x</code> as a 32-bit <code>int</code>, with <code>blockDim.x = 1024</code> and <code>blockIdx.x</code> ranging over the token count. At what token count does this overflow?</p>
+      <ol class="seq">
+        <li><b>tid caps out</b> once <code>blockIdx.x × 1024</code> alone exceeds <code>INT32_MAX = 2,147,483,647</code>, i.e. once token count &gt; 2,147,483,647 / 1024 ≈ 2,097,151.999 → cap = <b>2²¹−1 = 2,097,151</b> tokens.</li>
+        <li><b>A legal request:</b> batch size 116, sequence length 18,079 → token count = 116 × 18,079 = <b>2,097,164</b>.</li>
+        <li><b>Margin past the cap:</b> 2,097,164 − 2,097,151 = <b>13 tokens</b> over.</li>
+        <li><b>Result:</b> <code>tid</code> and <code>step</code> go negative; the read on line 13 lands on an unmapped address → an "illegal memory access" crash, reproduced on an NVIDIA B300.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> nothing about 116×18,079 is exotic — it's an ordinary large-batch, long-context request, 13 tokens past a limit nobody wrote down anywhere.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② An exact power-of-two overflow (VecQuant8BatchMatMulKernel)</h3>
+      <p style="color:var(--ink-soft)">For Qwen-1.8B-Chat (heads=16, height=128), <code>weight_total = batch × width × heads × height</code> is computed as a 32-bit <code>int</code>. Show that batch=128, seq_len(width)=8,192 overflows.</p>
+      <ol class="seq">
+        <li><b>Hidden size</b> = heads × height = 16 × 128 = <b>2,048</b>.</li>
+        <li><b>width × hidden</b> = 8,192 × 2,048 = <b>16,777,216</b>.</li>
+        <li><b>× batch</b> = 128 × 16,777,216 = <b>2,147,483,648</b> = exactly <b>2³¹</b>.</li>
+        <li><b>INT32_MAX = 2³¹−1 = 2,147,483,647</b> — the computation overflows by exactly <b>1</b>, wrapping <code>weight_total</code> to a large negative number.</li>
+        <li><b>Consequence:</b> the bounds check <code>index1 >= weight_total</code> (line 14) never fires, since <code>weight_total</code> is now negative — every dequantized weight silently becomes zero, corrupting the matrix multiply without any crash.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is why M2K finds far more integer overflows than out-of-bounds crashes: an overflow like this one corrupts results silently — no fault, no log line, just wrong answers.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ An off-by-shape offset (moe_align_block_size_kernel)</h3>
+      <p style="color:var(--ink-soft)">Shared memory is laid out as <code>num_experts+1</code> header slots followed by a per-thread table. The kernel computes the table's start as <code>shared_mem + blockDim.x + 1</code> instead of <code>shared_mem + num_experts + 1</code>. When does this matter?</p>
+      <ol class="seq">
+        <li><b>Launch config:</b> <code>num_thread = max(num_experts, 32)</code>. For <code>num_experts = 8</code> (below 32), <code>blockDim.x = 32</code>.</li>
+        <li><b>Correct offset</b> should be <code>num_experts + 1 = 9</code>; the kernel instead uses <code>blockDim.x + 1 = 33</code> — <b>24 slots too far</b>.</li>
+        <li><b>Write on line 8:</b> <code>tokens_cnts[num_experts × (threadIdx.x+1) + i]</code> with <code>threadIdx.x = 31</code>, <code>num_experts = 8</code> → index = 8×32 + i = <b>256+i</b>, landing past the shared-memory buffer sized for a 9-expert model.</li>
+        <li><b>Result:</b> cuKLEE reports the concrete trigger <code>threadIdx.x = 31, num_experts = 8</code> — an out-of-bounds shared-memory write.</li>
+      </ol>
+      <div class="callout note"><span class="ic">🌱</span><div>The bug only appears when <code>num_experts &lt; 32</code> — smaller MoE configurations, invisible if you only ever test the large ones.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Does the bug actually fit on the GPU?</h3>
+      <p style="color:var(--ink-soft)">For example ①, the solver returns batch=116, sequence=18,079. Is that combination physically reachable on a target GPU?</p>
+      <ol class="seq">
+        <li><b>Estimate weights + KV-cache</b> for the model at 2,097,164 tokens; M2K computes a total of <b>≈211.2 GB</b> (vLLM's 1.25× fragmentation factor included).</li>
+        <li><b>Target: NVIDIA B300, 288 GB.</b> 211.2 GB &lt; 288 GB → <b>fits</b>, bug confirmed triggerable.</li>
+        <li><b>Contrast:</b> on an H100 (80 GB), the same estimate would exceed capacity — M2K would mark this specific (batch, seq) pair untriggerable there, even though the underlying kernel flaw is identical.</li>
+        <li><b>System-wide pattern:</b> across the whole benchmark, out-of-bounds bugs plateau once GPU memory passes ~80 GB, while integer-overflow counts keep climbing with more memory (68 on H100, 119 on H200, 162 on B300) — bigger GPUs simply let batch×sequence reach further into overflow territory.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the same kernel bug can be "real but not yet reachable" on one GPU and fully triggerable on the next generation — memory capacity, not just kernel code, decides which overflows become live bugs.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A kernel passes all of vLLM's unit tests (batch ≤ 5, sequence ≤ 17). Why doesn't that rule out the bug in Worked Example ①?</div>
+      <details><summary>Show answer</summary><div class="ans">Unit tests exercise at most 5×17=85 tokens — nowhere near the 2,097,151-token cap. The bug only exists at production-scale combinations that ordinary testing never reaches, which is exactly why M2K needs symbolic reasoning over the input space rather than a handful of concrete test cases.<span class="mis">Misconception: that passing unit tests means a kernel is safe. Passing tests only means it's safe for the inputs those tests happened to pick.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">A kernel has the same 2²¹−1 = 2,097,151-token cap. If batch size is fixed at 200, what is the largest safe sequence length?</div>
+      <details><summary>Show answer</summary><div class="ans">2,097,151 ÷ 200 = 10,485.755 → the largest safe integer sequence length is <b>10,485</b> (10,486 would give 2,097,200 tokens, past the cap).<span class="mis">Misconception: rounding up instead of down. Since exceeding the cap is what causes the bug, you must floor the division, not round to the nearest integer.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why can't cuKLEE just use KLEE's ordinary single-contiguous-heap memory model for tensors?</div>
+      <details><summary>Show answer</summary><div class="ans">Tensor sizes are runtime-determined, so in a contiguous heap a symbolically-sized tensor forces every subsequently-allocated tensor's base address to become symbolic too — bounds checks then require reasoning about relationships between many symbolic addresses at once, which explodes. Giving each tensor its own separate, far-apart region keeps every pointer's owning tensor unambiguous regardless of any tensor's size.<span class="mis">Misconception: that dynamic shapes are just "bigger" versions of the static-size case KLEE already handles. The problem isn't size, it's that symbolic size makes downstream addresses symbolic.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Disabling HFProbe (running cuKLEE directly on kernel wrappers) produces 2,349 false positives on the vLLM benchmark. Why so many, rather than just a handful more?</div>
+      <details><summary>Show answer</summary><div class="ans">Without HFProbe's constraints, every tensor's shape and value range becomes fully symbolic, so the solver is free to pick shapes that are logically possible but never occur in practice — e.g. a <code>scale</code> tensor with zero elements, or a hidden size of 2,147,483,640. Nearly every risky operation then has <i>some</i> unrealistic satisfying assignment, so false positives scale with the number of checked operations, not just a few edge cases. It also makes analysis slower (2.1× per kernel) and causes 18 more kernels to time out.<span class="mis">Misconception: that more freedom for the solver only adds a few extra "weird" reports. Unconstrained inputs make nearly every bounds check satisfiable by some unrealistic value, multiplying false positives broadly.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why does cuKLEE need a separate GPU-memory usage model instead of just trusting whatever (batch, sequence) the solver returns?</div>
+      <details><summary>Show answer</summary><div class="ans">The solver only proves that a batch/sequence pair satisfies the memory-safety constraint mathematically — it has no notion of physical GPU capacity. A pair that overflows an index might also require far more VRAM (model weights + KV-cache) than any real GPU has, making the "bug" undeployable. The memory model (weights + 2·L·TC·H·sizeof(dtype), scaled by a fragmentation factor) checks feasibility against a target GPU before the bug is reported.<span class="mis">Misconception: that a mathematically valid solver output is automatically an actionable bug report. It's actionable only once it's also shown to be reachable on real hardware.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">Disabling cuKLEE — but keeping HFProbe's config mutation and simply running models on real GPUs at batch ≤ 5, sequence ≤ 17 — finds zero bugs. Why?</div>
+      <details><summary>Show answer</summary><div class="ans">85 tokens is nowhere near the thresholds that trigger these bugs (e.g. 2,097,151-token caps, or exact power-of-two overflows at millions of elements). Dynamic testing only observes what it happens to run; without symbolic reasoning to search the input space, there is no chance of landing on the rare combinations that actually trigger a fault.<span class="mis">Misconception: that running the real model on real hardware is inherently more trustworthy than symbolic execution. It's only as good as the inputs you happen to try — and the bugs here live far outside typical test inputs.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly is the "model-kernel interface"?<span class="chev">▾</span></summary><div class="a">The (currently unwritten) set of assumptions a kernel makes about the tensors and sizes it will be called with — e.g. "token count fits in 21 bits," "this tensor always has exactly one element." M2K's contribution is turning that folklore into explicit, checkable symbolic constraints.</div></details>
+      <details><summary><span class="q">Q2</span>Why not just run the model with huge inputs and see what crashes?<span class="chev">▾</span></summary><div class="a">Many of these bugs don't crash — they silently corrupt results (Worked Example ②), so dynamic testing wouldn't even notice. And the space of (batch, sequence, model architecture) combinations is too large to brute-force; symbolic execution finds the exact triggering input via constraint solving instead of guessing.</div></details>
+      <details><summary><span class="q">Q3</span>How does HFProbe run a model without a GPU?<span class="chev">▾</span></summary><div class="a">It replaces every registered CUDA kernel's Python binding with a stub that logs the call and returns a correctly-shaped, zero-filled tensor — so the framework's control flow proceeds normally, just without any real GPU computation. Model-loading is also modified to create correctly-shaped weight tensors without reading the actual weight files.</div></details>
+      <details><summary><span class="q">Q4</span>Why model thread IDs symbolically instead of just picking a few representative threads?<span class="chev">▾</span></summary><div class="a">A few representative threads (like a specific threadIdx.x=0) can miss the exact thread whose index computation overflows. A symbolic thread ID lets the solver search over every possible thread at once and return the specific one that breaks — e.g. threadIdx.x=31 in Worked Example ③.</div></details>
+      <details><summary><span class="q">Q5</span>Why are 162 of 181 bugs "integer overflow" rather than crashes?<span class="chev">▾</span></summary><div class="a">The paper suspects overflow bugs are under-reported in the wild because an overflowed value used in a computation (not as an index) corrupts results silently rather than crashing — so they never show up as GPU faults, only as bad outputs someone eventually notices, if ever.</div></details>
+      <details><summary><span class="q">Q6</span>How does M2K know a bug is actually reachable, not just solver-satisfiable?<span class="chev">▾</span></summary><div class="a">Two checks: (1) replay the concrete (batch, sequence) through HFProbe's profiling backend to confirm the framework accepts it and invokes the kernel with matching arguments; (2) estimate GPU memory (weights + KV-cache × fragmentation factor) and confirm it fits the target GPU's capacity.</div></details>
+      <details><summary><span class="q">Q7</span>Does M2K replace tools like NVIDIA Compute Sanitizer?<span class="chev">▾</span></summary><div class="a">No — they're complementary. Compute Sanitizer and similar dynamic checkers catch bugs at runtime but only for inputs you actually run, at real runtime overhead. M2K statically searches for inputs — grounded in what a model can actually produce — that would trigger a bug, before it ever ships.</div></details>
+      <details><summary><span class="q">Q8</span>What does M2K not handle yet?<span class="chev">▾</span></summary><div class="a">Triton kernels, NPU kernels, and TensorFlow models are out of scope; some kernels exceed the one-hour analysis budget without full path coverage; and a handful of missed bugs stem from unsupported C++ constructs (e.g. std::map) or cross-GPU data accesses invisible to static analysis.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results, and further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>M2K</b><span>The full framework: HFProbe (extract the interface) + cuKLEE (verify against it).</span></div>
+      <div class="term-def"><b>HFProbe</b><span>GPU-free dynamic model profiler; traces kernel invocations and infers interface constraints.</span></div>
+      <div class="term-def"><b>cuKLEE</b><span>KLEE-based symbolic execution engine specialized for CUDA tensors and thread-parallel code.</span></div>
+      <div class="term-def"><b>Interface constraint</b><span>A symbolic fact about a kernel argument: model-fixed, user-linear, equal-to-another, or bounded.</span></div>
+      <div class="term-def"><b>Tensor memory model</b><span>cuKLEE's choice to give each tensor a separate, far-apart symbolic memory region instead of one shared heap.</span></div>
+      <div class="term-def"><b>Symbolic thread ID</b><span>Treating blockIdx/threadIdx as symbolic variables so one analysis pass covers every thread.</span></div>
+      <div class="term-def"><b>Grid-stride loop</b><span>A loop pattern where each thread starts at its index and advances by the total thread count; analyzed once, then bounded by an exit constraint.</span></div>
+      <div class="term-def"><b>Validation / replay</b><span>Confirming a solver-found bug by re-running it through HFProbe and checking it fits a target GPU's memory.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Integer overflow (IO)</b><span>A 32-bit arithmetic result exceeding its type's range, often corrupting an index used right after.</span></div>
+      <div class="term-def"><b>Out-of-bounds (OOB)</b><span>A read/write outside a tensor's allocated memory — often a downstream effect of an integer overflow.</span></div>
+      <div class="term-def"><b>Data race (DR)</b><span>Unsynchronized concurrent accesses to the same memory by two threads, at least one a write.</span></div>
+      <div class="term-def"><b>Null-pointer dereference</b><span>Using a pointer that was never validly initialized (e.g. cross-GPU access).</span></div>
+      <div class="term-def"><b>KV-cache</b><span>Per-token attention memory; its size (2·L·TC·H·sizeof(dtype)) is central to M2K's memory-feasibility check.</span></div>
+      <div class="term-def"><b>Wrapper function</b><span>Host-side CUDA C++ code that prepares kernel arguments and configures the launch (blocks, threads, shared memory).</span></div>
+      <div class="term-def"><b>Configuration mutation</b><span>LLM-assisted edits to a model's config.json to trigger kernels not exercised by its default settings.</span></div>
+      <div class="term-def"><b>KLEE / Z3</b><span>The underlying symbolic-execution engine and SMT solver cuKLEE is built on.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <table class="tbl">
+      <thead><tr><th>Metric</th><th>Value</th><th>Context</th></tr></thead>
+      <tbody>
+        <tr class="best"><td>Total bugs found</td><td class="mono">181</td><td>162 integer overflow, 19 out-of-bounds, across 120 models / 173 kernels</td></tr>
+        <tr><td>False positives</td><td class="mono">9</td><td>~4.7% false-discovery rate over 190 total reports</td></tr>
+        <tr><td>vLLM bugs reported</td><td class="mono">26</td><td>8 fixed, 4 confirmed, 18 unresolved (13 already refactored away)</td></tr>
+        <tr><td>Known-bug coverage</td><td class="mono">15 / 20</td><td>cuKLEE on real vLLM kernels (9 IO, 5 OOB, 1 NULL)</td></tr>
+        <tr><td>Coverage, simplified kernels</td><td class="mono">19 vs 0 / 5 / 3</td><td>cuKLEE vs. Honeycomb / GKLEE / ESBMC-GPU (of 20)</td></tr>
+        <tr><td>Analysis cost</td><td class="mono">1,073.6 hrs, $442</td><td>cuKLEE 979.9 hrs + HFProbe 93.8 hrs; GPT agent cost for config mutation</td></tr>
+        <tr><td>Timeouts</td><td class="mono">778 / 8,562</td><td>All timed-out kernels exceed 600 lines of CUDA</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout note reveal" style="margin-top:24px">
+      <span class="ic">📎</span>
+      <div><b>Source notes.</b> <b>From the paper:</b> all bug counts, the fp8-quant/VecQuant8/moe-align examples and their line numbers, the 2²¹−1 and 2³¹ arithmetic, the ablation numbers (2,349 FPs, 25 vs 7 timeouts, 2.1× slowdown, 21/50 kernels without mutation, 19 missed bugs, 15 extra FPs without validation), the coverage comparison (Table 6), and the cost/timing figures (§6.1.2). <b>Our framing:</b> all analogies, the "islands not heap" and "understudy" framings, the SVG diagrams, and the practice-problem misconceptions are original explanatory additions, not paper text.</div>
+    </div>
+
+    <div class="subhead">Related work worth knowing</div>
+    <div class="read-item reveal"><h4>KLEE: Unassisted and Automatic Generation of High-Coverage Tests <span class="diff med">medium</span></h4><div class="meta">Cadar, Dunbar, Engler · OSDI 2008</div><p>The symbolic execution engine cuKLEE is built on top of, including the contiguous-heap memory model M2K had to depart from.</p></div>
+    <div class="read-item reveal"><h4>GKLEE: Concolic Verification and Test Generation for GPUs <span class="diff hard">hard</span></h4><div class="meta">Li et al. · PPoPP 2012</div><p>An earlier CUDA symbolic-execution tool, one of the three baselines cuKLEE is compared against in Section 6.2.</p></div>
+    <div class="read-item reveal"><h4>Honeycomb: Secure and Efficient GPU Executions via Static Validation <span class="diff hard">hard</span></h4><div class="meta">Mai et al. · OSDI 2023</div><p>Validates memory accesses against coarse regions rather than precise bounds — why it detects none of the 20 known bugs.</p></div>
+    <div class="read-item reveal"><h4>Efficient Memory Management for LLM Serving with PagedAttention <span class="diff med">medium</span></h4><div class="meta">Kwon et al. · SOSP 2023</div><p>The vLLM system M2K profiles most extensively; its KV-cache design underlies the memory-feasibility model in Section 5.5.</p></div>
+    <div class="read-item reveal"><h4>cuCatch: A Debugging Tool for Catching Memory Safety Violations in CUDA <span class="diff med">medium</span></h4><div class="meta">Tarek Ibn Ziad et al. · PLDI 2023</div><p>A dynamic, metadata-based alternative to M2K's static approach — illustrates the runtime-overhead trade-off M2K avoids.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> He, Xia, Jia, Wu &amp; Song, "M2K: Making the Model-Kernel Interface Explicit for Reliable CUDA Kernel Verification" (SOSP'26)</span>
+    <span><b>Code:</b> github.com/system-pclub/M2K</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source paper</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else if(v < optV){ verd.className = 'pverdict sub'; verd.textContent = 'Starved — give it more.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Back off.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
