@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<!-- Anchor field guide — Mitigating GPU Shallow Disruptions with Decoupled Memory (Ma, Gao, et al., SOSP'26).
+     Semantic colors: teal = anchored/surviving GPU memory · honey = shallow disruption (worker crash) ·
+     indigo = Anchor machinery (daemon/rebinder/IPC) · terracotta = checkpoint baseline / destructive failure. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The GPU Forgets, the Daemon Remembers — Anchor, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98E2B; --honey-deep:#B36F14; --honey-soft:#F9E6C4;
+  --dram:#1F8A6F; --dram-soft:#D9F0E6;
+  --ltram:#5B5FD6; --ltram-soft:#E7E7FA;
+  --optane:#C0563B; --optane-soft:#F7E1D8;
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,138,111,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,95,214,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,142,43,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(91,95,214,.05) 31px,rgba(91,95,214,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,142,43,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+.gloss-box{background:var(--ltram-soft);border:1px solid #cfd0f0;border-radius:var(--radius-sm);padding:18px 22px;margin:20px 0}
+.gloss-box h4{margin:0 0 10px;color:#3a409a;font-size:1.05rem}
+.gloss-mini{columns:2;column-gap:20px;font-size:.92rem}
+.gloss-mini div{break-inside:avoid;margin-bottom:8px}
+.gloss-mini b{font-family:var(--mono);color:#3a409a}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:110px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:130px;height:90px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.96rem;color:var(--ink-soft);margin-bottom:.7em}
+.analogy .breaks{font-size:.88rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5B5FD6)}
+.bf-hi{background:linear-gradient(90deg,#28a184,#1F8A6F)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}.gloss-mini{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,138,111,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,95,214,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,142,43,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>When the worker crashes, let the <span class="swash">memory</span> keep living</h1>
+    <p class="lede">A GPU job dies, the OS reclaims its memory, a new process reloads everything from a checkpoint. But if the GPU never actually broke, why throw the data away at all? This is the plain-English story of <strong>Anchor</strong>.</p>
+    <div class="hero-meta">
+      <span>📄 "Anchor: Mitigating GPU Shallow Disruptions with Decoupled Memory" · Ma, Gao, et al.</span>
+      <span>🎓 CUDA/IPC basics covered inline</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">⚓</div>
+      <p>Decouple memory <span class="ro">OWNERSHIP</span> from the failure-prone worker process — a daemon anchors the data on the GPU, so a crash reclaims the <span class="wo">PROCESS</span>, never the data.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then eight ideas the paper assumes</h2>
+      <p class="sub">You already know OS memory management cold — the primers below skip that and focus on where CUDA's process model and ML-serving internals diverge from it.</p>
+    </div>
+
+    <div class="gloss-box">
+      <h4>Quick glossary — acronyms up front</h4>
+      <div class="gloss-mini">
+        <div><b>IPC memory</b> — CUDA/HIP mechanism to share a GPU allocation's physical pages across process contexts (cudaIpcGetMemHandle / OpenMemHandle).</div>
+        <div><b>KV cache</b> — the stored key/value attention tensors from previously processed tokens in LLM inference.</div>
+        <div><b>PagedAttention</b> — vLLM's paged KV-cache allocator; writes are append-only per slot.</div>
+        <div><b>ZeRO-3</b> — DeepSpeed's optimizer-state sharding scheme; updates proceed in fixed-size chunks.</div>
+        <div><b>CoW</b> — copy-on-write; here, backing up a memory region before a kernel overwrites it.</div>
+        <div><b>BFS access path</b> — a Python object-graph traversal used as a stable cross-restart tensor identifier.</div>
+        <div><b>MPS</b> — NVIDIA Multi-Process Service; multiplexes GPU clients through one server process.</div>
+        <div><b>SDC</b> — silent data corruption; a fault class explicitly out of this paper's scope.</div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> anchored/surviving GPU memory</span>
+      <span><i style="background:var(--honey-deep)"></i> shallow disruption (worker crash)</span>
+      <span><i style="background:var(--ltram)"></i> Anchor's machinery (daemon/rebinder)</span>
+      <span><i style="background:var(--optane)"></i> checkpoint baseline / destructive failure</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>CUDA contexts and fate-sharing<span class="chev">▾</span></summary>
+        <div class="body"><p>A CUDA context is the GPU-side analog of a process's page table: it owns every allocation the process makes. When the process dies, the context is torn down and the driver reclaims all of it — there's no "orphan mapping" survival path like a mmap'd file can have on the CPU side.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's whole problem is that GPU memory fate-shares with the process, unlike page-cache-backed CPU memory, which can outlive a process via the file it's backed by.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>The GPU IPC mechanism — reference counting + page-table remap<span class="chev">▾</span></summary>
+        <div class="body"><p>cudaIpcGetMemHandle exports a handle to an allocation; another context calling OpenMemHandle inserts the same physical pages into its own GPU page table. The driver reference-counts the region — exit of one sharer only decrements the count, and access afterward is served by ordinary MMU/TLB hardware, at zero extra runtime cost.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the single hardware feature Anchor exploits — it's structurally the same trick as a shared, refcounted mapping in a CXL memory pool, just at the GPU page-table layer.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>What a "shallow disruption" is<span class="chev">▾</span></summary>
+        <div class="body"><p>Not every failure is equal. A shallow disruption — a Python exception, an NCCL timeout, a user hitting Ctrl-C to tweak code — kills the worker process but leaves the GPU device, driver, and OS kernel untouched. A destructive failure (ECC error, driver crash, node loss) takes the hardware itself offline and needs migration.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's traces show shallow disruptions are 65.8–98.8% of interruptions — the common case existing recovery treats as if it were the rare, destructive one.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Checkpoint/restart, and why it's the wrong tool here<span class="chev">▾</span></summary>
+        <div class="body"><p>Standard recovery: periodically copy state off-GPU (checkpoint), and on failure, restart and copy it back (reload). This is unavoidable when hardware is actually gone. But for a shallow disruption the data never left the GPU — checkpointing pays a round-trip cost purely because the OS's process model forces it.</p>
+          <div class="ready"><b>Now you're ready:</b> Anchor's target is exactly this wasted round trip — same GPU, same data, only the owning process changed.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>PagedAttention and the KV cache<span class="chev">▾</span></summary>
+        <div class="body"><p>An LLM inference engine caches the key/value tensors of every token it has already processed, organized into fixed-size pages (blocks) — literally paged virtual memory applied to attention state. New tokens only ever append into fresh slots; existing slots are never mutated in place.</p>
+          <div class="ready"><b>Now you're ready:</b> this "append-only" property is what lets Anchor guarantee inference consistency almost for free (§4.3.3) — no copy-on-write needed.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>ZeRO-3 sharded optimizer updates<span class="chev">▾</span></summary>
+        <div class="body"><p>DeepSpeed's ZeRO-3 shards model weights and optimizer state across GPUs. Each rank updates its shard through a fixed sequence of chunks (grouped by sub_group_size, default ~10⁹ elements), gated behind a synchronization point — the gradient-finalization boundary — after which gradients are frozen for the rest of that step.</p>
+          <div class="ready"><b>Now you're ready:</b> "frozen gradients after finalization" is the invariant Anchor's training protocol exploits as a free redo log (§4.3.2).</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Python's object graph and access paths<span class="chev">▾</span></summary>
+        <div class="body"><p>Every live Python object is reachable from some root variable via a chain of attribute/index accesses (e.g. <code>engine.kv_cache['layer_0']</code>). That chain is the object's access path. Because frameworks build tensors dynamically at runtime rather than declaring them statically, there's no compile-time name to hang an identity on — the access path has to be computed by walking the live graph.</p>
+          <div class="ready"><b>Now you're ready:</b> Anchor's rebinder uses exactly this path, computed by BFS, as a stable cross-restart identifier (§4.2).</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Fault domains and daemon processes<span class="chev">▾</span></summary>
+        <div class="body"><p>A "fault domain" is the set of things one failure takes down with it. Running user CPU/GPU logic inside a shared server (as NVIDIA MPS does for multiplexed clients) means one client's fatal fault can force every co-resident client to exit too — they share a fault domain.</p>
+          <div class="ready"><b>Now you're ready:</b> Anchor's daemon deliberately executes no user kernels, so it has a much narrower fault domain than the worker it's minding — that asymmetry is what makes it trustworthy to hold the memory.</div></div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Anchor in a nutshell</h2>
+      <p class="sub">The problem, the mechanism that fixes it, and the two engineering hurdles it had to clear.</p>
+    </div>
+    <div class="prose">
+      <p>Large GPU clusters running LLM jobs fail constantly, but failure traces from Alibaba, ByteDance, and Shanghai AI Lab show <b>65.8–98.8%</b> of interruptions are <span class="mem-chip chip-sat">shallow disruptions</span>: the worker process crashes while GPU hardware and the OS kernel stay intact. Existing recovery is <b>failure-agnostic</b> — it checkpoints and reloads state as if every failure were destructive, even though the data never actually left the GPU. Restarting Qwen3-235B inference this way costs <b>143.78 s</b>.</p>
+      <p>Anchor's fix: <b>decouple memory ownership from the worker</b>. A lightweight <span class="mem-chip chip-ucp">daemon</span> process — one per GPU, running no user kernels — allocates GPU memory on the worker's behalf and hands it access via the GPU's native <b>IPC</b> mechanism. Because IPC memory is reference-counted, a worker crash only drops a reference; the daemon still owns the pages. A restarted worker reconnects to the same daemon and remaps the same physical memory — with zero overhead on the normal execution path, since access is served directly by the GPU's page-table hardware.</p>
+      <p>Two problems remain before this works on real ML systems. <b>Identity resolution:</b> the daemon only sees raw memory objects, but frameworks operate on dynamically-created tensors — Anchor resolves each tensor's <b>Python access path</b> via BFS traversal to get a stable cross-restart name. <b>Consistency:</b> a worker can crash mid-write, so Anchor pairs a general copy-on-write fallback with cheap, semantics-aware protocols — a chunk-level undo/redo log for training, and a metadata-only commit point for inference's append-only KV cache.</p>
+      <p><strong>The payoff:</strong> recovery time drops <b>60.7%</b> on average for inference (<b>27.85 s</b> for Qwen3-235B, a 5.16× speedup) and <b>26.6%</b> for training, at a steady-state cost of only <b>~5% GPU memory / ~2.6% step time</b> for training and <b>~0.45% memory / ~2% throughput</b> for inference.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Most GPU-job failures are <b>shallow</b> — worker dies, GPU/driver/kernel survive — not destructive.</li>
+        <li>Checkpointing is <b>failure-agnostic</b>: it pays a full save+reload even when data never left the GPU.</li>
+        <li>GPU IPC's <b>reference counting</b> + <b>page-table remap</b> let a daemon outlive the worker and hand memory back for free.</li>
+        <li><b>Access-path identity resolution</b> re-binds dynamically-created tensors to daemon-held objects after restart.</li>
+        <li>Semantics-aware consistency (finalized-gradient redo log; append-only KV cache) beats generic CoW's memory cost.</li>
+        <li>Result: 60.7% faster inference recovery, 26.6% faster training recovery, &lt;5% steady-state overhead.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">conventional restart vs Anchor · what survives the crash</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> conventional: worker owns memory, crash destroys it</span>
+        <span><i style="background:var(--dram)"></i> Anchor: daemon owns memory, crash doesn't touch it</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="conventional execution loses memory on crash; Anchor's daemon retains it">
+        <text x="30" y="30" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">(a) Conventional</text>
+        <rect x="30" y="46" width="150" height="70" rx="10" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+        <text x="105" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#9a3a22">Worker</text>
+        <text x="105" y="96" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">owns weights + KV</text>
+        <text x="220" y="86" font-family="JetBrains Mono" font-size="20" fill="#9a3a22">✕</text>
+        <text x="260" y="76" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">crash → OS reclaims</text>
+        <text x="260" y="94" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">all GPU memory</text>
+        <rect x="30" y="140" width="150" height="46" rx="8" fill="#fff" stroke="#D8C8AC" stroke-width="1.5" stroke-dasharray="4 3"/>
+        <text x="105" y="167" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9A8E7C">memory lost</text>
+        <text x="220" y="167" font-family="JetBrains Mono" font-size="11" fill="#6E6456">→ reload from checkpoint (143.78 s, Qwen3-235B)</text>
+
+        <line x1="0" y1="212" x2="760" y2="212" stroke="#E7DBC6"/>
+        <text x="30" y="238" font-family="Fraunces" font-size="15" font-weight="600" fill="#332C24">(b) Anchor</text>
+        <rect x="30" y="254" width="140" height="36" rx="8" fill="#E7E7FA" stroke="#5B5FD6" stroke-width="2"/>
+        <text x="100" y="276" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#3a409a">Daemon (owns memory)</text>
+        <rect x="200" y="254" width="120" height="36" rx="8" fill="#F9E6C4" stroke="#B36F14" stroke-width="2"/>
+        <text x="260" y="276" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">Worker (crashes)</text>
+        <text x="345" y="278" font-family="JetBrains Mono" font-size="20" fill="#B36F14">✕</text>
+        <rect x="400" y="254" width="150" height="36" rx="8" fill="#D9F0E6" stroke="#1F8A6F" stroke-width="2"/>
+        <text x="475" y="276" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">memory survives</text>
+        <text x="600" y="278" font-family="JetBrains Mono" font-size="18" fill="#1F8A6F">→</text>
+        <rect x="630" y="254" width="110" height="36" rx="8" fill="#F9E6C4" stroke="#B36F14" stroke-width="2"/>
+        <text x="685" y="276" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">new Worker remaps</text>
+      </svg>
+      <figcaption><b>Same GPU, same data, new process.</b> The daemon's IPC-held reference means a worker crash never breaks the memory's only lifeline — a restarted worker just re-establishes the mapping (27.85 s for Qwen3-235B, vs 143.78 s). (Paper, §1, Fig. 2, Table 1)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → mechanism → hurdles → payoff</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Checkpointing treats every failure as destructive, even shallow ones</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Mechanism</div><div class="nd">Daemon owns memory via GPU IPC (refcount + page-table remap)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Hurdle 1</div><div class="nd">Rebinder: access-path identity resolves tensors after restart</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Hurdle 2</div><div class="nd">Consistency Guard: redo-log training, append-only KV inference</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Payoff</div><div class="nd">−60.7% inference recovery, −26.6% training recovery</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Cost</div><div class="nd">&lt;5% steady-state GPU memory/time overhead</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Five everyday pictures</div>
+      <h2>How to think about Anchor</h2>
+      <p class="sub">Each stands alone. Every card ends with an honest note on where it breaks down.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="40" rx="6" fill="#D9F0E6" stroke="#1F8A6F" stroke-width="2.5"/>
+          <circle cx="70" cy="50" r="10" fill="#1F8A6F"/>
+          <path d="M42 74 q28 14 56 0" stroke="#B36F14" stroke-width="2.5" fill="none" stroke-dasharray="3 3"/>
+          <text x="70" y="86" text-anchor="middle" font-family="monospace" font-size="8" fill="#9a3a22">tenant leaves</text>
+        </svg></div>
+        <span class="term">The core idea</span>
+        <h3>A landlord, not the tenant, owns the apartment</h3>
+        <p>A tenant (the worker) rents furnished rooms from a landlord (the daemon). If the tenant moves out unexpectedly, the furniture stays — the landlord still owns it, and the next tenant moves right in without re-buying a couch. GPU memory under Anchor works the same way: the daemon holds the lease.</p>
+        <div class="breaks"><b>Where it breaks:</b> a landlord can inspect and repair furniture; Anchor's daemon deliberately does <i>not</i> touch the data's contents — it only manages the lease (allocation/IPC), never runs computation on it.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M30 70 h20 v-20 h20 v-30 h20 v30 h20 v20 h20" fill="none" stroke="#5B5FD6" stroke-width="2.5"/>
+          <circle cx="30" cy="70" r="4" fill="#5B5FD6"/><circle cx="130" cy="70" r="4" fill="#5B5FD6"/>
+        </svg></div>
+        <span class="term">Identity resolution</span>
+        <h3>A house number, not the order you moved in</h3>
+        <p>Matching tensors by allocation order is like identifying houses by "the third one built" — renumber the street (add a buffer, remove a layer) and every later house is misidentified. An access path is the house's actual street address (<code>kv_cache['layer_0']</code>): stable no matter what gets built around it.</p>
+        <div class="breaks"><b>Where it breaks:</b> if the street address stays the same but the house behind it is rebuilt differently (same tensor name, changed semantics, e.g. a KV-cache layout swap), the address alone can't detect that — Anchor documents this exact gap (§6.4, case h).</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="16" rx="3" fill="#D9F0E6" stroke="#1F8A6F" stroke-width="2"/>
+          <rect x="20" y="50" width="100" height="16" rx="3" fill="#D9F0E6" stroke="#1F8A6F" stroke-width="2"/>
+          <rect x="20" y="70" width="30" height="16" rx="3" fill="#F9E6C4" stroke="#B36F14" stroke-width="2"/>
+          <text x="65" y="41" font-family="monospace" font-size="8" fill="#1f5b51">committed</text>
+          <text x="65" y="61" font-family="monospace" font-size="8" fill="#1f5b51">committed</text>
+          <text x="35" y="81" font-family="monospace" font-size="8" fill="#6e4a09">in-flight</text>
+        </svg></div>
+        <span class="term">Consistency</span>
+        <h3>A ledger, not a photograph</h3>
+        <p>A general CoW backup is like photographing the entire warehouse before every shipment — safe, but expensive to keep doing at scale. Anchor's training and inference protocols instead keep a small ledger: only the one in-progress entry needs an undo note, because everything already "committed" (finalized gradients; committed KV metadata) is trusted as-is.</p>
+        <div class="breaks"><b>Where it breaks:</b> the ledger trick only works because these systems have a clean commit boundary (gradient finalization; append-only KV writes). A framework that mutates state in place with no such boundary (e.g. fused optimizer updates, recurrent linear-attention state) needs the full CoW fallback.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="56" rx="8" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="30" y="30" width="30" height="36" fill="#D9F0E6"/><text x="45" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">1</text>
+          <rect x="65" y="30" width="30" height="36" fill="#D9F0E6"/><text x="80" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">2</text>
+          <rect x="100" y="30" width="10" height="36" fill="#F9E6C4"/>
+        </svg></div>
+        <span class="term">Enforcement · append-only KV</span>
+        <h3>A guestbook, not an eraser</h3>
+        <p>PagedAttention's KV cache is written like a guestbook: each new visitor writes on a fresh line, nobody erases or edits an old one. So if the pen slips mid-signature (a crash), the fix is simple — just have that same visitor sign again; nothing else on the page needs touching.</p>
+        <div class="breaks"><b>Where it breaks:</b> a guestbook page, once dirty, can't be un-dirtied without erasing — Anchor doesn't erase, it just overwrites the slot on re-execution, which is safe here only because nothing downstream depends on the old bytes before the retry.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="45" cy="48" r="22" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <circle cx="95" cy="48" r="22" fill="#E7E7FA" stroke="#5B5FD6" stroke-width="2"/>
+          <text x="45" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">MPS</text>
+          <text x="95" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a409a">Anchor</text>
+        </svg></div>
+        <span class="term">Fault domains</span>
+        <h3>A shared kitchen vs a separate pantry</h3>
+        <p>NVIDIA MPS is like several cooks sharing one stove (one server process): if one cook starts a fire, everyone's dish is ruined. Anchor's daemon is a separate pantry that no cook ever enters to prepare food — it only stocks and hands out ingredients, so a kitchen fire (worker crash) never touches the pantry.</p>
+        <div class="breaks"><b>Where it breaks:</b> the pantry isn't fireproof either — if the daemon itself dies (e.g. host OS fault), Anchor has nothing to fall back on but the ordinary checkpoint path.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's mechanisms as diagrams.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Anchoring a single tensor</h3>
+      <p>Instead of the worker allocating its own GPU memory, the <span class="mem-chip chip-ucp">daemon</span> allocates it and grants the worker access via IPC. The worker computes on the tensor exactly as if it owned it — zero overhead, because the IPC mapping is resolved once, in the page table, not on every access. When the worker exits, the daemon's reference keeps the pages alive; a restarted worker reconnects and remaps the same physical memory.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Three-phase workflow inside a managed scope</div>
+      <div class="viz-kicker">intercept → resolve identity → map</div>
+      <svg class="full" viewBox="0 0 700 210" role="img" aria-label="allocation proxy, rebinder, IPC mapping workflow">
+        <rect x="20" y="30" width="190" height="80" rx="10" fill="#F9E6C4" stroke="#B36F14" stroke-width="2"/>
+        <text x="115" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#6e4a09">① Intercept</text>
+        <text x="115" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">create placeholder</text>
+        <text x="115" y="94" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">tensor (metadata only)</text>
+        <text x="222" y="72" font-family="JetBrains Mono" font-size="18" fill="#9A8E7C">→</text>
+        <rect x="255" y="30" width="190" height="80" rx="10" fill="#E7E7FA" stroke="#5B5FD6" stroke-width="2"/>
+        <text x="350" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#3a409a">② Resolve identity</text>
+        <text x="350" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">BFS access path</text>
+        <text x="350" y="94" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#3a409a">daemon matches / allocates</text>
+        <text x="457" y="72" font-family="JetBrains Mono" font-size="18" fill="#9A8E7C">→</text>
+        <rect x="490" y="30" width="190" height="80" rx="10" fill="#D9F0E6" stroke="#1F8A6F" stroke-width="2"/>
+        <text x="585" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#1f5b51">③ IPC map</text>
+        <text x="585" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">replace placeholder ptr</text>
+        <text x="585" y="94" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">with IPC-mapped address</text>
+        <text x="20" y="140" font-family="JetBrains Mono" font-size="10" fill="#6E6456">Deferred to scope exit: one BFS pass names every surviving placeholder at once —</text>
+        <text x="20" y="158" font-family="JetBrains Mono" font-size="10" fill="#6E6456">temporaries created and freed inside the scope never get named at all.</text>
+      </svg>
+      <figcaption>Naming can't happen bottom-up (an object doesn't know its parent), so Anchor defers the whole BFS traversal to when the <code>managed_scope</code> exits. (Paper, §4.1–4.2)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Naming by access path, with aliases and deferral</h3>
+      <p>Allocation order breaks when code changes; source-line naming breaks under refactors and loops; PyTorch's <code>state_dict</code> only sees registered <code>nn.Parameter</code>s, missing raw structures like a KV cache dict. So Anchor names each object by its <b>access path</b> — the chain of attribute/index accesses from a root variable — computed via BFS from the call stack's live frames, expanding same-level nodes in lexicographic order, with a visited set to break aliasing cycles.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why BFS, and why lexicographic order?</b> Determinism. The same object graph must always assign the same path to the same object, run after run, regardless of dict-iteration or GC quirks — lexicographic tie-breaking makes the traversal reproducible.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Log-based training consistency</h3>
+      <p>After the <b>gradient-finalization boundary</b>, gradients are frozen for the rest of the step, so they can serve as a free redo log. Each rank keeps only a <b>single undo buffer</b> for the chunk currently being written, plus a persistent cursor marking the last committed chunk.</p>
+    </div>
+
+    <pre class="sketch"><span class="cm"># ApplyChunk(i) — per rank, chunk[], grad[], undo_buf, cursor survive in the daemon</span>
+undo_buf ← Copy(chunk[i])
+undo_chunk ← i              <span class="cm"># publish complete undo</span>
+Optimizer.Apply(chunk[i], grad[i])
+cursor ← i + 1               <span class="cm"># commit</span>
+
+<span class="cm"># Recovery</span>
+<span class="kw">if</span> cursor &lt; N:
+    <span class="kw">if</span> undo_chunk == cursor:
+        chunk[cursor] ← Copy(undo_buf)   <span class="hl">// rollback the in-progress chunk</span>
+    <span class="kw">for</span> j = cursor to N-1:
+        ApplyChunk(j)                     <span class="hl">// redo from finalized gradients</span></pre>
+
+    <div class="callout takeaway"><span class="ic">🍯</span><div><b>Why this beats full CoW:</b> the undo buffer is one recovery chunk (bounded by <code>sub_group_size</code>, default 10⁹ elements) — not a copy of the whole model. The redo log costs nothing extra: it's the gradient buffers the framework already keeps until the step finishes.</div></div>
+
+    <div class="prose">
+      <h3>4 · Blind-write inference consistency</h3>
+      <p>Under PagedAttention, KV writes are <b>append-only</b> — the engine writes new tokens' keys/values into fresh slots and never depends on a slot's old value. So Anchor only needs to persist small CPU-side metadata (block table mappings, sequence cursor) at each commit point. On recovery, it rolls the page-table view back to the last committed metadata and re-executes the interrupted forward pass — any partially-written slot is simply overwritten with correct data, no cleanup required.</p>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Assumption this relies on:</b> the target framework must never read a KV slot before writing it (true for PagedAttention). Frameworks with in-place recurrent state (e.g. linear attention) violate this and need the general CoW path instead.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · The daemon's narrow failure surface</h3>
+      <p>The daemon runs no user CPU logic or GPU kernels — only allocation and IPC bookkeeping — so it is far less likely to crash than the worker it serves. Anchor's coverage is explicitly bounded: it falls back to the application's ordinary checkpoint mechanism whenever a failure is destructive, the daemon itself is dead, or the failure can't be confidently classified as shallow. Silent data corruption is out of scope entirely.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four small calculations straight from the paper's tables.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The Qwen3-235B headline number</h3>
+      <p style="color:var(--ink-soft)">Table 1 / §6.2: KV-memory recovery takes 143.78 s; Anchor takes 27.85 s. Quantify the win.</p>
+      <ol class="seq">
+        <li><b>Absolute drop:</b> 143.78 − 27.85 = <b>115.93 s</b> saved per shallow disruption.</li>
+        <li><b>Percentage reduction:</b> 115.93 ÷ 143.78 ≈ <b>80.6%</b> for this specific model — steeper than the 60.7% <i>average</i> across all four inference models, because recovery cost grows with model scale and Anchor's win grows with it too.</li>
+        <li><b>Speedup multiple:</b> 143.78 ÷ 27.85 ≈ <b>5.16×</b> — matches the paper's stated figure exactly.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>The bigger the model, the more state a checkpoint scheme must move — and the more Anchor's "just remap it" trick is worth.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Chunk copy vs full checkpoint (Table 2)</h3>
+      <p style="color:var(--ink-soft)">For Llama3.2-3B: DeepSpeed native save = 66.20 s; Anchor's chunk copy = 0.07 s.</p>
+      <ol class="seq">
+        <li><b>Ratio:</b> 66.20 ÷ 0.07 ≈ <b>946×</b> less blocking time on the normal path.</li>
+        <li><b>Caveat (the paper flags this explicitly):</b> these aren't equivalent operations — DeepSpeed materializes the <i>entire</i> model+optimizer state; Anchor only backs up <i>one</i> in-progress chunk. The 946× isn't a "same task, faster" speedup; it's evidence that chunk-granularity protection is cheap enough to run on every optimizer step, which full checkpointing never could be.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Sizing the state Anchor avoids re-loading</h3>
+      <p style="color:var(--ink-soft)">§2.2: mixed-precision Adam training costs 16–20 bytes per parameter (weights+gradients+optimizer state combined). Qwen2.5-14B has ~14 billion parameters.</p>
+      <ol class="seq">
+        <li><b>Lower bound:</b> 14×10⁹ × 16 B ≈ <b>224 GB</b> of state.</li>
+        <li><b>Upper bound:</b> 14×10⁹ × 20 B ≈ <b>280 GB</b> of state.</li>
+        <li><b>Anchor's steady-state add-on:</b> §6.5 measures only <b>+4.9% GPU memory</b> for this model class — i.e. a few GB of undo-buffer overhead against a 224–280 GB baseline, not a second full copy.</li>
+      </ol>
+      <div class="callout note"><span class="ic">📎</span><div>For readers used to reasoning in tiering terms: this is the same "hot state is huge, but the delta you must protect per step is tiny" argument that motivates fine-grained dirty tracking over full-page copy-on-write in page-migration systems.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Rebinding correctness (Table 3)</h3>
+      <p style="color:var(--ink-soft)">Across 8 program-change scenarios: allocation-order matching gets 2/8 correct; access-path matching (Anchor) gets 6/8 correct outright (2 more are safely rejected rather than silently wrong).</p>
+      <ol class="seq">
+        <li><b>Naive scheme accuracy:</b> 2/8 = <b>25%</b>.</li>
+        <li><b>Anchor's accuracy:</b> 6/8 = <b>75%</b> correct, plus 1/8 safely rejected (metadata conflict) — only 1/8 (case h, a silent layout change) is a genuine blind spot for <i>both</i> schemes.</li>
+        <li><b>Net gain:</b> 6/8 − 2/8 = 4 of 8 cases flipped from wrong to right just by switching identifiers, with zero change to the underlying IPC mechanism.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A node loses ECC-uncorrectable errors on one GPU. Should Anchor's fast path handle this, or should it fall back to checkpointing?</div>
+      <details><summary>Show answer</summary><div class="ans">Fall back. This is a <b>destructive failure</b> — the hardware itself is compromised, so the GPU memory Anchor would try to reattach to may no longer be trustworthy or even present. Anchor's design explicitly falls back to the application checkpoint in exactly this case.<span class="mis">Misconception: that Anchor replaces checkpointing entirely. It only replaces it for the common shallow-disruption case; destructive failures still need the full mechanism.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Why does a worker crash only decrement the IPC reference count instead of freeing the memory immediately?</div>
+      <details><summary>Show answer</summary><div class="ans">Because IPC memory can be shared by multiple GPU contexts simultaneously, the driver tracks how many contexts still hold a live mapping. The daemon's own OpenMemHandle call counts as one holder that never exits, so the count never reaches zero when only the worker dies — the memory stays resident until the daemon itself releases it.<span class="mis">Misconception: that "the process died" and "the memory is freed" are the same event on a GPU. They're only the same event if nobody else holds a reference — which is exactly the property Anchor engineers around.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">A developer adds a new LoRA adapter's weights right after the base model in their init code, without deleting or reordering anything else. Would allocation-order matching succeed here? Would access-path matching?</div>
+      <details><summary>Show answer</summary><div class="ans">Both succeed (Table 3, case a). Since the new tensor is <i>appended</i> without disturbing the order or names of prior allocations, sequence-based matching still lines up correctly, and the access paths of existing objects don't change either. This is the one case in the table where the naive scheme isn't wrong.<span class="mis">Misconception: that allocation-order matching is always broken. It happens to work when changes are purely additive at the end — it breaks under insertions, removals, or reordering anywhere earlier in the sequence.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Why can't Anchor's rebinder detect case (h) — a silent KV-cache layout change (NHD→HND) via an attention-backend swap?</div>
+      <details><summary>Show answer</summary><div class="ans">The access path identifies <i>which object</i> a tensor is, and the metadata check (shape, dtype) confirms it's the <i>right size and type</i> — but neither says anything about how the bytes inside are laid out semantically. A layout swap changes only the internal interpretation of unchanged bytes under an unchanged name and unchanged shape/dtype, so it's invisible to both identity resolution and the metadata-conflict check.<span class="mis">Misconception: that matching identifier + matching metadata guarantees semantic compatibility. It only guarantees "same slot, same size" — semantic layout is a level below what either check inspects.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why does the inference consistency protocol need no GPU-side backup buffer at all, while the training protocol needs one undo chunk?</div>
+      <details><summary>Show answer</summary><div class="ans">KV-cache writes are append-only and blind-write: a crash mid-write leaves a slot that gets unconditionally overwritten by the retried forward pass, so there's nothing to "undo" — the correct data simply arrives on redo. Optimizer chunk updates are read-modify-write: the update depends on the chunk's <i>previous</i> value, so if a crash catches it mid-update, that previous value must be explicitly restored before redoing, requiring an undo copy.<span class="mis">Misconception: that any in-place write needs an undo buffer. Only read-modify-write updates do; blind (unconditional) overwrites don't, because redo alone reaches the correct state.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">NVIDIA MPS also lets multiple processes concurrently use a GPU. Why doesn't MPS already solve the shallow-disruption problem?</div>
+      <details><summary>Show answer</summary><div class="ans">MPS multiplexes GPU <i>execution</i> across clients through a shared server for throughput, but the clients sharing a GPU also share MPS's fault domain — a fatal fault in one client can force every co-resident client on that GPU to exit. MPS was never designed to let one client's memory outlive that client's own crash; it solves concurrent access, not memory persistence across a process's death. Anchor's daemon, by contrast, executes no user kernels at all, so it isn't in the crashing client's fault domain in the first place.<span class="mis">Misconception: that any cross-process GPU-sharing mechanism implies memory survives a crash. Sharing access and surviving a fault are different guarantees — MPS gives you the first, IPC reference counting (as Anchor uses it) gives you the second.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Does Anchor replace checkpointing?<span class="chev">▾</span></summary><div class="a">No — it complements it. Anchor handles the common case (shallow disruptions, 65.8–98.8% of interruptions) fast, and falls back to the existing checkpoint mechanism for destructive failures, a dead daemon, or failures it can't confidently classify as shallow.</div></details>
+      <details><summary><span class="q">Q2</span>Does the daemon add overhead during normal execution?<span class="chev">▾</span></summary><div class="a">Very little: after the initial IPC mapping is established, worker accesses are served directly by GPU hardware (MMU/TLB) with no daemon involvement. Measured steady-state overhead is ~4.9% GPU memory / ~2.6% step time for training and ~0.45% memory / ~2.0% throughput for inference.</div></details>
+      <details><summary><span class="q">Q3</span>What happens if the daemon itself crashes?<span class="chev">▾</span></summary><div class="a">Anchor treats a dead daemon as one of its explicit fallback triggers — recovery reverts to the application's ordinary checkpoint. The daemon's narrow job (allocation + IPC bookkeeping, no user kernels) is meant to make this rare, not impossible.</div></details>
+      <details><summary><span class="q">Q4</span>Why not just use a generic copy-on-write scheme everywhere?<span class="chev">▾</span></summary><div class="a">It's correct but expensive: general CoW (à la PhoenixOS) backs up the entire region a kernel is about to touch, which for weights or optimizer state can mean duplicating tens of gigabytes. The application-aware protocols get the same guarantee for one chunk's worth of memory (training) or CPU-side metadata only (inference).</div></details>
+      <details><summary><span class="q">Q5</span>Does this work outside CUDA/NVIDIA?<span class="chev">▾</span></summary><div class="a">Yes — §6.6 reproduces the training experiments on an AMD MI100 via ROCm/HIP IPC, with recovery latencies of 17.3–19.0 s vs 19.9–28.7 s for baselines, showing the mechanism isn't tied to CUDA specifically.</div></details>
+      <details><summary><span class="q">Q6</span>How much code does integrating Anchor take?<span class="chev">▾</span></summary><div class="a">About 200–300 lines of modification per ML framework (DeepSpeed, vLLM) — mainly wrapping initialization code in a <code>managed_scope</code> and adapting the optimizer step to the consistency protocol.</div></details>
+      <details><summary><span class="q">Q7</span>What failure types are explicitly out of scope?<span class="chev">▾</span></summary><div class="a">Silent data corruption (SDC) and incorrect writes from buggy kernels — these don't surface through worker exits or health signals, so Anchor has no trigger to act on. The paper points to specialized GPU diagnosis and application-level validation as the right tools there.</div></details>
+      <details><summary><span class="q">Q8</span>Can identical tensor names ever be silently wrong after rebinding?<span class="chev">▾</span></summary><div class="a">Yes — if code changes the semantic meaning of a tensor without changing its access path, name, shape, or dtype (e.g. swapping the KV-cache memory layout via a different attention backend), Anchor has no signal to detect it (Table 3, case h). This is a documented, fundamental limitation, not a bug.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Shallow disruption</b><span>A failure where the worker process exits but GPU hardware, driver, and OS kernel stay intact — 65.8–98.8% of interruptions in the studied traces.</span></div>
+      <div class="term-def"><b>Decoupled memory ownership</b><span>Anchor's core mechanism: a daemon process, not the worker, owns GPU memory allocations, so a worker crash doesn't trigger reclamation.</span></div>
+      <div class="term-def"><b>GPU IPC memory</b><span>cudaIpcGetMemHandle/OpenMemHandle (CUDA) or hipIpc equivalents (ROCm): reference-counted, page-table-mapped memory sharing across GPU contexts.</span></div>
+      <div class="term-def"><b>Rebinder</b><span>Anchor's component that resolves a stable Python access-path identifier for each tensor and remaps it to the daemon's held memory object after restart.</span></div>
+      <div class="term-def"><b>Access path</b><span>The chain of attribute/index accesses from a root variable to an object (e.g. <code>engine.kv_cache['layer_0']</code>), used as a cross-restart identifier.</span></div>
+      <div class="term-def"><b>Consistency Guard</b><span>Anchor's component ensuring daemon-retained memory reflects a semantically valid recovery point, via general CoW or lightweight protocols.</span></div>
+      <div class="term-def"><b>Gradient-finalization boundary</b><span>The point in a training step after which gradients are frozen — the invariant that lets gradients double as a free redo log.</span></div>
+      <div class="term-def"><b>Append-only KV cache</b><span>PagedAttention's property that new tokens only ever write fresh slots — the invariant behind blind-write inference recovery.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Allocation Proxy</b><span>Intercepts allocation/deallocation calls inside a managed scope and forwards them to the daemon's Memory Manager.</span></div>
+      <div class="term-def"><b>Placeholder tensor</b><span>A single-element GPU tensor with zero stride that satisfies metadata queries during deferred naming, before the real IPC mapping exists.</span></div>
+      <div class="term-def"><b>Recovery chunk</b><span>The unit of optimizer-update protection in training (bounded by ZeRO-3's sub_group_size); Anchor's undo buffer covers exactly one.</span></div>
+      <div class="term-def"><b>In-place restart</b><span>Restarting a failed worker on the same node/GPU rather than migrating, avoiding re-allocation and environment re-initialization.</span></div>
+      <div class="term-def"><b>Fault domain</b><span>The set of components one failure can take down together; the daemon's narrow domain (no user kernels) is what makes it safe to trust.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What Anchor buys (vs strongest baseline)</div>
+      <div class="viz-kicker">average recovery/steady-state numbers from §6</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Inference recovery<small>avg reduction</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="60.7"><span>−60.7% (up to 5.16×)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Qwen3-235B recovery<small>best case</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="80.6"><span>143.78s → 27.85s (−80.6%)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Training recovery<small>avg reduction</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="26.6"><span>−26.6%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Training throughput<small>e2e w/ failures</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="5.1"><span>+5.1% (up to 1.81× vs native)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Inference e2e latency<small>w/ failures</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="17.0"><span>−17.0%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Steady-state overhead<small>train step time</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="2.6"><span>+2.6% (max 4.7%)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ +85%</p>
+      <figcaption>Recovery-time gains dominate; steady-state cost stays under 5% everywhere measured. (Paper §6.2–6.5)</figcaption>
+    </figure>
+
+    <div class="subhead">Related work, briefly</div>
+    <div class="read-item reveal"><h4>PhoenixOS <span class="diff med">medium</span></h4><div class="meta">Wei et al. · SOSP 2025</div><p>Concurrent OS-level GPU checkpoint/restore with validated speculation — the source of Anchor's general (non-lightweight) CoW consistency fallback.</p></div>
+    <div class="read-item reveal"><h4>Singularity <span class="diff med">medium</span></h4><div class="meta">Shukla et al. · arXiv 2022</div><p>Proxies GPU API calls to make jobs checkpointable/migratable; unlike Anchor, a kernel fault can crash the proxy itself, requiring call-log replay to rebuild state.</p></div>
+    <div class="read-item reveal"><h4>NVIDIA MPS <span class="diff easy">easy</span></h4><div class="meta">NVIDIA docs</div><p>Multiplexes concurrent clients on one GPU for utilization; clients share a fault domain, unlike Anchor's isolated daemon.</p></div>
+    <div class="read-item reveal"><h4>vAttention / vTensor <span class="diff hard">hard</span></h4><div class="meta">Prabhu et al.; Xu et al.</div><p>Decouple virtual/physical GPU memory <i>within</i> a running process for flexible KV-cache allocation — Anchor instead decouples ownership <i>across</i> process lifetimes.</p></div>
+    <div class="read-item reveal"><h4>PagedAttention (vLLM) <span class="diff med">medium</span></h4><div class="meta">Kwon et al. · SOSP 2023</div><p>The paged, append-only KV-cache design whose blind-write property underlies Anchor's near-zero-overhead inference consistency protocol.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Ma, Gao, Chen, Huang, Lu, Shu, "Anchor: Mitigating GPU Shallow Disruptions with Decoupled Memory" (SOSP '26)</span>
+    <span><b>Source notes:</b> all figures/percentages traced to §1, §2.2 (Table 1), §6.2–6.6 (Tables 2–4, Figs. 7–11) of the paper text; analogies, framing, and cross-references to memory-tiering concepts are original.</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 85;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = 'Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Suboptimal.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
