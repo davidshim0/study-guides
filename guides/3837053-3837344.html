@@ -1,0 +1,1052 @@
+<!DOCTYPE html>
+<!-- PLINK field guide — GPU-Initiated I/O Platform Exploiting NVMe Parallelism (Jung, Kang, Choi, HotStorage'26).
+     Format: interactive field guide, house style. Semantic colors:
+     blue = PLINK's decoupled/optimized path · honey = the NVMe SSD / IOPS target · purple = PLINK's specific mechanisms (polling, doorbell) · rust = BaM baseline / the bottleneck. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stop Waiting on Hold — PLINK's GPU-Initiated NVMe I/O, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D9932F; --honey-deep:#B06B10; --honey-soft:#FBEACB;
+  --dram:#2472B0; --dram-soft:#DCEAF6;      /* blue   = PLINK's decoupled/optimized path      */
+  --ltram:#6C4FC7; --ltram-soft:#ECE6FA;    /* purple = PLINK's mechanisms (polling, doorbell) */
+  --optane:#BD5738; --optane-soft:#F6E1D6;  /* rust   = BaM baseline / the bottleneck          */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HotStorage 2026 · A Field Guide</span>
+    <h1>Letting the GPU dial and listen at once, not <span class="swash" style="color:var(--optane)">dial, then wait on hold</span></h1>
+    <p class="lede">A GPU thread that submits an NVMe read and blocks until it lands is on hold — wasting most of its clock cycles while the drive could be juggling thousands of commands. This is the plain-English story of <strong>PLINK</strong>, three small fixes that keep the line busy.</p>
+    <div class="hero-meta">
+      <span>📄 "PLINK: A GPU-Initiated I/O Platform Exploiting NVMe Parallelism" · Jung, Kang, Choi (Samsung)</span>
+      <span>🎓 Basic NVMe/GPU familiarity assumed — primers cover it</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🔀</div>
+      <p><span class="ro">Split submission from completion</span>, poll one claimed slot instead of scanning them all, and fire one doorbell per warp instead of one per straggler.<br><em style="font-size:.9rem">Localize the bottleneck first, then fix each phase independently.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary + eight ideas the paper assumes you know</h2>
+      <p class="sub">Skim the glossary once, then open whichever primer card looks unfamiliar. The rest of the guide leans on these terms without re-explaining them.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>Quick glossary — key acronyms up front</h3>
+      <div class="gloss">
+        <div class="term-def"><b>PLINK</b><span>Parallel-Link — this paper's GPU-initiated I/O platform.</span></div>
+        <div class="term-def"><b>BaM</b><span>Big Accelerator Memory — the prior GPU-initiated I/O system PLINK measures and improves on.</span></div>
+        <div class="term-def"><b>NVMe</b><span>Non-Volatile Memory Express — the queue-based command protocol modern SSDs speak.</span></div>
+        <div class="term-def"><b>SQ / CQ</b><span>Submission Queue / Completion Queue — where commands go in, where results come back.</span></div>
+        <div class="term-def"><b>SQE / CQE</b><span>Submission/Completion Queue Entry — one command, one result.</span></div>
+        <div class="term-def"><b>QP</b><span>Queue Pair — one SQ plus its matching CQ; up to 65,535 per NVMe drive.</span></div>
+        <div class="term-def"><b>CID</b><span>Command ID — the tag a CQE carries to say which SQE it answers.</span></div>
+        <div class="term-def"><b>Doorbell (DB)</b><span>A PCIe MMIO write that tells the drive "new entries are ready" (SQ) or "I've consumed these" (CQ).</span></div>
+        <div class="term-def"><b>QD</b><span>Queue Depth — how many outstanding commands a queue can hold at once.</span></div>
+        <div class="term-def"><b>SIMT</b><span>Single-Instruction Multiple-Thread — the GPU execution model; a warp of 32 threads shares one program counter per cycle.</span></div>
+        <div class="term-def"><b>IOPS</b><span>I/O Operations Per Second — the drive's throughput scorecard.</span></div>
+        <div class="term-def"><b>MMIO</b><span>Memory-Mapped I/O — writing to a device register (like a doorbell) as if it were memory.</span></div>
+      </div>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Why the GPU touches storage directly at all<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>LLM inference keeps growing context length, and the KV-cache that grows with it can outgrow GPU memory. Systems increasingly spill that cache to NVMe SSD — and the accesses are fine-grained, the same pattern graph-neural-network workloads produce. Routing every such access through the CPU adds a hop and a copy.</p>
+          <p><b>GPU-initiated I/O</b> lets a GPU thread issue and retrieve NVMe commands itself, bypassing the CPU and host memory entirely for both the control path (queues, doorbells) and the data path (the transferred bytes).</p>
+          <div class="ready"><b>Now you're ready:</b> PLINK is a redesign of that direct GPU↔NVMe control path — not a new storage tier or caching policy, just a faster way to move commands.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>NVMe queues: SQ, CQ, doorbells, queue pairs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An NVMe drive exposes up to 65,535 independent <b>Queue Pairs (QPs)</b>, each an SQ paired with a CQ. The host writes a command as an <b>SQE</b> into the SQ, then rings the <b>SQ doorbell</b> — an MMIO write telling the drive "new entries are here." The drive works the command and writes a <b>CQE</b> back into the CQ; the host rings the <b>CQ doorbell</b> to say "I've consumed these results."</p>
+          <p>Queues are independent, so the drive avoids lock contention across them — a queue depth of up to 65,536 per queue means many commands can be in flight at once, unacknowledged.</p>
+          <div class="ready"><b>Now you're ready:</b> "NVMe parallelism" = using many QPs and keeping many commands outstanding per QP at once. PLINK's whole job is to actually exploit both.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Command IDs and "outstanding" commands<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Because completions aren't guaranteed to arrive in submission order, each SQE carries a <b>Command ID (CID)</b>, and the matching CQE echoes it back so the host knows which command finished. A command that's been submitted but not yet completed is <b>outstanding</b>.</p>
+          <p>Keeping many commands outstanding is how you actually use a deep queue — submit ahead without waiting, and let completions trickle back independently.</p>
+          <div class="ready"><b>Now you're ready:</b> BaM's model pins outstanding commands at 1 per thread. PLINK's whole first optimization exists to relax that.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>SIMT execution and the warp<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>GPUs run many threads under <b>SIMT</b>: a <b>warp</b> of 32 threads shares one instruction stream, issuing at most one instruction per cycle. Each thread has its own program counter, but the warp scheduler only advances threads that currently share the same PC.</p>
+          <div class="ready"><b>Now you're ready:</b> when a paper talks about "warps" doing submission or completion, it means groups of 32 GPU threads acting as the unit of work — the currency PLINK spends and saves.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Warp divergence, concretely<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>When threads in a warp take different paths — or simply finish an operation at different times — only the subset sharing the current PC can progress each cycle; the rest are masked out and idle. This is <b>warp divergence</b>, and it wastes cycles proportional to how "spread out" the stragglers are.</p>
+          <p>NVMe completion latency is inherently non-uniform across threads, so anything that makes threads wait on each other's completions risks divergence.</p>
+          <div class="ready"><b>Now you're ready:</b> two of PLINK's three optimizations exist specifically to reduce warp divergence caused by non-uniform I/O timing.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>BaM's model — one thread, one I/O, blocking poll<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>BaM</b> exposes storage as an array whose elements live on SSD and are cached in a GPU-resident software cache. On a cache miss, the same thread that touched the array submits an NVMe read, then <b>blocks polling the CQ</b> for its own completion before continuing — one thread does submission and completion serially, back to back.</p>
+          <div class="ready"><b>Now you're ready:</b> that "submit, then block-poll" pattern is exactly what PLINK's cycle-granularity breakdown dissects and what its three fixes attack.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>IOPS, latency, and "saturating" the SSD<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>IOPS</b> counts completed I/O operations per second — the drive's throughput ceiling. A system "saturates" the SSD once it drives IOPS up to (in this paper, 99% of) that ceiling; adding more parallel work past that point buys nothing, because the drive itself is now the limit.</p>
+          <p>The question this paper really asks is: <i>how few GPU warps does it take to reach that ceiling?</i> Fewer warps to saturate means more GPU capacity left over for actual computation.</p>
+          <div class="ready"><b>Now you're ready:</b> PLINK's headline number — 136 warps to saturate vs. BaM's 238 — is exactly this metric.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>PCIe MMIO doorbell writes — not free<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A doorbell write is an MMIO write over PCIe — a round trip to a device register, not a cheap in-GPU store. Issuing one doorbell write per command (or per small ready-subset of a warp) multiplies this cost; issuing one write that covers an entire warp's worth of commands amortizes it.</p>
+          <div class="ready"><b>Now you're ready:</b> PLINK's third optimization is literally "wait for the whole warp, then write the doorbell once" — cutting both MMIO traffic and the divergence caused by staggered per-thread doorbell writes.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>PLINK in a nutshell</h2>
+      <p class="sub">The problem, the measurement that localizes it, and the three fixes that follow.</p>
+    </div>
+    <div class="prose">
+      <p>As LLM KV-caches spill from GPU memory onto NVMe SSD — a fine-grained access pattern shared with GNN workloads — GPU-initiated I/O systems like <span class="mem-chip chip-lru">BaM</span> let a GPU thread submit and retrieve NVMe commands directly, bypassing the CPU. But BaM's thread submits, then <b>blocks polling</b> for its own completion before submitting again: only one command is ever outstanding per thread, and non-uniform completion timing causes warp divergence on top of that.</p>
+      <p>PLINK's authors don't guess at a fix — they first build a <b>cycle-granularity breakdown</b> of BaM's I/O path (Table 1 in the paper) and find that <b>over 93%</b> of turnaround time concentrates in exactly three phases: completion polling (<code>tCQ_POLL</code>, 39.5%), the SQ doorbell update (<code>tSQ_DB</code>, 21.8%), and the CQ doorbell update (<code>tCQ_DB</code>, 31.8%). Each phase has a distinct structural cause, so each gets an independently targeted fix: <span class="mem-chip chip-ucp">SQ/CQ decoupling</span> (dedicate warps to submission vs. completion so both run concurrently), <span class="mem-chip chip-ucp">command-ID-indiscriminate polling</span> (claim a CQ slot and wait only on it, skipping the exhaustive CID scan), and <span class="mem-chip chip-ucp">warp-level doorbell batching</span> (one MMIO write per warp instead of one per ready subset).</p>
+      <p><strong>The payoff:</strong> applied together as <span class="mem-chip chip-hi">PLINK</span>, on a PCIe Gen 6 SSD (5,650k IOPS peak), the I/O backend reaches SSD saturation at <b>136 total warps</b> (68 submission + 68 completion) versus BaM's <b>238</b> — <b>43% fewer</b> — freeing GPU capacity for the application computation that has to run alongside storage access.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>BaM's serialized submit-then-poll model keeps only <b>one command outstanding per thread</b>, leaving the SQ idle ~71% of I/O time.</li>
+        <li><b>93.1%</b> of turnaround localizes to three phases: <code>tCQ_POLL</code>, <code>tSQ_DB</code>, <code>tCQ_DB</code> — each with a distinct cause.</li>
+        <li><b>SQ/CQ decoupling</b> dedicates a warp to submission and a separate warp to completion, so both queue halves advance concurrently.</li>
+        <li><b>Command-ID-indiscriminate polling</b> lets a thread claim one CQ slot and wait only on it — worst case drops from O(L<sub>max</sub>+T<sub>tr</sub>) to O(L<sub>max</sub>).</li>
+        <li><b>Warp-level doorbell batching</b> waits for the whole active-mask before ringing the doorbell once, instead of once per ready subset.</li>
+        <li>PLINK saturates the SSD at <b>136 total warps</b> vs. BaM's <b>238</b> — a <b>43%</b> reduction — with zero end-to-end application evaluation yet (backend-only result, honestly flagged as future work).</li>
+        <li>Decoupling <i>alone</i> (E1) actually <b>raises</b> total warp count to 246 — only combined with the other two fixes does total resource use drop below BaM.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE: phase breakdown -->
+    <figure class="viz reveal">
+      <div class="viz-title">Where BaM's I/O time actually goes</div>
+      <div class="viz-kicker">cycle-granularity breakdown · 4 KB random read, 64 QPs, QD 1024, avg. of 10 runs</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> the three phases PLINK targets (93.1% of total)</span>
+        <span><i style="background:#B6AB98"></i> everything else (6.9%)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="Per-phase cycle breakdown of BaM's I/O routine">
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24">
+          <text x="20" y="26">tCQ_POLL</text><text x="700" y="26" text-anchor="end">39.5% · 415 µs</text>
+          <rect x="20" y="34" width="680" height="26" rx="6" fill="#F0E6D6"/>
+          <rect x="20" y="34" width="268.6" height="26" rx="6" fill="#BD5738"/>
+        </g>
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24">
+          <text x="20" y="82">tCQ_DB</text><text x="700" y="82" text-anchor="end">31.8% · 334 µs</text>
+          <rect x="20" y="90" width="680" height="26" rx="6" fill="#F0E6D6"/>
+          <rect x="20" y="90" width="216.2" height="26" rx="6" fill="#BD5738"/>
+        </g>
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24">
+          <text x="20" y="138">tSQ_DB</text><text x="700" y="138" text-anchor="end">21.8% · 229 µs</text>
+          <rect x="20" y="146" width="680" height="26" rx="6" fill="#F0E6D6"/>
+          <rect x="20" y="146" width="148.2" height="26" rx="6" fill="#BD5738"/>
+        </g>
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24">
+          <text x="20" y="194">tCQ_CLAIM</text><text x="700" y="194" text-anchor="end">5.6% · 59 µs</text>
+          <rect x="20" y="202" width="680" height="26" rx="6" fill="#F0E6D6"/>
+          <rect x="20" y="202" width="38.1" height="26" rx="6" fill="#B6AB98"/>
+        </g>
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24">
+          <text x="20" y="250">tSQ_CLAIM</text><text x="700" y="250" text-anchor="end">1.1% · 12 µs</text>
+          <rect x="20" y="258" width="680" height="26" rx="6" fill="#F0E6D6"/>
+          <rect x="20" y="258" width="7.5" height="26" rx="6" fill="#B6AB98"/>
+        </g>
+        <text x="20" y="292" font-family="JetBrains Mono" font-size="10" fill="#6E6456">tSQ_COPY (0.1% · 1 µs) omitted — too small to render at this scale</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> tCQ_POLL, tSQ_DB, and tCQ_DB together consume 93.1% of the ~1,050 µs average turnaround. Everything else — claiming locks, copying an SQE — is noise by comparison. PLINK exists because these three bars, and only these three, are worth attacking. (Paper, Table 1)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → localize → three independent fixes → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">BaM serializes SQ+CQ per thread; only 1 command outstanding</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Localize</div><div class="nd">Cycle-granularity breakdown: 93.1% of time in 3 phases</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Fix tCQ_POLL</div><div class="nd">SQ/CQ decoupling: dedicated warps run concurrently</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Fix tSQ_DB / tCQ_DB</div><div class="nd">CID-indiscriminate polling + warp-level doorbell batching</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">136 warps to saturate vs. BaM's 238 (−43%)</div></div>
+      </div>
+    </figure>
+
+    <div class="callout note"><span class="ic">🗂️</span><div><b>Framing note (not in the paper):</b> for readers coming from OS-managed memory tiering, this is a strikingly parallel problem to migrating cold pages to a slower tier: both are about hiding a queue's worth of device latency behind concurrency instead of serializing one request at a time, and both find that the naive "just add more requesters" move (more warps here, more migration threads there) helps only up to the point where the device itself becomes the bottleneck.</div></div>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about PLINK</h2>
+      <p class="sub">Each picture stands alone — read them in any order. Every card ends with an honest note about where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="40" cy="48" r="18" fill="#DCEAF6" stroke="#2472B0" stroke-width="2.5"/>
+          <path d="M32 42 q8 10 16 0" stroke="#2472B0" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+          <circle cx="100" cy="48" r="18" fill="#F6E1D6" stroke="#BD5738" stroke-width="2.5"/>
+          <path d="M92 52 q8 -6 16 0" stroke="#BD5738" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+          <line x1="58" y1="48" x2="82" y2="48" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3"/>
+        </svg></div>
+        <span class="term">The core idea · SQ/CQ decoupling</span>
+        <h3>Two phone lines, not one</h3>
+        <p>Dialing a number and then holding the same phone to your ear waiting for pickup means you can't dial the next call until this one connects. Give yourself a second line — one just for dialing out, one just for listening for a ring back — and you can keep dialing while earlier calls are still ringing. PLINK dedicates a warp to submission and a separate warp to completion so both run at once, instead of one thread doing both in strict sequence.</p>
+        <div class="breaks"><b>Where it breaks:</b> a second phone line is free; a second warp isn't — decoupling alone raises PLINK's total warp count (E1: 246 vs. BaM's 238) until the other two fixes shrink each side enough to net a savings.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="100" height="56" rx="4" fill="none" stroke="#9A8E7C" stroke-width="2"/>
+          <line x1="45" y1="20" x2="45" y2="76" stroke="#9A8E7C" stroke-width="1.5"/>
+          <line x1="70" y1="20" x2="70" y2="76" stroke="#9A8E7C" stroke-width="1.5"/>
+          <line x1="95" y1="20" x2="95" y2="76" stroke="#9A8E7C" stroke-width="1.5"/>
+          <rect x="70" y="20" width="25" height="56" fill="#ECE6FA"/>
+          <circle cx="82" cy="48" r="8" fill="#6C4FC7"/>
+          <text x="82" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#fff">you</text>
+        </svg></div>
+        <span class="term">Fix 1 · Command-ID-indiscriminate polling</span>
+        <h3>A parking garage with a ticketed spot</h3>
+        <p>Instead of driving up and down every row hunting for your car by its license plate, imagine your ticket already says "spot 12" — you drive straight there and wait. A GPU thread claims one CQ slot the instant it submits, then waits only on that slot; whichever completion lands there is the one it processes, no CID search across the whole queue. Worst-case wait drops from "scan the whole garage plus the wait" to just "the wait."</p>
+        <div class="breaks"><b>Where it breaks:</b> a parking ticket doesn't care which car shows up in your spot; here the mapping between "my slot" and "my command" is exactly what makes the trick sound — it works because a thread only needs <i>a</i> completed command, not necessarily its <i>own</i> in some ordering-sensitive workload.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="40" width="100" height="36" rx="8" fill="#FBEACB" stroke="#B06B10" stroke-width="2.5"/>
+          <circle cx="38" cy="76" r="8" fill="#332C24"/><circle cx="102" cy="76" r="8" fill="#332C24"/>
+          <rect x="30" y="24" width="80" height="20" rx="4" fill="#FBEACB" stroke="#B06B10" stroke-width="2"/>
+          <circle cx="45" cy="56" r="4" fill="#6C4FC7"/><circle cx="60" cy="56" r="4" fill="#6C4FC7"/><circle cx="75" cy="56" r="4" fill="#6C4FC7"/><circle cx="90" cy="56" r="4" fill="#6C4FC7"/>
+        </svg></div>
+        <span class="term">Fix 3 · Warp-level doorbell batching</span>
+        <h3>The bus that waits for every kid</h3>
+        <p>A school bus could pull away and honk the moment the first kid boards, then circle back and honk again for each straggler — noisy and wasteful. Better: wait until every kid at this stop has boarded, then leave once. PLINK waits until all participating lanes in a warp have their SQEs ready, then rings the doorbell exactly once for all of them via a single PCIe MMIO write, instead of BaM's one-write-per-ready-subset pattern.</p>
+        <div class="breaks"><b>Where it breaks:</b> a bus really does wait for latecomers; PLINK's "lanes" aren't late kids but threads within one instruction step — the wait is for the warp's active mask to finish writing SQEs, which is a bounded, small delay, not an open-ended one.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <g stroke="#332C24" stroke-width="2" fill="#DCEAF6">
+            <circle cx="30" cy="30" r="7"/><circle cx="55" cy="30" r="7"/><circle cx="80" cy="30" r="7"/><circle cx="105" cy="30" r="7"/>
+            <circle cx="30" cy="60" r="7" fill="#F6E1D6" stroke="#BD5738"/><circle cx="55" cy="60" r="7"/><circle cx="80" cy="60" r="7"/><circle cx="105" cy="60" r="7"/>
+          </g>
+          <line x1="30" y1="37" x2="30" y2="53" stroke="#BD5738" stroke-width="2" stroke-dasharray="2 2"/>
+        </svg></div>
+        <span class="term">Why it matters · Warp divergence</span>
+        <h3>A marching band in lockstep</h3>
+        <p>A marching band only looks sharp if every member steps at the same beat — one dawdler forces the whole rank to either wait or break formation. A GPU warp is the same: it advances one instruction per cycle for the threads that share a PC, and any thread that's still "mid-step" (still polling, still waiting on a doorbell) leaves the rest of the warp masked out and stalled.</p>
+        <div class="breaks"><b>Where it breaks:</b> a band can choose to slow down for a straggler; a GPU warp has no such choice — divergence is a hard architectural cost, not a stylistic one, which is exactly why non-uniform I/O completion timing is such a direct tax on throughput.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M55 20 q-15 0 -15 15 q0 15 15 15 q15 0 15 -15 q0 -15 -15 -15" fill="#DCEAF6" stroke="#2472B0" stroke-width="2.5"/>
+          <line x1="70" y1="45" x2="90" y2="65" stroke="#2472B0" stroke-width="4" stroke-linecap="round"/>
+          <rect x="20" y="70" width="100" height="10" rx="3" fill="#F6E1D6" stroke="#BD5738" stroke-width="1.5"/>
+          <rect x="20" y="70" width="66" height="10" rx="3" fill="#BD5738"/>
+        </svg></div>
+        <span class="term">The methodology · Cycle-granularity breakdown</span>
+        <h3>A doctor localizing the pain before treating it</h3>
+        <p>A good doctor doesn't prescribe blindly for "I feel bad somewhere" — they run a scan, find that 93% of the symptom traces to three specific spots, and treat those three, not the whole body. PLINK's authors stamp the device clock at every phase boundary for real requests and average across runs, precisely so each of the three fixes can be justified by, and later checked against, a specific measured phase.</p>
+        <div class="breaks"><b>Where it breaks:</b> a diagnosis is descriptive; here the "scan" (Table 1) is also predictive — the paper explicitly re-measures the same three phases after each fix (Figure 2b) to confirm the localization was correct, which a doctor's scan alone doesn't guarantee about a treatment.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="15" y="30" width="18" height="46" fill="#ECE6FA" stroke="#6C4FC7" stroke-width="2"/>
+          <rect x="41" y="30" width="18" height="46" fill="#ECE6FA" stroke="#6C4FC7" stroke-width="2"/>
+          <rect x="67" y="30" width="18" height="46" fill="#ECE6FA" stroke="#6C4FC7" stroke-width="2"/>
+          <rect x="93" y="30" width="18" height="46" fill="#ECE6FA" stroke="#6C4FC7" stroke-width="2"/>
+          <circle cx="24" cy="22" r="5" fill="#332C24"/><circle cx="50" cy="22" r="5" fill="#332C24"/><circle cx="76" cy="22" r="5" fill="#332C24"/><circle cx="102" cy="22" r="5" fill="#332C24"/>
+        </svg></div>
+        <span class="term">Context · NVMe multi-queue parallelism</span>
+        <h3>Checkout lanes at a warehouse store</h3>
+        <p>One overworked cashier serves everyone in a single line; a warehouse store instead opens dozens of independent lanes so shoppers never contend for the same register. An NVMe drive offers up to 65,535 such "lanes" (queue pairs), each independent and lock-free — but opening lanes only helps if shoppers (GPU warps) actually spread across them <i>and</i> queue up several items per trip instead of checking out one item, leaving, and re-entering the line each time.</p>
+        <div class="breaks"><b>Where it breaks:</b> real checkout lanes are limited by cashiers; NVMe's limit is queue depth (up to 65,536 outstanding per queue) and the drive's own aggregate IOPS ceiling (5,650k here) — past that ceiling, opening more lanes or sending more shoppers buys nothing.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, with the paper's key diagrams rebuilt as visuals you can read at a glance.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The problem — serialized submit-then-poll</h3>
+      <p>In <span class="mem-chip chip-lru">BaM</span>, a GPU thread on a cache miss submits an NVMe read, then blocks <b>polling the CQ</b> for its own completion before it can touch the SQ again. Because <code>tCQ_POLL</code> subsumes the actual device processing time, the thread does nothing useful while the drive works — only a single outstanding command ever reaches the SSD per thread.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">BaM's timeline vs. PLINK's timeline</div>
+      <div class="viz-kicker">one queue pair, same total work</div>
+      <svg class="full" viewBox="0 0 700 210" role="img" aria-label="Serialized BaM timeline versus PLINK's decoupled timeline">
+        <text x="10" y="24" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">BaM — one thread does both, in order</text>
+        <g font-family="JetBrains Mono" font-size="10" fill="#fff" text-anchor="middle">
+          <rect x="10" y="32" width="40" height="26" rx="4" fill="#6C4FC7"/><text x="30" y="49">SQ</text>
+          <rect x="50" y="32" width="140" height="26" rx="4" fill="#BD5738"/><text x="120" y="49">poll (blocked)</text>
+          <rect x="190" y="32" width="40" height="26" rx="4" fill="#6C4FC7"/><text x="210" y="49">SQ</text>
+          <rect x="230" y="32" width="140" height="26" rx="4" fill="#BD5738"/><text x="300" y="49">poll (blocked)</text>
+          <rect x="370" y="32" width="40" height="26" rx="4" fill="#6C4FC7"/><text x="390" y="49">SQ</text>
+          <rect x="410" y="32" width="140" height="26" rx="4" fill="#BD5738"/><text x="480" y="49">poll (blocked)</text>
+        </g>
+        <text x="10" y="100" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">PLINK — an SQ warp and a CQ warp run in parallel</text>
+        <g font-family="JetBrains Mono" font-size="10" fill="#fff" text-anchor="middle">
+          <text x="10" y="122" font-family="JetBrains Mono" font-size="9" fill="#6E6456" text-anchor="start">SQ warp</text>
+          <rect x="10" y="128" width="35" height="22" rx="4" fill="#2472B0"/><rect x="48" y="128" width="35" height="22" rx="4" fill="#2472B0"/>
+          <rect x="86" y="128" width="35" height="22" rx="4" fill="#2472B0"/><rect x="124" y="128" width="35" height="22" rx="4" fill="#2472B0"/>
+          <rect x="162" y="128" width="35" height="22" rx="4" fill="#2472B0"/><rect x="200" y="128" width="35" height="22" rx="4" fill="#2472B0"/>
+        </g>
+        <text x="10" y="166" font-family="JetBrains Mono" font-size="9" fill="#6E6456" text-anchor="start">CQ warp</text>
+        <rect x="10" y="172" width="600" height="22" rx="4" fill="#BD5738" opacity="0.85"/>
+        <text x="310" y="187" font-family="JetBrains Mono" font-size="10" fill="#fff" text-anchor="middle">drains completions continuously — SQ warp never waits on it</text>
+      </svg>
+      <figcaption>BaM's single thread submits, then sits idle in <code>tCQ_POLL</code>, before it may submit again. PLINK's SQ warp keeps submitting while a dedicated CQ warp drains results concurrently — both halves of the queue pair advance at once. (Paper, Fig. 1, redrawn)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Localizing the cost — the full phase table</h3>
+      <p>The breakdown was collected under a 4 KB random-read pattern (64 warps, one QP each, queue depth 1024, one outstanding command per thread — BaM's default), stamping the device clock at every phase boundary for each thread's first 32 requests and averaging over 10 runs:</p>
+      <table class="tbl">
+        <thead><tr><th>Phase</th><th>Description</th><th>Avg cycles</th><th>Pct</th><th>µs</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">tSQ_CLAIM</td><td>Acquires lock for SQE</td><td class="mono">30.4k</td><td>1.1%</td><td>12</td></tr>
+          <tr><td class="mono">tSQ_COPY</td><td>Copies the SQE into SQ</td><td class="mono">3.8k</td><td>0.1%</td><td>1</td></tr>
+          <tr class="best"><td class="mono">tSQ_DB</td><td>SQ tail doorbell advances</td><td class="mono">599.7k</td><td>21.8%</td><td>229</td></tr>
+          <tr class="best"><td class="mono">tCQ_POLL</td><td>Polls a completion</td><td class="mono">1,086.3k</td><td>39.5%</td><td>415</td></tr>
+          <tr><td class="mono">tCQ_CLAIM</td><td>Acquires lock for CQE</td><td class="mono">154.1k</td><td>5.6%</td><td>59</td></tr>
+          <tr class="best"><td class="mono">tCQ_DB</td><td>CQ head doorbell advances</td><td class="mono">874.7k</td><td>31.8%</td><td>334</td></tr>
+        </tbody>
+      </table>
+      <div class="callout note"><span class="ic">🌱</span><div><b>SQ idle time:</b> the SQ contributes nothing during <code>tCQ_POLL</code> + <code>tCQ_DB</code> = 39.5% + 31.8% = <b>71.3%</b> of total turnaround — that's the fraction of I/O time the queue pair sits with an idle submission side.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Fix 1 — SQ/CQ decoupling</h3>
+      <p>PLINK assigns each warp exclusively to one SQ <i>or</i> one CQ at initialization; an SQ warp and its paired CQ warp drive the same queue pair simultaneously. Let <code>t_SQ</code> and <code>t_CQ</code> be per-command submission and completion cost. Serialized (BaM), issuing <code>N</code> commands costs <code>N×(t_SQ+t_CQ)</code>; decoupled, only the first submission adds <code>t_SQ</code>, so the cost becomes <code>t_SQ + N×t_CQ</code> — since <code>t_CQ &gt; t_SQ</code> in practice, the total is now bounded by CQ time.</p>
+      <pre class="sketch"><span class="cm"># cost model</span>
+<span class="hl">serialized</span>  = N × (t_SQ + t_CQ)
+<span class="hl">decoupled</span>   = t_SQ + N × t_CQ
+<span class="hl">savings</span>     = (N − 1) × t_SQ      <span class="cm"># theoretical, per queue pair</span></pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>The catch:</b> decoupling spends a dedicated CQ warp for every SQ warp. E1 (decoupling alone) saturates the SSD at 123 submission warps vs. BaM's 238 — but counting the paired CQ warps, its <b>total</b> is 123+123 = 246, slightly <i>above</i> BaM. Decoupling trades warp resources for per-queue request rate; it only pays off once combined with the other two fixes.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Fix 2 — command-ID-indiscriminate polling</h3>
+      <p>Scanning the whole CQ for a matching CID gives worst-case latency <code>O(L_max + T_tr)</code>, where <code>L_max</code> is the last-arriving CQE's device latency and <code>T_tr</code> is the time to traverse the queue depth. PLINK instead has a thread atomically claim a CQ slot at submission and wait <i>only</i> on that specific slot — the CID is never consulted; whichever command lands there is the one this thread processes.</p>
+      <pre class="sketch"><span class="kw">scan-based (BaM)</span>:  worst case = O(L_max + T_tr)
+<span class="kw">slot-claim (PLINK)</span>: worst case = O(L_max)          <span class="cm"># T_tr removed entirely</span></pre>
+      <div class="callout takeaway"><span class="ic">🍯</span><div>Because threads now finish polling at more uniform times (no variable-length scan tacked on), warp divergence <i>after</i> the polling phase also drops — this is the secondary effect that lets this single fix also compress <code>tCQ_DB</code>.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Fix 3 — warp-level doorbell batching</h3>
+      <p>BaM rings a doorbell as soon as any consecutive prefix of the warp's SQEs is ready, so ready threads spin masked while stragglers finish — multiple PCIe MMIO writes per warp. Concretely, with four threads (0–3): threads 0, 1, and 3 finish first. BaM can only advance the doorbell over the consecutive prefix, so it delivers SQEs 0–1 in a first write; SQE 3 is stuck behind the still-missing SQE 2. Once thread 2 finishes, SQEs 2–3 become consecutive and go out in a <i>second</i> write.</p>
+      <p>PLINK instead reads the warp's active mask to learn how many lanes are contributing, waits until <b>all</b> of them have written their SQEs, and rings the doorbell <b>once</b> for the whole warp.</p>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Asymmetric payoff:</b> at 32 submission warps, this fix alone cuts <code>tSQ_DB</code> by 92% but <code>tCQ_DB</code> by only 33%. Why the gap? <code>tSQ_DB</code>'s predecessor (writing an SQE) is deterministic and fast, so batching nearly eliminates its spread. <code>tCQ_DB</code>'s predecessor is <code>tCQ_POLL</code> — subject to non-deterministic device latency — so threads still arrive at the doorbell with a wider spread that batching narrows but can't fully absorb.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>6 · The execution model — done[] and the completion handshake</h3>
+      <p>Dedicating warps to SQ or CQ changes the programming model: request <i>ownership</i> stays with the requesting thread (it still submits its own command and consumes its own data), but a thread issues a <b>batch</b> of independent requests and waits on completion rather than blocking inline per request. The CQ warp marks each finished command in a shared <code>done[]</code> array; the requester spin-waits on its own <code>done[cid]</code> entry.</p>
+      <p>This handshake needs a <b>device-scope memory fence</b>, issued by the CQ warp before setting the flag, so the flag store can't be reordered ahead of the CQE processing that produced the data — the requester treats an observed flag as the signal that the data is now visible. The flags themselves cost <code>2 × QD × N_q × 4</code> bytes (the factor of 2 covers a phase bit); at QD=1024, N<sub>q</sub>=256, that's <b>2,097,152 bytes ≈ 2 MB</b>.</p>
+      <div class="callout note"><span class="ic">🗂️</span><div>This is the overhead PLINK accepts in exchange for removing two <i>per-request</i> costs BaM pays on every I/O — the exhaustive CQ scan and the repeated doorbell writes. Completion warps must stay co-resident with submitting warps (e.g. in a persistent kernel) for the handshake to make progress.</div></div>
+    </div>
+
+    <!-- INTERACTIVE: warp explorer -->
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: how many submission warps to saturate the SSD?</div>
+      <div class="viz-kicker">drag the slider — watch BaM and PLINK approach the 5,650k IOPS peak</div>
+      <div class="part-viz">
+        <div class="part-controls">
+          <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">submission warps:</span>
+          <input type="range" min="8" max="256" value="68" id="warpRange">
+          <span id="warpRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">68</span>
+        </div>
+        <div class="preset-row">
+          <button class="tbtn" data-w="68">PLINK saturates (68)</button>
+          <button class="tbtn" data-w="238">BaM saturates (238)</button>
+          <button class="tbtn" data-w="16">Light load (16)</button>
+        </div>
+        <div class="bars" id="warpBars" style="margin-top:14px">
+          <div class="bar-row"><div class="bar-label">BaM<small>needs 238</small></div><div class="bar-track"><div class="bar-fill bf-lru" id="bamFill"><span id="bamVal">0k IOPS</span></div></div></div>
+          <div class="bar-row"><div class="bar-label">PLINK<small>needs 68</small></div><div class="bar-track"><div class="bar-fill bf-hi" id="plinkFill"><span id="plinkVal">0k IOPS</span></div></div></div>
+        </div>
+        <div class="pverdict sub" id="warpVerdict">Move the slider…</div>
+      </div>
+      <figcaption><b>What you'll find:</b> PLINK reaches the drive's 5,650k IOPS ceiling with far fewer submission warps because decoupling, faster polling, and batched doorbells each shrink the per-command cost. (IOPS-vs-warps modeled as a simple ramp-to-plateau, matched to each variant's reported saturation point — the paper's Fig. 2a shows the measured curves.)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations, carried through with the paper's own measured values.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Confirming "over 93%" and "~71% SQ idle"</h3>
+      <p style="color:var(--ink-soft)">Using Table 1's percentages, verify the paper's two headline claims about BaM.</p>
+      <ol class="seq">
+        <li><b>The three targeted phases:</b> tSQ_DB (21.8%) + tCQ_POLL (39.5%) + tCQ_DB (31.8%) = <b>93.1%</b> of total turnaround.</li>
+        <li><b>The other three phases</b> (tSQ_CLAIM 1.1% + tSQ_COPY 0.1% + tCQ_CLAIM 5.6%) sum to 6.8% — noise by comparison.</li>
+        <li><b>SQ idle fraction:</b> the SQ does nothing during the two completion-side phases, tCQ_POLL + tCQ_DB = 39.5% + 31.8% = <b>71.3%</b> — matching the paper's "roughly 71%."</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the localization isn't a rough estimate — it's the direct arithmetic sum of measured percentages, which is exactly why each of PLINK's three fixes can be pointed at one specific phase.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② tCQ_POLL's platform overhead over raw device latency</h3>
+      <p style="color:var(--ink-soft)">tCQ_POLL averages 415 µs. The same machine's SSD has a measured average read latency of 200 µs (fio, 4 KB random read). How much of tCQ_POLL is platform overhead, not device time?</p>
+      <ol class="seq">
+        <li><b>Excess time</b> = 415 µs − 200 µs = <b>215 µs</b> of pure platform (exhaustive CQ scan) overhead.</li>
+        <li><b>As a ratio:</b> 415 / 200 ≈ <b>2.08×</b> — matching the paper's "more than twice the device's average latency."</li>
+        <li><b>Why:</b> BaM's polling exhaustively scans the entire CQ for a matching CID on every poll — that scan cost is what command-ID-indiscriminate polling removes.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is the single clearest number in the paper for "the software is the bottleneck, not the drive": the SSD itself answers in 200 µs; BaM's platform tax adds another 215 µs on top.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ The decoupling cost model, with real µs values</h3>
+      <p style="color:var(--ink-soft)">From Table 1: t_SQ = tSQ_CLAIM + tSQ_COPY + tSQ_DB = 12 + 1 + 229 = <b>242 µs</b>; t_CQ = tCQ_POLL + tCQ_CLAIM + tCQ_DB = 415 + 59 + 334 = <b>808 µs</b>. For a thread issuing N = 10 commands back-to-back, compare serialized vs. decoupled total time.</p>
+      <ol class="seq">
+        <li><b>Serialized (BaM):</b> N × (t_SQ + t_CQ) = 10 × (242 + 808) = 10 × 1,050 = <b>10,500 µs</b>.</li>
+        <li><b>Decoupled (PLINK):</b> t_SQ + N × t_CQ = 242 + 10 × 808 = 242 + 8,080 = <b>8,322 µs</b>.</li>
+        <li><b>Savings:</b> 10,500 − 8,322 = <b>2,178 µs</b>.</li>
+        <li><b>Check against the formula:</b> (N − 1) × t_SQ = 9 × 242 = <b>2,178 µs</b> — matches exactly.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> because t_CQ (808 µs) &gt; t_SQ (242 µs) here, decoupling's benefit grows with N but is fundamentally capped by t_SQ — which is exactly why polling and doorbell fixes, which shrink t_CQ itself, still matter on top of decoupling.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ From 238 to 136 — where the 43% comes from</h3>
+      <p style="color:var(--ink-soft)">Tally each variant's warp count at SSD saturation and confirm PLINK's headline reduction.</p>
+      <ol class="seq">
+        <li><b>BaM:</b> 238 warps (submission and completion are the same warp — total = submission count).</li>
+        <li><b>E1 (decoupling only):</b> 123 submission warps + 123 paired CQ warps = <b>246 total</b> — worse than BaM by 8 warps.</li>
+        <li><b>E2 (polling only):</b> 224 total (no decoupling, so total = submission count) — within 6% of BaM.</li>
+        <li><b>E3 (doorbell batching only):</b> 160 total — 33% below BaM, with no added CQ warps.</li>
+        <li><b>PLINK (all three):</b> 68 submission + 68 CQ = <b>136 total</b>. Reduction = (238 − 136) / 238 = 102/238 ≈ <b>42.9% ≈ 43%</b>.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>E1 alone makes total resource use <i>worse</i>. What flips the sign is E2 and E3 shrinking the per-queue cost so far that even after paying for a dedicated CQ warp, PLINK's combined total lands well below BaM's single-warp-per-queue-pair count.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the common misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">BaM's SQ sits idle roughly 71% of I/O time. Would simply adding more submission warps (more parallel BaM threads) fix that idleness?</div>
+      <details><summary>Show answer</summary><div class="ans">Only partially, and inefficiently. Each additional BaM thread is still individually serialized — submit, then block-poll — so more threads means more <i>total</i> commands in flight, but each one's own SQ-to-CQ path is still wasting ~71% of its time blocked. That's exactly why BaM needs 238 warps to saturate the drive versus PLINK's 136: BaM compensates for per-thread idleness with raw thread count instead of fixing the idleness itself.<span class="mis">Misconception: that more parallelism at the application level substitutes for fixing a structural serialization. It helps, but at a much worse warp-cost, which is the paper's whole point.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Using t_SQ = 242 µs and t_CQ = 808 µs, what is the decoupled total time for a thread issuing N = 5 commands, and how much does decoupling save versus serialized?</div>
+      <details><summary>Show answer</summary><div class="ans">Serialized: 5 × (242+808) = 5 × 1050 = <b>5,250 µs</b>. Decoupled: 242 + 5×808 = 242+4040 = <b>4,282 µs</b>. Savings = 5,250 − 4,282 = <b>968 µs</b>, which equals (N−1)×t_SQ = 4×242 = 968 µs. ✓<span class="mis">Misconception: that decoupling saves N×t_SQ. It only saves (N−1)×t_SQ — the very first submission still pays its t_SQ cost before any overlap can begin.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Command-ID-indiscriminate polling drops worst-case completion latency from O(L_max + T_tr) to O(L_max). Doesn't skipping the CID check risk a thread processing the wrong command's result?</div>
+      <details><summary>Show answer</summary><div class="ans">No — the correctness comes from a different guarantee. The thread atomically claims a specific CQ <i>slot</i> at submission time, and the runtime is responsible for ensuring the completion that lands in that slot corresponds to the request logically owned by whoever claimed it, so there is no ambiguity to resolve at poll time. The CID field exists in the NVMe protocol for out-of-order matching; PLINK just doesn't need to search for it because slot ownership already establishes the mapping.<span class="mis">Misconception: that removing the CID *search* means removing CID *correctness*. It removes only the O(T_tr) scan cost, not the underlying command-to-result mapping.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">E2 (polling fix alone) reduces tCQ_POLL by 22% directly, but also reduces tCQ_DB by 43% as a side effect. Explain the causal chain.</div>
+      <details><summary>Show answer</summary><div class="ans">Command-ID-indiscriminate polling removes the variable-length CQ scan, so threads finish polling at more uniform times — the spread in when threads arrive at the polling phase's exit shrinks. Since tCQ_DB's threads are exactly those exiting tCQ_POLL, a tighter, more synchronized arrival at tCQ_DB means less warp divergence going into the doorbell-update phase, which directly cuts tCQ_DB's cost even though E2 never touches doorbell logic.<span class="mis">Misconception: that each optimization only affects the phase it's named for. E2 is a polling fix, but its uniformity benefit propagates downstream into the doorbell phase — this is why PLINK's combined tCQ_DB reduction (90%) is far larger than E3 alone (33%).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">The done[] completion flags cost 2 × QD × N_q × 4 bytes. If a system instead used QD = 512 and N_q = 128, how many bytes would the flags need?</div>
+      <details><summary>Show answer</summary><div class="ans">2 × 512 × 128 × 4 = <b>524,288 bytes = 512 KB</b> — a quarter of the paper's 2 MB figure, since both QD and N_q were halved (halving each halves the product, and two halvings is a 4× reduction: 2 MB / 4 = 512 KB).<span class="mis">Misconception: that this memory cost is fixed. It scales linearly with both queue depth and queue count — a system tuning for more queues or deeper queues pays proportionally more done[] memory.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">E1 (SQ/CQ decoupling alone) needs 246 total warps to saturate the SSD — more than BaM's 238. Does this mean decoupling is a bad idea?</div>
+      <details><summary>Show answer</summary><div class="ans">No — decoupling is necessary but not sufficient on its own. E1 does succeed at its narrow goal: it saturates the SSD with far fewer <i>submission</i> warps (123 vs. 238), proving each queue now receives more requests per unit time. But it pays for that with a dedicated CQ warp per SQ warp, so total resource use ticks up slightly. Only once E2 and E3 shrink the per-command cost on both the submission and completion sides does the combined total (136) drop well below BaM's 238. Decoupling raises the ceiling on parallelism; the other two fixes are what let PLINK actually spend fewer total warps to reach it.<span class="mis">Misconception: that a technique which increases warp count in isolation must be discarded. Evaluating it "one optimization at a time" (as the paper explicitly does) is exactly how you learn this — and why combining all three matters.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">Why does PLINK need a batch-style application interface (submit many, then wait) instead of BaM's transparent per-element access (read one array element, implicitly block)?</div>
+      <details><summary>Show answer</summary><div class="ans">Because completion is no longer handled inline by the requesting thread — a separate CQ warp drains results into done[]. If an application only ever asked for one element at a time and blocked immediately, there would be nothing for the dedicated CQ warp to overlap with; the whole benefit of decoupling requires the application to expose several independent requests at once (e.g. a BFS frontier's edge-list locations) so the SQ warp can keep submitting while the CQ warp catches up.<span class="mis">Misconception: that PLINK's execution model is an arbitrary API change. It's a direct consequence of decoupling — you can't overlap submission and completion if the caller only ever issues one request and immediately blocks on it.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">E3 (doorbell batching alone) cuts tSQ_DB by 92% but tCQ_DB by only 33%. Which of E1, E2, or E3, applied second, would you expect to most improve tCQ_DB further — and why?</div>
+      <details><summary>Show answer</summary><div class="ans">E2 (command-ID-indiscriminate polling) — because tCQ_DB's remaining divergence in E3 traces back to non-uniform arrival from tCQ_POLL, and E2 is precisely the fix that tightens tCQ_POLL's arrival spread. This is confirmed by the paper: combined, PLINK reaches a 90% tCQ_DB reduction, far above E3's 33% alone, because E2's polling-alignment effect compounds with E3's batching.<span class="mis">Misconception: that a phase's fix must come from its own namesake optimization. tCQ_DB's biggest gain comes from a fix applied to a different, upstream phase.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What problem is PLINK actually solving?<span class="chev">▾</span></summary><div class="a">GPU threads that fetch data spilled to NVMe SSD (e.g. offloaded LLM KV-cache, or GNN graph data) via existing GPU-initiated I/O systems like BaM waste most of their clock cycles blocked, polling for a single outstanding command's completion. PLINK redesigns the I/O backend so far fewer GPU warps are needed to drive the SSD to its throughput ceiling, freeing GPU capacity for actual computation.</div></details>
+      <details><summary><span class="q">Q2</span>How is PLINK different from BaM?<span class="chev">▾</span></summary><div class="a">BaM has one thread do submission and completion serially, block-polling the whole CQ for its CID. PLINK dedicates separate warps to submission and completion (running concurrently), has each thread wait only on its own claimed CQ slot instead of scanning, and batches doorbell writes at warp granularity instead of per ready-subset.</div></details>
+      <details><summary><span class="q">Q3</span>Why does warp divergence matter here specifically?<span class="chev">▾</span></summary><div class="a">NVMe completion latency is inherently non-uniform across threads (different commands finish at different times). Under SIMT, a warp can only advance the subset of threads sharing a PC each cycle — so threads that finished early sit masked, spinning, while stragglers catch up. Two of PLINK's three fixes (polling and doorbell batching) exist specifically to reduce this non-uniformity's cost.</div></details>
+      <details><summary><span class="q">Q4</span>Why not just throw more warps at BaM instead of redesigning it?<span class="chev">▾</span></summary><div class="a">You can, and BaM's 238-warp saturation point is exactly that brute-force answer. But warps are a shared GPU resource that application computation also needs — a saturating warp count in the low hundreds is small relative to the thousands of warps a modern GPU can keep resident, so every warp PLINK frees (238→136) is capacity the application gets back, as demonstrated for GNN training by related work (Hyperion).</div></details>
+      <details><summary><span class="q">Q5</span>What's an "outstanding command," and why does BaM cap it at one per thread?<span class="chev">▾</span></summary><div class="a">A submitted-but-not-yet-completed command. BaM caps it at one per thread purely as a consequence of its serialized model: a thread must observe its own completion (via blocking poll) before it's allowed to submit the next command. NVMe itself supports up to 65,536 outstanding commands per queue — BaM's software structure, not the hardware, is the limiter.</div></details>
+      <details><summary><span class="q">Q6</span>Does decoupling submission and completion cost anything?<span class="chev">▾</span></summary><div class="a">Yes — a dedicated GPU warp per queue pair for completion handling, plus a global-memory done[] flag array (≈2 MB at QD=1024, 256 queues) and a device-scope memory fence for the handshake. Applied alone, decoupling even raises total warp count above BaM's (246 vs. 238); it only nets a savings once combined with the polling and doorbell fixes.</div></details>
+      <details><summary><span class="q">Q7</span>Has PLINK been tested with a real application workload (e.g. actual LLM inference or GNN training)?<span class="chev">▾</span></summary><div class="a">Not in this paper — the evaluation measures the I/O backend in isolation (warps do no work other than I/O). The authors explicitly flag validating this backend-level saturation-warp reduction under real application workloads, including the completion-notification path's cost, as the main direction for future work.</div></details>
+      <details><summary><span class="q">Q8</span>How does PLINK relate to AGILE and AGIO?<span class="chev">▾</span></summary><div class="a">All three raise I/O concurrency by exposing asynchrony to the application instead of blocking per request. AGILE offloads completion handling to a background GPU service; AGIO decouples initiation from consumption via an async API and a dedicated runtime tier. PLINK's distinguishing move is that it first localizes exactly where per-command NVMe cost goes (the cycle-granularity breakdown) and targets each of the three costliest phases individually, rather than treating I/O latency as a single thing to hide.</div></details>
+      <details><summary><span class="q">Q9</span>What system was this measured on?<span class="chev">▾</span></summary><div class="a">An NVIDIA RTX PRO 6000 Blackwell GPU paired with a Samsung PCIe Gen 6 NVMe SSD, both under the same PCIe switch (Broadcom PEX90144) to minimize hop count and enable peer-to-peer access; dual AMD EPYC 9115 CPUs and 512 GB DDR5 host the system but aren't on PLINK's data path. The SSD measured 5,650k IOPS peak and 200 µs average read latency at 4 KB random reads via fio.</div></details>
+      <details><summary><span class="q">Q10</span>What's left for future work?<span class="chev">▾</span></summary><div class="a">Validating the warp savings under real application workloads (including the completion-notification path's overhead), profiling SQ and CQ warps separately to tune the SQ-to-CQ warp ratio per device/workload, and extending PLINK to multi-device configurations sharing a PCIe switch.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>PLINK (Parallel-Link)</b><span>This paper's GPU-initiated I/O platform: SQ/CQ decoupling + command-ID-indiscriminate polling + warp-level doorbell batching.</span></div>
+      <div class="term-def"><b>BaM</b><span>Big Accelerator Memory — the GPU-initiated I/O baseline PLINK builds on and improves; serializes submission and completion per thread.</span></div>
+      <div class="term-def"><b>SQ/CQ decoupling</b><span>Dedicating separate GPU warps to submission and completion of the same queue pair so both advance concurrently instead of serially.</span></div>
+      <div class="term-def"><b>Command-ID-indiscriminate polling</b><span>A thread claims a specific CQ slot and waits only on it, skipping the CID-matching scan across the whole queue.</span></div>
+      <div class="term-def"><b>Warp-level doorbell batching</b><span>Waiting for every active lane in a warp before ringing the doorbell once, instead of once per ready subset.</span></div>
+      <div class="term-def"><b>Cycle-granularity breakdown</b><span>PLINK's methodology: stamping the device clock at each phase boundary to localize where I/O turnaround time actually goes (Table 1).</span></div>
+      <div class="term-def"><b>Execution model</b><span>PLINK's application-facing interface: a thread submits a batch of requests, then waits on a shared done[] flag per completion rather than blocking inline.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>SQ / CQ / SQE / CQE</b><span>Submission/Completion Queue and their entries — the NVMe command and result structures.</span></div>
+      <div class="term-def"><b>Queue Pair (QP)</b><span>One SQ paired with one CQ; up to 65,535 independent QPs per NVMe drive.</span></div>
+      <div class="term-def"><b>Doorbell</b><span>A PCIe MMIO write signaling new SQ entries or consumed CQ entries to the drive.</span></div>
+      <div class="term-def"><b>Command ID (CID)</b><span>The tag linking a CQE back to its originating SQE; not consulted under PLINK's slot-claim polling.</span></div>
+      <div class="term-def"><b>Outstanding command</b><span>A submitted-but-not-completed command; BaM caps this at one per thread, PLINK lets it grow.</span></div>
+      <div class="term-def"><b>Warp / SIMT / warp divergence</b><span>32-thread GPU execution unit / its lock-step model / the stall caused when threads in a warp desynchronize.</span></div>
+      <div class="term-def"><b>IOPS / QD</b><span>I/O Operations Per Second (throughput) / Queue Depth (max outstanding commands per queue).</span></div>
+      <div class="term-def"><b>Saturation point</b><span>The smallest warp count reaching 99% of the SSD's measured peak IOPS — PLINK's central evaluation metric.</span></div>
+      <div class="term-def"><b>Active mask</b><span>The set of lanes in a warp currently participating in an operation; used to size a single batched doorbell write.</span></div>
+      <div class="term-def"><b>Device-scope fence</b><span>A memory ordering barrier ensuring the CQ warp's done[] flag write is visible only after the CQE data it depends on is visible.</span></div>
+      <div class="term-def"><b>PRP (Physical Region Page)</b><span>The NVMe mechanism for describing a command's data buffer location(s) in memory.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What PLINK buys (vs. BaM, at SSD saturation)</div>
+      <div class="viz-kicker">4 KB random read, PCIe Gen 6 SSD, 5,650k IOPS peak</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Warps to saturate<small>238 → 136</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="43"><span>−43% total warps</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">tCQ_POLL<small>at 32 warps</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="79"><span>−79%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">tSQ_DB<small>at 32 warps</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="86"><span>−86%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">tCQ_DB<small>at 32 warps</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="90"><span>−90%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Decoupling alone<small>E1, no other fix</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="3"><span>+3% total warps (worse)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 100%</p>
+      <figcaption><b>Combining all three is what matters:</b> E1 alone makes total warp count slightly worse (246 vs. 238) — only once E2 and E3 shrink the per-command cost does the combined PLINK total (136) fall well below BaM's. (Paper §4.2–4.5)</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes — what's from the paper vs. this guide</div>
+    <div class="callout note"><span class="ic">📋</span><div><b>From the paper directly:</b> every number in Tables 1–2, all percentages and warp counts in Sections 4.2–4.5, the SSD's measured 5,650k IOPS / 200 µs figures, the done[] memory formula and its ≈2 MB result, the four-thread doorbell example (Section 2.4), and all quoted algorithmic complexities (O(L_max+T_tr) → O(L_max)).<br><br><b>Added framing (not paper claims):</b> all six analogies, the "doctor localizing pain" methodology framing, the interactive warp-vs-IOPS explorer (a simplified linear ramp-to-plateau model matched only to each variant's reported saturation point, not the paper's actual measured curve shape in Fig. 2a), the memory-tiering connection note in the Big Idea tab, and all practice-problem misconception framings.</div></div>
+
+    <div class="subhead">Related papers (from the reference list)</div>
+    <div class="read-item reveal"><h4>GPU-Initiated On-Demand High-Throughput Storage Access in the BaM System Architecture <span class="diff med">medium</span></h4><div class="meta">Qureshi, Mailthody, Gelado, et al. · ASPLOS · 2023</div><p>The baseline system PLINK measures and redesigns — GPU-initiated I/O with the serialized submit-then-poll model this paper's breakdown dissects.</p></div>
+    <div class="read-item reveal"><h4>GIDS: Accelerating Sampling and Aggregation Operations in GNN Frameworks <span class="diff med">medium</span></h4><div class="meta">Park, Mailthody, Qureshi, Hwu · VLDB · 2024</div><p>Builds on BaM to show end-to-end gains on real GNN workloads — the kind of application-level validation PLINK's authors flag as future work for their own backend.</p></div>
+    <div class="read-item reveal"><h4>Asynchrony and GPUs: Bridging this Dichotomy for I/O with AGIO <span class="diff hard">hard</span></h4><div class="meta">Han, Sivasubramaniam, Chang, et al. · ASPLOS · 2026</div><p>A contemporary asynchronous GPU-SSD I/O design using a dedicated runtime tier — a different architectural answer to the same blocking-I/O problem.</p></div>
+    <div class="read-item reveal"><h4>AGILE: Lightweight and Efficient Asynchronous GPU-SSD Integration <span class="diff hard">hard</span></h4><div class="meta">Yang, Zhuang, Chen, Jones, Zhou · SC · 2025</div><p>Offloads completion handling to a background GPU service — compare its design choice against PLINK's dedicated CQ warp.</p></div>
+    <div class="read-item reveal"><h4>Hyperion: Optimizing SSD Access is All You Need for Cost-Efficient Out-of-Core GNN Training <span class="diff med">medium</span></h4><div class="meta">Sun, Sun, Zhang, et al. · ICDE · 2025</div><p>Shows concretely that GPU warps freed from storage duty translate into GNN training speedups — the application-level payoff PLINK's warp savings are meant to enable.</p></div>
+    <div class="read-item reveal"><h4>Tutti: Making SSD-Backed KV Cache Practical for Long-Context LLM Serving <span class="diff med">medium</span></h4><div class="meta">Qiu, Hu, Wang, et al. · arXiv:2605.03375 · 2025</div><p>The KV-cache-to-SSD offload trend that motivates PLINK's fine-grained access pattern in the first place.</p></div>
+    <div class="read-item reveal"><h4>NVM Express® Base Specification, Revision 2.3 <span class="diff easy">easy</span></h4><div class="meta">NVMe Consortium · 2025</div><p>The protocol-level ground truth for queue pairs, queue depth (65,536), and doorbell semantics referenced throughout.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Jung, Kang, Choi, "PLINK: A GPU-Initiated I/O Platform Exploiting NVMe Parallelism" (HotStorage '26, 2026)</span>
+    <span><b>Source:</b> paper text as supplied for this guide</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 100;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- WARP EXPLORER ---- */
+  var PEAK = 5650; // k IOPS
+  var BAM_SAT = 238, PLINK_SAT = 68;
+  function iops(w, sat){ return Math.min(PEAK, PEAK * w / sat); }
+  function setWarps(w){
+    var range = document.getElementById('warpRange'); if(!range) return;
+    w = Math.max(8, Math.min(256, w));
+    range.value = w;
+    document.getElementById('warpRangeVal').textContent = w;
+    var bam = iops(w, BAM_SAT), plink = iops(w, PLINK_SAT);
+    document.getElementById('bamFill').style.width = (bam/PEAK*100) + '%';
+    document.getElementById('plinkFill').style.width = (plink/PEAK*100) + '%';
+    document.getElementById('bamVal').textContent = Math.round(bam).toLocaleString() + 'k IOPS';
+    document.getElementById('plinkVal').textContent = Math.round(plink).toLocaleString() + 'k IOPS';
+    var verd = document.getElementById('warpVerdict');
+    if(w >= BAM_SAT){ verd.className='pverdict opt'; verd.textContent = '✓ Both have saturated the SSD — but PLINK got here using 71% fewer submission warps.'; }
+    else if(w >= PLINK_SAT){ verd.className='pverdict sub'; verd.textContent = 'PLINK has already saturated (68 warps) while BaM is still ramping — only at ' + Math.round(bam).toLocaleString() + 'k of ' + PEAK.toLocaleString() + 'k IOPS.'; }
+    else { verd.className='pverdict sub'; verd.textContent = 'Neither has saturated yet — both are still ramping toward the SSD\u2019s ' + PEAK.toLocaleString() + 'k IOPS peak.'; }
+  }
+  var warpRange = document.getElementById('warpRange');
+  if(warpRange){
+    warpRange.addEventListener('input', function(){ setWarps(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-w]').forEach(function(b){ b.addEventListener('click', function(){ setWarps(parseInt(b.dataset.w,10)); }); });
+    setWarps(68);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
