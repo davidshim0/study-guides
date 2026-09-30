@@ -277,7 +277,7 @@ pre.sketch .kw{color:#D98C2B} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
   <div class="wrap">
     <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
     <h1>Renting out the room without ever letting it look <span class="swash">occupied</span></h1>
-    <p class="lede">A pinned core looks 100% busy to the host even when the guest inside is doing nothing. This is the plain-English story of <strong>DDVM</strong>, the production system that safely shares that hidden idle time — 92,000 servers, three years, without touching the SLO.</p>
+    <p class="lede">A pinned core looks 100% busy to the host even when the guest inside is doing nothing. This is the plain-English story of <strong>DDVM</strong>, the production system that safely shares that hidden idle time — 92,000 servers, three years, keeping tail-latency degradation inside a conservative tolerance rather than eliminating it.</p>
     <div class="hero-meta">
       <span>📄 "CPU Virtualization Made Fast and Free" · Wang et al., Alibaba/SJTU</span>
       <span>🎓 Some KVM/virtualization basics assumed — the primers cover them</span>
@@ -381,7 +381,7 @@ pre.sketch .kw{color:#D98C2B} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="prose">
       <p>Dedicated VMs get near-bare-metal performance from three hardware passthrough tricks — CPU pinning, interrupt passthrough, idle passthrough — but those same tricks lock a physical core to one VM permanently. In production, <strong>74% of Dedicated VMs average below 10% CPU utilization</strong>, yet they occupy <strong>95% of physical hosts</strong>. The capacity is there; the mechanism that makes it fast also makes it unshareable and, worse, invisible — idle passthrough means the host sees a fully busy core no matter what the guest is actually doing.</p>
       <p><strong>DDVM (Dynamic-Dedicated VM)</strong> resolves this without relaxing the SLO contract. Each vCPU can move between <span class="mem-chip chip-hi">dedicated mode</span> (owns a core alone, exactly like today) and <span class="mem-chip chip-sat">shared mode</span> (time-multiplexes a core with one other vCPU), decided by three mechanisms: <span class="mem-chip chip-ucp">workload signature profiling</span> to find genuinely idle vCPUs (CPU%, IOPS/CPU ratio, and an idle-instruction signature — never just one signal), <span class="mem-chip chip-ucp">mediated posted interrupts</span> to bound wake-up latency when a vCPU is preempted, and <span class="mem-chip chip-ucp">occupancy-aware idle reclamation</span> to decide, per pairing, whether HLT should stay passthrough or trap to the host.</p>
-      <p><strong>The payoff, at a conservative 1.1× oversubscription:</strong> +10.5% fleet-wide CPU utilization across 92,000 nodes (37 regions, 3+ years), an SLO score of 83.5 (above the 83.3 acceptance bar), 67.1% lower P99 latency than naive oversubscription, and a mature-deployment ticket rate of just 0.00035%/month.</p>
+      <p><strong>The payoff:</strong> at the deployed, conservative 1.1× oversubscription, +10.5% fleet-wide CPU utilization across 92,000 nodes (37 regions, 3+ years) and a mature-deployment ticket rate of just 0.00035%/month. In the separate §5.3 benchmark at 20% oversubscription (48 vCPUs on 40 pCPUs, 1.2×), DDVM scores an SLO of 83.5 (above the 83.3 acceptance bar) with 67.1% lower P99 latency than naive oversubscription at that same ratio.</p>
     </div>
 
     <div class="card reveal" style="background:var(--honey-soft);border-color:#EFD9AC">
@@ -391,7 +391,7 @@ pre.sketch .kw{color:#D98C2B} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         <li>Low host-side CPU% is not a reliable idle signal — it must be combined with an IOPS/CPU ratio and an idle-instruction signature.</li>
         <li>Sharing means <b>time-multiplexing</b>, never simultaneous co-running on sibling SMT threads of two different tenants.</li>
         <li>Mediated PI bounds interrupt latency for a preempted vCPU; occupancy-aware idle reclaim trades passthrough for fast wake-up only while sharing.</li>
-        <li>Deployed target: SLO score ≥83.3 (≤20% tail-latency degradation) at 1.1× oversubscription — a policy choice, not a hardware ceiling.</li>
+        <li>Deployed target: SLO score ≥83.3 — a uniform 20% degradation across the weighted metrics, not a per-metric guarantee — at 1.1× oversubscription, a policy choice rather than a hardware ceiling.</li>
         <li>Result: +10.5% utilization, ~500,000 vCPUs reclaimed fleet-wide, 0.00035% monthly ticket rate after 32 months at full deployment.</li>
       </ul>
     </div>
@@ -425,7 +425,7 @@ pre.sketch .kw{color:#D98C2B} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
         <text x="655" y="126" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#183f52">1.1× oversubscribed</text>
         <defs><marker id="arrDDVM" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#9A8E7C"/></marker></defs>
       </svg>
-      <figcaption><b>Read it left to right:</b> a locked Dedicated core enters signature profiling; only vCPUs that pass all three signals become eligible for sharing. Mediated PI and occupancy-aware idle reclaim then bound the latency cost of that sharing, producing a DDVM that meets the same 83.3 SLO bar at 1.1× oversubscription. (Paper §4, Fig. 5)</figcaption>
+      <figcaption><b>Read it left to right:</b> a locked Dedicated core enters signature profiling; only vCPUs that pass all three signals become eligible for sharing. Mediated PI and occupancy-aware idle reclaim then bound the latency cost of that sharing, producing a DDVM that clears the 83.3 SLO bar in the paper's oversubscription benchmarks. (Paper §4, Fig. 5)</figcaption>
     </figure>
   </div>
 </section>
@@ -524,7 +524,7 @@ pre.sketch .kw{color:#D98C2B} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="prose">
       <h3>2 · Qualifying for sharing</h3>
       <p>A VM becomes eligible only when <b>all three</b> hold: CPU usage typically below 10% per core, IOPS/CPU ratio below 100 (rules out Redis-like small-packet services), and a consistently matching idle signature. Eligible VMs are then paired, every 400ms epoch, with the lowest-load partner on the <em>same NUMA node</em> — two highly active VMs are never colocated.</p>
-      <div class="callout warn"><span class="ic">⚠</span><div><b>Robustness bias:</b> every threshold is tuned toward false negatives. Misclassifying a busy VM as idle only forgoes reclaimable capacity — it never risks an SLO, because the three signals must be defeated simultaneously.</div></div>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Robustness bias:</b> every threshold is tuned toward false negatives. Classifying an idle VM as busy only forgoes reclaimable capacity — the safe direction to err. Classifying a busy VM as idle is the risky error, so all three signals must agree before a vCPU is deemed idle enough to share.</div></div>
     </div>
 
     <div class="prose">
@@ -590,7 +590,7 @@ pre.sketch .kw{color:#D98C2B} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
       <ol class="seq">
         <li><b>All three degradation factors = 1.2:</b> 1·1.2 + 1.2·1.2 + 0.5·1.2 = 1.2·(1+1.2+0.5) = 1.2 · 2.7 = <b>3.24</b>.</li>
         <li><b>Normalize:</b> 3.24 ÷ 2.7 = <b>1.2</b> (the weighting cancels perfectly for a uniform degradation).</li>
-        <li><b>Score:</b> 100 ÷ 1.2 = <b>83.3</b> — the acceptance bar is, by construction, "no metric degrades by more than 20% on average."</li>
+        <li><b>Score:</b> 100 ÷ 1.2 = <b>83.3</b> — this is the score if every weighted factor is exactly 1.2. Clearing 83.3 in practice does not guarantee each metric individually stayed within 20%; a bad P99 factor can still be masked by a better average or max factor in the composite.</li>
       </ol>
     </div>
 
