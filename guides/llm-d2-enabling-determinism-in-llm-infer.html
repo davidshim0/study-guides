@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<!-- LLM-42 field guide — Enabling Determinism in LLM Inference with Verified Speculation (Gond, Kamath, Ramjee, Panwar; SOSP'26).
+     Semantic colors: teal = fast path (nondeterministic speculative decode) · honey = verified/committed tokens · indigo = LLM-42 machinery (DVR protocol) · terracotta = batch-invariant baseline (the costly alternative). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Speculate Fast, Verify Exact — LLM-42, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98F3B; --honey-deep:#B36F14; --honey-soft:#F6E4C4;
+  --dram:#2E8C79; --dram-soft:#DCEFEA;      /* teal  = fast path (nondeterministic speculation) */
+  --ltram:#5B60AE; --ltram-soft:#E7E7F5;    /* indigo = LLM-42 machinery (DVR protocol)          */
+  --optane:#BB5138; --optane-soft:#F5DED4;  /* terracotta = batch-invariant baseline (the tax)   */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(46,140,121,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,96,174,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,143,59,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(91,96,174,.05) 31px,rgba(91,96,174,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,143,59,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#7276c4,#5B60AE)}
+.bf-hi{background:linear-gradient(90deg,#3a9f88,#2E8C79)}
+.bf-lru{background:linear-gradient(90deg,#c9614a,#BB5138)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(46,140,121,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,96,174,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,143,59,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>SOSP 2026 · A Field Guide</span>
+    <h1>Let the fast path <span class="swash">guess</span>, let a verifier <span class="swash" style="color:var(--optane)">notarize</span></h1>
+    <p class="lede">Two runs of the same prompt on the same GPUs can return different text. The fix everyone reaches for — rewrite every kernel to be batch-invariant — is a fixed tax on every request. LLM-42 pays that tax only for the requests that actually need it.</p>
+    <div class="hero-meta">
+      <span>📄 "LLM-42: Enabling Determinism in LLM Inference with Verified Speculation" · Gond, Kamath, Ramjee, Panwar</span>
+      <span>🎓 LLM serving internals assumed unfamiliar — primers cover them</span>
+      <span>⏱ ~30 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🎲</div>
+      <p>Decode with <span class="ro">whatever's fastest</span>, then replay under a <span class="wo">fixed batch size</span> to check — commit what matches, roll back only what doesn't.<br><em style="font-size:.9rem">Determinism becomes a per-request choice, not a global tax.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary + what the paper assumes you know</h2>
+      <p class="sub">This paper lives in LLM-serving systems, not OS memory management — the glossary below front-loads its acronyms, then the primers cover the mechanisms.</p>
+    </div>
+
+    <div class="card" style="background:var(--paper-2)">
+      <h3 style="margin-bottom:12px">Quick glossary</h3>
+      <div class="gloss">
+        <div class="term-def"><b>DVR</b><span>Decode-Verify-Rollback — LLM-42's protocol: speculate fast, check with a deterministic replay, discard what disagrees.</span></div>
+        <div class="term-def"><b>TP</b><span>Tensor Parallelism — splitting one model's weights/compute across multiple GPUs (here, up to TP-8 for the 70B model).</span></div>
+        <div class="term-def"><b>KV cache</b><span>Stored key/value tensors from prior tokens, reused every decode step so attention doesn't recompute the whole sequence.</span></div>
+        <div class="term-def"><b>GEMM</b><span>General Matrix-Matrix Multiply — the dominant, most time-consuming operator in a transformer forward pass.</span></div>
+        <div class="term-def"><b>QPS</b><span>Queries Per Second — the offered load on the serving system.</span></div>
+        <div class="term-def"><b>TTFT</b><span>Time To First Token — latency from request arrival to the first generated token; dominated by prefill + queueing.</span></div>
+        <div class="term-def"><b>P50 / P99</b><span>Median / 99th-percentile latency — P99 exposes tail behavior that averages hide.</span></div>
+        <div class="term-def"><b>MoE</b><span>Mixture-of-Experts — a model where each token is routed to a small subset of "expert" sub-networks, adding another source of shape-dependent kernels.</span></div>
+        <div class="term-def"><b>split-K</b><span>A GEMM optimization that partitions the reduction (K) dimension across extra thread blocks to boost parallelism at low batch sizes.</span></div>
+        <div class="term-def"><b>AllReduce</b><span>A collective communication op that sums a tensor across GPUs (e.g., after tensor-parallel matmuls); its reduction order affects numerics.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> fast path (nondeterministic speculation)</span>
+      <span><i style="background:var(--honey-deep)"></i> verified / committed tokens</span>
+      <span><i style="background:var(--ltram)"></i> LLM-42's machinery</span>
+      <span><i style="background:var(--optane)"></i> batch-invariant baseline (the tax)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Prefill vs. decode<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>An LLM request has two phases. <b>Prefill</b> processes the whole prompt in parallel in one pass — compute-bound, embarrassingly parallel. <b>Decode</b> is autoregressive: one new token per step, each step reusing the KV cache — memory-bound, one token at a time.</p>
+          <div class="ready"><b>Now you're ready:</b> LLM-42 treats these phases differently — prefill can be made deterministic almost for free; decode is where the fast-path/verify machinery lives.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Dynamic (continuous) batching<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To keep GPUs busy, a serving system doesn't run one request at a time — it groups whichever requests are in flight into a batch at each iteration, adding and removing requests as they arrive and finish. The batch's size and composition therefore changes almost every step.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the throughput technique the paper refuses to sacrifice. Disabling it would fix determinism trivially but tank performance — so the paper works around it instead.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Floating-point non-associativity<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>In finite-precision arithmetic, (a+b)+c can differ from a+(b+c) by a tiny rounding error. Harmless in isolation — but if a GPU kernel sums a batch's numbers in a different order depending on batch size, the same logical computation yields slightly different results.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the root cause. Combined with dynamic batching (different batch size every run) it means the same token can come out numerically different across runs.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Reduction schedules and GPU kernels<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A GEMM, attention pass, or normalization all involve a <b>reduction</b> (summing partial results). High-performance kernels choose how to parallelize that reduction — e.g., <b>split-K</b> partitions the summed dimension across more thread blocks at low batch sizes to keep the GPU busy. Different batch shapes → different chosen schedule → different accumulation order → different rounding.</p>
+          <div class="ready"><b>Now you're ready:</b> this is exactly the mechanism from primer 3, made concrete. It's also why "just disable split-K everywhere" (batch-invariance) throws away real performance — split-K exists for a reason.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Speculative decoding<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>To speed up autoregressive decoding, a cheap draft model guesses several tokens ahead; the expensive target model then verifies all of them in one parallel pass. Matching tokens are accepted; the rest are discarded and regenerated. Output distribution is unchanged — it's a scheduling trick, not an approximation of the model.</p>
+          <div class="ready"><b>Now you're ready:</b> LLM-42 borrows this exact decode→verify→accept/reject shape, but repurposes it to fix determinism rather than to save compute.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Self-speculative decoding<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A variant that skips the separate draft model: the target model drafts against itself, typically via an approximation (skipped layers, early exit, pruned context). Because the draft is an approximation, errors compound fast, so speculation depth is usually limited to just 2–8 tokens.</p>
+          <div class="ready"><b>Now you're ready:</b> LLM-42 uses the same model for both roles too — but its "fast path" isn't an approximation, only a different (nondeterministic) execution of the exact same forward pass. That's why it can safely speculate 32–64 tokens deep instead of 2–8.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Batch-invariance, the existing fix<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The prior approach (He et al.) forces every kernel to use one universal reduction schedule regardless of batch size — e.g., disabling split-K entirely. This guarantees identical numerics for any batch composition, at the cost of the very parallelism split-K exists to provide.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the paper's foil throughout — like LRU in the UCP paper's world, it's the sensible-sounding default that turns out to be needlessly costly once you look closely.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Compute-bound vs. memory-bound<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A kernel is <b>memory-bound</b> when it spends more time moving data than computing on it (typical of tiny batches / single-token decode); it's <b>compute-bound</b> when arithmetic dominates (typical of large batches / prefill). The same operator can be memory-bound at batch 1 and compute-bound at batch 1024.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the entire reason grouped verification exists — verifying a tiny window is memory-bound and wasteful; verifying many tokens together is compute-bound and cheap per token, much like read-modify-write batching in any bandwidth-limited system you've profiled.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>LLM-42 in a nutshell</h2>
+      <p class="sub">The problem, the trick that fixes it cheaply, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>Nondeterminism in LLM inference comes from floating-point non-associativity interacting with dynamic batching: GPU kernels pick different reduction schedules (e.g., split-K) depending on batch shape, so the same token can compute to a numerically different value on different runs. The existing fix, <b>batch-invariant computation</b>, forces every kernel onto one fixed schedule for every batch size — eliminating the variable, but also the parallelism it enables. Measured on H100s, batch-invariant GEMM kernels reach only <span class="mem-chip chip-lru">533–785 TFLOPS</span> versus <span class="mem-chip chip-lru">801 TFLOPS</span> for ordinary cuBLAS kernels — a slowdown of up to <b>7.21×</b> — and the penalty is paid by <i>every</i> request, whether or not it needs determinism.</p>
+      <p><strong>LLM-42's insight:</strong> two things are usually true anyway. First (O1), if two runs have produced the same tokens so far, they will very likely agree on the next one too — divergence is rare, though once it happens it compounds. Second (O2), most kernels are <b>position-invariant</b>: fixed batch size ⇒ fixed reduction schedule ⇒ every token in that batch computed the same way regardless of its position. So LLM-42 lets requests decode on a fast, <span class="mem-chip chip-hi">nondeterministic path</span> under ordinary dynamic batching, then periodically replays a fixed-size window of decoded tokens through a <span class="mem-chip chip-ucp">verifier</span> running at a fixed batch size. Tokens that match the verifier's deterministic replay are <span class="mem-chip chip-sat">committed</span>; tokens that don't are rolled back and regenerated from the verifier's own (consistent) output.</p>
+      <p>Because determinism is now a property of <i>scheduling</i>, not kernel design, it can be applied <b>selectively</b> — only requests tagged <code>is_deterministic=True</code> ever pay the verification cost, and existing high-performance kernels (cuBLAS GEMM, fused MoE, FlashAttention-3, RMSNorm) are reused unmodified.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Nondeterminism = FP non-associativity × batch-shape-dependent reduction schedules (split-K, attention tiling, RMSNorm reductions).</li>
+        <li>Batch-invariance fixes it by forcing one global schedule — up to <b>7.21×</b> GEMM slowdown, and it's a tax on <i>every</i> request.</li>
+        <li>LLM-42 fixes it by <b>scheduling</b>: nondeterministic fast path + periodic deterministic verify + rollback on mismatch (DVR).</li>
+        <li><b>Position-invariance</b> (fixed batch size ⇒ same schedule for every token in it) is what makes a cheap fixed-batch verifier a valid deterministic reference.</li>
+        <li><b>Grouped verification</b> batches many requests' small windows together — cheap rollback of small windows, cheap-per-token compute of large ones.</li>
+        <li>Determinism becomes <b>selective</b>, via a per-request <code>is_deterministic</code> flag — no global mode switch.</li>
+        <li>Result: within ~10% of nondeterministic throughput at realistic (&lt;10%) deterministic traffic, vs. up to 52% overhead for SGLang's batch-invariant mode.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Decode-Verify-Rollback, the whole mechanism in one picture</div>
+      <div class="viz-kicker">fast path speculates · verifier replays at a fixed batch size · mismatches roll back</div>
+      <div class="legend">
+        <span><i style="background:var(--ltram)"></i> consistent (prefill / verifier output)</span>
+        <span><i style="background:var(--dram)"></i> fast-path speculative tokens</span>
+        <span><i style="background:var(--optane)"></i> rejected on mismatch</span>
+        <span><i style="background:var(--honey-deep)"></i> committed</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 300" role="img" aria-label="DVR protocol with two outcomes: all-match and mismatch-rollback">
+        <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Fast path (window = 4): decode under dynamic batching</text>
+        <rect x="20" y="38" width="70" height="40" rx="6" fill="#E7E7F5" stroke="#5B60AE" stroke-width="1.6"/><text x="55" y="63" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#3a409a">T0</text>
+        <rect x="100" y="38" width="70" height="40" rx="6" fill="#DCEFEA" stroke="#2E8C79" stroke-width="1.6"/><text x="135" y="63" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#1f5b51">T1'</text>
+        <rect x="180" y="38" width="70" height="40" rx="6" fill="#DCEFEA" stroke="#2E8C79" stroke-width="1.6"/><text x="215" y="63" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#1f5b51">T2'</text>
+        <rect x="260" y="38" width="70" height="40" rx="6" fill="#DCEFEA" stroke="#2E8C79" stroke-width="1.6"/><text x="295" y="63" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#1f5b51">T3'</text>
+        <line x1="185" y1="88" x2="185" y2="112" stroke="#9A8E7C" stroke-width="1.4"/>
+        <polygon points="180,112 190,112 185,120" fill="#9A8E7C"/>
+        <rect x="60" y="128" width="240" height="34" rx="8" fill="#E7E7F5" stroke="#5B60AE" stroke-width="1.6"/>
+        <text x="180" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#3a409a">Verifier — one fixed-batch replay pass</text>
+        <line x1="180" y1="162" x2="130" y2="188" stroke="#9A8E7C" stroke-width="1.4"/>
+        <line x1="180" y1="162" x2="430" y2="188" stroke="#9A8E7C" stroke-width="1.4"/>
+        <text x="90" y="182" font-family="JetBrains Mono" font-size="11" fill="#1f5b51">(a) all match</text>
+        <text x="380" y="182" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">(b) mismatch at T2</text>
+        <rect x="20" y="196" width="60" height="38" rx="6" fill="#F6E4C4" stroke="#B36F14" stroke-width="1.6"/><text x="50" y="220" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">T1</text>
+        <rect x="86" y="196" width="60" height="38" rx="6" fill="#F6E4C4" stroke="#B36F14" stroke-width="1.6"/><text x="116" y="220" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">T2</text>
+        <rect x="152" y="196" width="60" height="38" rx="6" fill="#F6E4C4" stroke="#B36F14" stroke-width="1.6"/><text x="182" y="220" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">T3</text>
+        <rect x="218" y="196" width="70" height="38" rx="6" fill="#F6E4C4" stroke="#B36F14" stroke-width="1.6" stroke-dasharray="3 3"/><text x="253" y="220" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">T4 (bonus)</text>
+        <text x="20" y="250" font-family="JetBrains Mono" font-size="10.5" fill="#6E6456">commits T1,T2,T3 + a free bonus token T4 — zero rollback</text>
+        <rect x="330" y="196" width="60" height="38" rx="6" fill="#F6E4C4" stroke="#B36F14" stroke-width="1.6"/><text x="360" y="220" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">T1</text>
+        <rect x="396" y="196" width="60" height="38" rx="6" fill="#F6E4C4" stroke="#B36F14" stroke-width="1.6"/><text x="426" y="220" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">T2*</text>
+        <rect x="462" y="196" width="60" height="38" rx="6" fill="#F5DED4" stroke="#BB5138" stroke-width="1.6" stroke-dasharray="3 3"/><text x="492" y="220" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">✕</text>
+        <rect x="528" y="196" width="60" height="38" rx="6" fill="#F5DED4" stroke="#BB5138" stroke-width="1.6" stroke-dasharray="3 3"/><text x="558" y="220" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">✕</text>
+        <text x="330" y="250" font-family="JetBrains Mono" font-size="10.5" fill="#6E6456">commits T1 + verifier's own T2* — discards T2',T3', regenerates next</text>
+      </svg>
+      <figcaption><b>Every verification pass produces at least one new consistent token</b> — even in outcome (b), T2* is guaranteed fresh from a consistent state, so DVR always makes forward progress. The KV cache entries from the fast path are overwritten with the verifier's own, so future iterations stay consistent too. (Paper, Fig. 8)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">root cause → key observations → mechanism → efficiency → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Root cause</div><div class="nd">FP non-associativity + batch-shape-dependent reduction schedules</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Key observations</div><div class="nd">O1: consistent tokens stay consistent · O2: fixed batch size ⇒ position-invariant kernels</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Mechanism (DVR)</div><div class="nd">Nondeterministic fast path + fixed-batch verifier + rollback on mismatch</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-ucp"><div class="nt">Efficiency</div><div class="nd">Grouped verification: many requests' small windows, verified together</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-rule"><div class="nt">Control</div><div class="nd">Per-request <code>is_deterministic</code> flag — no global mode switch</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">Within ~10% of nondet throughput at &lt;10% deterministic traffic; existing kernels reused unmodified</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about LLM-42</h2>
+      <p class="sub">Read in any order. Each ends with an honest note on where the picture stops being literally true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 q30 -46 60 -46 q30 0 40 20" stroke="#2E8C79" stroke-width="3" fill="none" stroke-linecap="round"/>
+          <circle cx="100" cy="34" r="7" fill="#DCEFEA" stroke="#2E8C79" stroke-width="2.5"/>
+          <path d="M96 70 h30 v14 h-30z" fill="#F6E4C4" stroke="#B36F14" stroke-width="2.5"/>
+          <path d="M106 76 l6 4 l-6 4" stroke="#B36F14" stroke-width="2" fill="none"/>
+        </svg></div>
+        <span class="term">Core idea · Decode-Verify-Rollback</span>
+        <h3>Speculate now, notarize later</h3>
+        <p>You sign a contract in pencil right away so the deal can move fast; a notary later stamps the pages that hold up and voids the ones that don't. LLM-42's fast path is the pencil signature (quick, provisional); the verifier is the notary stamp (slow, authoritative, but only invoked when it matters).</p>
+        <div class="breaks"><b>Where it breaks:</b> a notary checks against an external, fixed standard. The verifier checks against <i>itself</i>, run under a fixed batch size — it's authoritative only because that replay is guaranteed reproducible, not because it's independently "true."</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="24" cy="60" r="9" fill="#DCEFEA" stroke="#2E8C79" stroke-width="2.5"/>
+          <circle cx="52" cy="60" r="9" fill="#DCEFEA" stroke="#2E8C79" stroke-width="2.5"/>
+          <circle cx="80" cy="60" r="9" fill="#F5DED4" stroke="#BB5138" stroke-width="2.5"/>
+          <circle cx="108" cy="40" r="9" fill="#F5DED4" stroke="#BB5138" stroke-width="2.5"/>
+          <circle cx="126" cy="18" r="9" fill="#F5DED4" stroke="#BB5138" stroke-width="2.5"/>
+          <path d="M33 60 h10 M61 62 q8 0 15 -8" stroke="#9A8E7C" stroke-width="2" fill="none"/>
+        </svg></div>
+        <span class="term">Observation O1 · Divergence amplification</span>
+        <h3>The domino chain</h3>
+        <p>Line up dominoes and tip the first: as long as none falls out of line, the chain stays perfectly ordered. But the moment one domino tips sideways, everything downstream goes with it. Two decoding runs stay token-for-token identical for long stretches — then one tiny flip, and the tail rarely re-aligns (the paper's "second consistent span" is ≤1 token for 80% of requests once a mismatch occurs).</p>
+        <div class="breaks"><b>Where it breaks:</b> real dominoes never self-correct; a decoding run occasionally does re-converge by chance (that's the other 20%). The chain is <i>likely</i> to fall further, not certain to.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="100" height="18" rx="3" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <path d="M30 39 h20 M55 39 h20 M80 39 h20 M105 39 h5" stroke="#BB5138" stroke-width="3"/>
+          <rect x="20" y="56" width="100" height="18" rx="3" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <path d="M30 65 h80" stroke="#2E8C79" stroke-width="3"/>
+        </svg></div>
+        <span class="term">Why nondeterminism exists · split-K / reduction order</span>
+        <h3>A print run that retypesets itself</h3>
+        <p>A small print job might set the type in four separate blocks and glue them together (fast, parallel, but a different pasteup than a single continuous run); a big job runs continuously top-to-bottom. Same content, different assembly order — and if the "gluing" isn't perfectly commutative, tiny seams appear. GEMM kernels do the same: split-K assembles a sum from several parallel partial blocks at low batch sizes, but sums it straight through at high ones — different orders, different rounding.</p>
+        <div class="breaks"><b>Where it breaks:</b> a print run's seams are visible and fixable by hand; a reduction-order seam is a bit-level rounding difference invisible until it flips a sampler's argmax.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="20" width="30" height="56" rx="4" fill="#E7E7F5" stroke="#5B60AE" stroke-width="2.5"/>
+          <rect x="55" y="20" width="30" height="56" rx="4" fill="#E7E7F5" stroke="#5B60AE" stroke-width="2.5"/>
+          <rect x="92" y="20" width="30" height="56" rx="4" fill="#E7E7F5" stroke="#5B60AE" stroke-width="2.5"/>
+          <circle cx="33" cy="48" r="4" fill="#5B60AE"/><circle cx="70" cy="48" r="4" fill="#5B60AE"/><circle cx="107" cy="48" r="4" fill="#5B60AE"/>
+          <path d="M18 12 h104" stroke="#332C24" stroke-width="2" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">Observation O2 · Position-invariance vs. batch-invariance</span>
+        <h3>Cooking for tonight's headcount, the same way every time</h3>
+        <p>A chef who <i>varies</i> the recipe by headcount but cooks every plate at tonight's table identically — that's position-invariance: fixed batch size ⇒ one schedule for every token in it, so any two tokens processed together get the exact same treatment. A chef who insists on the exact one-plate recipe <i>regardless</i> of headcount (batch-invariance) never uses their big pots — precise, but wasteful.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real chef's dishes are independent; here, "how you cooked tonight" (the batch's shape) must itself be reproducible across runs, which is exactly what LLM-42's fixed-size verifier window guarantees and the freely-varying fast path doesn't.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="24" width="24" height="48" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="48" y="24" width="24" height="48" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="76" y="24" width="24" height="48" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="104" y="24" width="16" height="48" rx="3" fill="#fff" stroke="#9A8E7C" stroke-width="2"/>
+          <path d="M16 82 h108" stroke="#2E8C79" stroke-width="4" stroke-linecap="round"/>
+          <path d="M20 90 h20 M50 90 h20 M80 90 h20 M106 90 h12" stroke="#BB5138" stroke-width="3" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">Grouped verification · memory- vs. compute-bound</span>
+        <h3>A copy-editor reviewing a stack, not one page at a time</h3>
+        <p>Handing an editor one page at a time wastes most of their attention on picking the page up; handing them a thousand-page manuscript in one sitting means one bad paragraph forces a reread of everything after it. Grouped verification hands the editor a modest stack from <i>several</i> different manuscripts at once: each manuscript's own reread stays short (small per-request window), while the sitting itself is efficient (many tokens verified per pass).</p>
+        <div class="breaks"><b>Where it breaks:</b> real editors get tired; GPUs don't — the trade-off here is purely arithmetic-intensity (memory-bound vs. compute-bound), not fatigue.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="30" width="44" height="34" rx="4" fill="#DCEFEA" stroke="#2E8C79" stroke-width="2.5"/>
+          <rect x="76" y="30" width="44" height="34" rx="4" fill="#F5DED4" stroke="#BB5138" stroke-width="2.5" stroke-dasharray="4 3"/>
+          <path d="M42 26 l0 -10 M98 26 l0 -10" stroke="#332C24" stroke-width="2"/>
+          <text x="42" y="50" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">pass</text>
+          <text x="98" y="50" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">lockdown</text>
+        </svg></div>
+        <span class="term">Observation O4 · Selective determinism</span>
+        <h3>A hall pass, not a school-wide lockdown</h3>
+        <p>If one classroom needs a fire drill, you don't lock down the entire school for the day. SGLang's global deterministic mode is the lockdown: <i>every</i> request pays the batch-invariant tax the moment <i>any</i> request needs determinism. LLM-42's <code>is_deterministic</code> flag is the hall pass — only the tagged request goes through the extra check.</p>
+        <div class="breaks"><b>Where it breaks:</b> a hall pass costs nothing for everyone else; here, a deterministic request still shares GPU time with nondeterministic ones, so heavy deterministic traffic does slow the whole batch down — just proportionally, not globally.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, from root cause to the grouped-verification knob you can tune yourself below.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Where the nondeterminism comes from</h3>
+      <p>GEMM, attention, normalization, and AllReduce all involve reductions. High-performance GEMM kernels use <b>split-K</b> to parallelize the reduction dimension across extra thread blocks — but whether split-K fires, and how many splits, depends on the input shape. Different shape ⇒ different reduction tree ⇒ different floating-point rounding for the "same" logical computation. Under dynamic batching, a request's batch shape varies run to run, so this is not a rare edge case — it's the default.</p>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>Measured cost of the naive fix:</b> forcing every kernel onto one batch-invariant schedule drops GEMM throughput from 801 TFLOPS (cuBLAS) to 533 TFLOPS (Triton batch-invariant) — up to <b>7.21×</b> slower at specific shapes — and end-to-end throughput by up to <b>33–52%</b>, paid by every request regardless of need.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>2 · The two observations that make a cheap fix possible</h3>
+      <table class="tbl">
+        <thead><tr><th>Observation</th><th>Claim</th><th>Why it holds</th></tr></thead>
+        <tbody>
+          <tr><td><b>O1</b></td><td>Same tokens so far ⇒ likely same next token; once tokens diverge, they rarely re-converge</td><td>Numerical drift is small; it only flips a token when it crosses the sampler's decision boundary — rare, but autoregression compounds any flip</td></tr>
+          <tr class="best"><td><b>O2</b></td><td>Position-invariance: fixed batch size ⇒ every token in it uses the same reduction schedule</td><td>Kernels pick schedule by shape, not by content — so replaying the same tokens at a fixed batch size reproduces the same numbers every time</td></tr>
+        </tbody>
+      </table>
+      <div class="callout note"><span class="ic">🌱</span><div>O1 justifies speculating first and checking later. O2 justifies that the "checking" step (the verifier) can itself be a small, cheap, deterministic reference — a much weaker requirement than making <i>every</i> kernel batch-invariant.</div></div>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Why split-K breaks batch-invariance but keeps position-invariance</div>
+      <div class="viz-kicker">same batch size ⇒ same schedule for every token in it, regardless of which token</div>
+      <svg class="full" viewBox="0 0 700 200" role="img" aria-label="split-K reduction tree comparison">
+        <text x="20" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Without split-K (batch = 512)</text>
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24">
+          <rect x="20" y="40" width="26" height="26" fill="#DCEFEA" stroke="#2E8C79"/><rect x="50" y="40" width="26" height="26" fill="#DCEFEA" stroke="#2E8C79"/>
+          <rect x="80" y="40" width="26" height="26" fill="#DCEFEA" stroke="#2E8C79"/><rect x="110" y="40" width="26" height="26" fill="#DCEFEA" stroke="#2E8C79"/>
+        </g>
+        <path d="M33 66 v14 M63 66 v14 M93 66 v14 M123 66 v14" stroke="#9A8E7C" stroke-width="1.4"/>
+        <path d="M33 80 h90" stroke="#9A8E7C" stroke-width="1.4"/>
+        <rect x="63" y="86" width="30" height="24" rx="4" fill="#F6E4C4" stroke="#B36F14"/><text x="78" y="102" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">C</text>
+        <text x="20" y="128" font-family="JetBrains Mono" font-size="10" fill="#6E6456">one sequential accumulation → one rounding order</text>
+
+        <text x="380" y="26" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">With split-K (batch = 4, low occupancy)</text>
+        <g font-family="JetBrains Mono" font-size="11" fill="#332C24">
+          <rect x="380" y="40" width="26" height="26" fill="#DCEFEA" stroke="#2E8C79"/><rect x="410" y="40" width="26" height="26" fill="#DCEFEA" stroke="#2E8C79"/>
+          <rect x="440" y="40" width="26" height="26" fill="#DCEFEA" stroke="#2E8C79"/><rect x="470" y="40" width="26" height="26" fill="#DCEFEA" stroke="#2E8C79"/>
+        </g>
+        <path d="M393 66 v10 M423 66 v10 M453 66 v10 M483 66 v10" stroke="#9A8E7C" stroke-width="1.4"/>
+        <rect x="380" y="78" width="26" height="20" rx="3" fill="#F5DED4" stroke="#BB5138"/><rect x="410" y="78" width="26" height="20" rx="3" fill="#F5DED4" stroke="#BB5138"/>
+        <rect x="440" y="78" width="26" height="20" rx="3" fill="#F5DED4" stroke="#BB5138"/><rect x="470" y="78" width="26" height="20" rx="3" fill="#F5DED4" stroke="#BB5138"/>
+        <path d="M393 98 v10 M423 98 v10 M453 98 v10 M483 98 v10" stroke="#9A8E7C" stroke-width="1.4"/>
+        <path d="M393 108 h90" stroke="#9A8E7C" stroke-width="1.4"/>
+        <rect x="423" y="112" width="30" height="24" rx="4" fill="#F6E4C4" stroke="#B36F14"/><text x="438" y="128" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">C'</text>
+        <text x="380" y="160" font-family="JetBrains Mono" font-size="10" fill="#6E6456">4 parallel partial sums, then combined → different rounding order → C' ≠ C</text>
+      </svg>
+      <figcaption>Both trees are internally consistent for <i>their own</i> fixed batch size (position-invariant), but the two batch sizes disagree with each other (not batch-invariant). LLM-42's verifier exploits the left property; batch-invariance insists on abolishing the right tree everywhere. (Paper, Fig. 3, redrawn)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · Decode-Verify-Rollback, mechanically</h3>
+      <pre class="sketch"><span class="cm"># fast path: ordinary dynamic-batched decode, W tokens</span>
+<span class="kw">for</span> i in 1..W: T'[i] = decode_step(nondeterministic_batch)
+
+<span class="cm"># verify: replay the SAME W tokens at a fixed batch size</span>
+T[1..W+1] = verifier_forward_pass(prompt_prefix + T'[1..W], batch=<span class="hl">fixed</span>)
+
+<span class="cm"># reconcile</span>
+k = first index where T[k] ≠ T'[k]   <span class="cm"># or W+1 if all match</span>
+commit T[1..k]                        <span class="cm"># includes verifier's own new token at k</span>
+discard T'[k..W]; overwrite KV cache entries [1..k] with the verifier's
+resume fast-path decoding from position k</pre>
+      <div class="callout why"><span class="ic">💡</span><div><b>Guaranteed forward progress:</b> even in the worst case where every speculated token mismatches, the verifier still emits one fresh, consistent token (T[1]) — so DVR never stalls, no matter how adversarial the rollback pattern.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>4 · Grouped verification — the efficiency knob</h3>
+      <p>A lone verification pass over a small window is memory-bound (low arithmetic intensity ⇒ high per-token cost); a lone pass over a huge window is compute-bound but rolls back a huge amount on any mismatch. <b>Grouped verification</b> batches several requests' small windows into one pass: each request keeps a short, cheap rollback, while the pass overall is large enough to be compute-bound.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: pick a verification window and group size</div>
+      <div class="viz-kicker">real ablation numbers, Llama-3-8B, ShareGPT — product of window × requests is capped at 1024 tokens/pass</div>
+      <div class="part-viz">
+        <div>
+          <div class="ways-strip" id="waysStrip"></div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">window size (log₂):</span>
+            <input type="range" min="0" max="6" value="1" id="partRange">
+            <span class="mono" id="partRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">32</span>
+          </div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">requests grouped (log₂):</span>
+            <input type="range" min="0" max="6" value="4" id="groupRange">
+            <span class="mono" id="groupRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">16</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-w="1" data-g="0">No grouping, small window (16,1)</button>
+            <button class="tbtn" data-w="1" data-g="4">Paper's default (32,16)</button>
+            <button class="tbtn" data-w="0" data-g="5">Global peak (16,32)</button>
+            <button class="tbtn" data-w="6" data-g="0">No grouping, huge window (1024,1)</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">recompute cost<b id="pVpr">—</b></div>
+            <div class="pstat">tokens / pass<b id="pEq">—</b></div>
+            <div class="pstat">throughput (norm.)<b id="pTot">—</b></div>
+          </div>
+          <div class="pverdict sub" id="pVerdict">Move a slider…</div>
+        </div>
+      </div>
+      <figcaption>Only (window × requests) ≤ 1024 was measured in the paper's ablation (Fig. 13) — the diagonal boundary of its heatmap. Values shown are the paper's real recompute-cost and normalized-throughput numbers for Llama-3-8B.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · Operator-specific fixes (small, one-time)</h3>
+      <p>Most kernels need no change — they're already position-invariant. Three exceptions get a one-time, reused-everywhere substitution: <b>attention</b> uses FlashAttention-3 with a fixed KV-split tile size (no dynamic tiling); <b>collectives</b> use multimem-based AllReduce (CUDA 13+), which is already both batch- and position-invariant, replacing the position-dependent ring AllReduce; <b>sampling</b> uses a fixed-seed multinomial and a deterministic tie-break for argmax. None of this touches GEMM, FusedMoE, or RMSNorm kernels.</p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations, each traced through the paper's own measured numbers.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The 45% you get from selective determinism</h3>
+      <p style="color:var(--ink-soft)">Figure 5: 8 nondeterministic requests hit 1495 tok/s; adding a 9th (still nondeterministic) reaches 1775 tok/s. If all 9 must be deterministic (SGLang-det), throughput is 1192 tok/s. If only 1 of the 9 needs determinism (LLM-42), throughput is 1733 tok/s.</p>
+      <ol class="seq">
+        <li><b>Cost of going fully deterministic:</b> (1775 − 1192) / 1775 = <b>32.8%</b> lower than the 9-request nondeterministic baseline — matches the paper's "33% lower."</li>
+        <li><b>LLM-42's gain over SGLang-det:</b> (1733 − 1192) / 1192 = <b>45.4%</b> higher — matches the paper's "45% higher."</li>
+        <li><b>LLM-42's gap from the nondeterministic ceiling:</b> (1775 − 1733) / 1775 = <b>2.4%</b> — within the paper's "3%."</li>
+        <li><b>Insight:</b> one request in nine needing exact reproducibility cost almost nothing, because only that one request's tokens ever reach the verifier.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Reading Table 4: verification overhead scales with deterministic traffic, not model size alone</h3>
+      <p style="color:var(--ink-soft)">Table 4 (Llama-3-70B, window 32, group 16) reports verification passes as a % of total forward passes, by workload and deterministic fraction.</p>
+      <ol class="seq">
+        <li><b>At 10% deterministic traffic:</b> ShareGPT needs 10.3% extra forward passes; ArXiv needs only 4.9%. Long-context ArXiv prompts are prefill-dominated (deterministic for free), so a smaller share of total work is decode that needs verifying.</li>
+        <li><b>At 100% deterministic traffic:</b> ShareGPT rises to 25.9%; ArXiv to 35.0% — ArXiv's decode-side verification now dominates once every request needs it.</li>
+        <li><b>Synthetic (4K,4K)</b> stays low even at 100% (17.6%): with 4K output tokens, the fixed per-window verification overhead amortizes over a much longer decode.</li>
+        <li><b>Insight:</b> overhead is roughly proportional to deterministic-traffic fraction at low ratios — exactly the "pay only for what you tag" property the batch-invariant baseline can't offer.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Why the paper's default (window 32, group 16) is nearly optimal</h3>
+      <p style="color:var(--ink-soft)">From the ablation (Fig. 13, Llama-3-8B, all traffic deterministic): the global-best cell is (group 32, window 16) at 1.00× normalized throughput / 2.91% recompute. The paper ships (group 16, window 32) instead.</p>
+      <ol class="seq">
+        <li><b>Look up (group 16, window 32):</b> throughput = <b>0.99×</b> of the global peak; recompute cost = <b>6.66%</b>.</li>
+        <li><b>Compare to global best (group 32, window 16):</b> 1.00× throughput, 2.91% recompute — technically better on both axes, but only by 1 percentage point of throughput.</li>
+        <li><b>Compare to no grouping at the same window (group 1, window 32):</b> throughput collapses to <b>0.27×</b>, recompute rises to 8.23% — grouping, not window size, is what buys most of the gain.</li>
+        <li><b>Insight:</b> LLM-42's performance is not razor-sensitive to the exact (window, group) choice — many configurations land within a couple of points of peak, as long as the window isn't huge (recompute blow-up) and the group isn't tiny (under-utilization).</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ What "7.21× slowdown" and "2.78× slowdown" actually mean</h3>
+      <p style="color:var(--ink-soft)">Figure 4 reports GEMM slowdown of batch-invariant kernels vs. cuBLAS, for the QKV projection of Llama-3-70B, at various batch sizes and tensor-parallel degrees.</p>
+      <ol class="seq">
+        <li><b>Peak throughput comparison:</b> cuBLAS reaches 801 TFLOPS; the Triton batch-invariant kernel peaks at 533 TFLOPS — a ceiling gap of 801/533 ≈ <b>1.50×</b> even at best case.</li>
+        <li><b>Worst case (TP=8, low batch):</b> the Triton kernel's slowdown reaches <b>7.21×</b> — far worse than the peak-to-peak ratio, because split-K's benefit is largest exactly where batches are smallest and TP is highest (least per-GPU work to parallelize).</li>
+        <li><b>DeepGEMM (CUDA, not Triton)</b> narrows this to a maximum of <b>2.78×</b> at the same shape — better engineering recovers some of the gap, but never eliminates it, since split-K itself is still disabled.</li>
+        <li><b>Insight:</b> the batch-invariant tax is worst exactly in the low-batch, high-TP regime that latency-sensitive interactive serving depends on — the opposite of where you'd want a fixed overhead to land.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">Disabling dynamic batching would make inference deterministic. Why doesn't LLM-42 do this?</div>
+      <details><summary>Show answer</summary><div class="ans">Dynamic batching is the dominant throughput optimization in LLM serving — disabling it "severely degrades throughput" (the paper's own framing). LLM-42's entire design goal is determinism <i>in the presence of</i> dynamic batching, not instead of it: the fast path keeps full dynamic batching, and only the verifier runs at a fixed batch size, and only for tagged requests.<span class="mis">Misconception: that eliminating the variable (batching) is the only way to eliminate its symptom (nondeterminism). LLM-42 instead makes the <i>consequence</i> of variability checkable and correctable.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">O1's data shows the "second consistent span" is ≤1 token for 80% of requests once a mismatch occurs. Why does this make DVR's rollback cost manageable rather than catastrophic?</div>
+      <details><summary>Show answer</summary><div class="ans">It means once a request diverges, it's very unlikely to immediately re-align with the reference — so there's no point trying to "resync" token-by-token after a mismatch. Instead, DVR just discards everything after the first mismatch and resumes from the verifier's own fresh token. Combined with O1's <i>first</i> consistent span typically covering many tokens, most windows need zero rollback, and when rollback does happen it discards only the (small) remainder of that window, not the whole request.<span class="mis">Misconception: that a mismatch means the whole speculative run was wasted. Only the tokens after the divergence point are discarded — everything before it, and the verifier's own next token, are kept.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Ring-based AllReduce is neither batch-invariant nor position-invariant. Multimem-based AllReduce is both. What's the difference between the two invariance properties, using this example?</div>
+      <details><summary>Show answer</summary><div class="ans">Batch-invariant would mean: the reduction order is identical no matter the batch size. Position-invariant would mean: for a <i>given fixed</i> batch size, every element gets the same reduction order regardless of where it sits in the batch. Ring AllReduce reduces different chunks of a tensor in different orders around the ring — so even within one fixed batch, position along the ring changes the order (fails position-invariance), and of course varies with batch size too (fails batch-invariance). Multimem AllReduce fixes both because its reduction tree doesn't depend on chunk position or batch size.<span class="mis">Misconception: that batch-invariance implies position-invariance or vice versa. They're independent properties — LLM-42 only needs the weaker one (position-invariance).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">In the grouped-verification ablation, every measured (window, group) pair satisfies window × group ≤ 1024. Why would the authors cap the product at 1024, and what does the triangular shape of their heatmap tell you?</div>
+      <details><summary>Show answer</summary><div class="ans">Total tokens verified per pass = window size × number of grouped requests — this is the effective batch size of the verifier's forward pass. Capping it at 1024 keeps the verification pass within a GPU-batch size the hardware/scheduler already handles efficiently (and matches the max output length used in their experiments); beyond that, a single verification pass would itself become an outsized, disruptive batch that starves the fast path of GPU time. The triangular shape is a direct visualization of that constraint: every cell on the diagonal boundary has exactly window × group = 1024, and cells beyond it were never measured.<span class="mis">Misconception: that bigger windows and bigger groups are simply "better, up to some point you'd have to guess." The paper's own design already encodes a principled ceiling — the verifier pass size — rather than treating window and group as unboundedly independent knobs.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why must LLM-42 overwrite the KV cache entries produced by the fast path with the verifier's own, even for tokens that <i>passed</i> verification?</div>
+      <details><summary>Show answer</summary><div class="ans">A passing token means its <i>output</i> matched — but the KV cache entry stored during the fast-path decode was still computed under nondeterministic, dynamically-batched execution, and could carry tiny numerical differences from what a fixed-batch computation would have produced. If left in place, that KV entry could influence <i>future</i> tokens' attention computation in a way that eventually causes a divergence the token-level check never caught. Overwriting with the verifier's own KV entries keeps the entire state — not just the emitted text — consistent going forward.<span class="mis">Misconception: that verifying the output token is the same as verifying the underlying computation. Two different reduction orders can occasionally produce the same rounded output token while leaving slightly different internal state.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Using the paper's weighted-harmonic-mean formula for a separate deterministic/nondeterministic GPU pool split, explain qualitatively why LLM-42 (single-pool) tends to win only when the deterministic fraction p is below ~0.5.</div>
+      <details><summary>Show answer</summary><div class="ans">The separate-pool throughput is the weighted harmonic mean of T_d (deterministic pool throughput) and T_n (nondeterministic pool throughput), weighted by p and (1−p). A harmonic mean is dominated by the smaller of its inputs, but only in proportion to its weight — so when p is small, the (slow) T_d term contributes little and T_Sep stays close to T_n. LLM-42, by contrast, pays a cost roughly proportional to p directly (only p-fraction of traffic hits the verifier) rather than through the batch-invariant tax T_d bakes into 100% of one pool's traffic. As p grows past ~0.5, the separate deterministic pool is now serving mostly-deterministic traffic at its own (still batch-invariant, but at least undiluted) rate, which can beat LLM-42's shared-pool overhead once most requests need verification anyway.<span class="mis">Misconception: that one architecture (single shared pool vs. separate pools) is strictly better. It's a genuine crossover governed by traffic mix — the paper reports LLM-42 wins for p &lt; 0.5, which covers realistic (&lt;10%) deterministic-traffic deployments but not majority-deterministic ones.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">The paper found that SGLang's batch-invariant deterministic mode is <i>not actually deterministic</i> on the MoE model Qwen3-30B-A3B. What does this tell you about batch-invariance as a guarantee?</div>
+      <details><summary>Show answer</summary><div class="ans">Batch-invariance is only a guarantee for the kernels that were actually rewritten to be batch-invariant. MoE models add extra shape-dependent machinery (routing tokens to experts, variable tokens-per-expert) that the existing batch-invariant kernel set didn't fully cover — so nondeterminism leaked back in through an un-audited operator. LLM-42, by contrast, was empirically verified deterministic on the same model across 90K requests, because its correctness doesn't depend on auditing every kernel — only on the verifier's fixed-batch replay being reproducible.<span class="mis">Misconception: that "uses batch-invariant kernels" and "is deterministic" are the same claim. The first is an implementation detail that can silently miss operators; the second is what actually needs verifying end-to-end.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">At verification window size 1024 (no grouping), recompute cost for Llama-3-8B is 102.59% — meaning recomputation exceeds the original decode work. How is that possible, and why doesn't the paper recommend this setting?</div>
+      <details><summary>Show answer</summary><div class="ans">Recompute cost is measured as (extra tokens generated due to rollback) ÷ (tokens that were ultimately kept), not capped at 100%. With a 1024-token window, a single mismatch anywhere in that huge span discards everything after it — on average, more than half the window on a per-mismatch basis — and this can happen more than once per request's total output, so total wasted work can exceed the useful output length. This is exactly why the paper pairs window size with grouping and picks a modest default (32) rather than maximizing window size for compute efficiency alone.<span class="mis">Misconception: that "recompute cost" behaves like a bounded percentage (0–100%). It's a ratio of wasted-to-useful work, and a big-enough window can waste more than it keeps.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Eleven questions newcomers ask most.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is LLM-42's output the same distribution as ordinary nondeterministic decoding?<span class="chev">▾</span></summary><div class="a">Yes for a fixed prompt and seed: every committed token is either a real forward-pass output (fast path, verified to match) or the verifier's own forward-pass output (on rollback) — never an approximation. The sampling hyperparameters are unchanged; only floating-point rounding, not the sampling policy, is being controlled. Different temperature/top-k settings still change output intentionally, as they should.</div></details>
+      <details><summary><span class="q">Q2</span>How is this different from ordinary speculative decoding for speedup?<span class="chev">▾</span></summary><div class="a">Ordinary speculative decoding uses a separate, weaker draft model to generate candidates cheaply and a stronger target model to verify — the goal is fewer expensive forward passes. LLM-42 uses the <i>same</i> model and the <i>same</i> forward computation for both roles, and its goal is bit-level reproducibility, not fewer passes; the verifier pass is pure overhead paid to buy determinism, not compute saved.</div></details>
+      <details><summary><span class="q">Q3</span>Why doesn't prefill need a verifier?<span class="chev">▾</span></summary><div class="a">Prefill processes all prompt tokens for one request in parallel within a single forward pass; as long as the system avoids arbitrarily batching prefill tokens from unrelated requests together in ways that vary run to run, prefill's own computation is already deterministic. So determinism for prefill is "free" — no speculate-and-check needed, only careful scheduling.</div></details>
+      <details><summary><span class="q">Q4</span>What exactly triggers a rollback?<span class="chev">▾</span></summary><div class="a">A mismatch between a fast-path token and the verifier's replayed token at the same position, within a verification window. On mismatch, everything from that position onward in the window is discarded; the token the verifier itself produced at that position is accepted instead, and decoding resumes from there.</div></details>
+      <details><summary><span class="q">Q5</span>How expensive is the verifier compared to normal decoding?<span class="chev">▾</span></summary><div class="a">Per-token verification cost depends heavily on window size: at window 16 it's memory-bound and costs up to 0.6ms/token (Llama-3-8B) or 2.7ms/token (Llama-3-70B, TP-8); at window 1024 it's compute-bound and drops to 0.025ms and 0.06ms respectively — a 24–45× reduction. Grouped verification lets you get most of that efficiency without the huge-window rollback penalty.</div></details>
+      <details><summary><span class="q">Q6</span>Does LLM-42 require new GPU kernels?<span class="chev">▾</span></summary><div class="a">Almost none. GEMM, fused MoE, and RMSNorm kernels are reused completely unmodified, since determinism is enforced by scheduling, not kernel rewriting. Only attention (fixed KV-split tile size), collectives (multimem AllReduce), and the sampler (fixed-seed, deterministic tie-break) needed a one-time swap — and these are shared across all models, not re-derived per model.</div></details>
+      <details><summary><span class="q">Q7</span>Does LLM-42 always beat SGLang's batch-invariant mode?<span class="chev">▾</span></summary><div class="a">Not universally — at very high deterministic-traffic fractions (approaching 100%) the always-on verifier's overhead grows, and for some workloads (e.g. ShareGPT's many short prefills) LLM-42 can lag. But across the paper's realistic operating range (≤20% deterministic traffic, which the authors expect to dominate in practice) it consistently and often substantially outperforms both SGLang-det variants, and scales especially well for the 70B model.</div></details>
+      <details><summary><span class="q">Q8</span>Why is nondeterminism a genuine problem, given LLMs are already stochastic by design?<span class="chev">▾</span></summary><div class="a">The paper's target is a narrower guarantee: identical output for identical inputs <i>and</i> fixed sampling hyperparameters (e.g., temperature=0, or a fixed seed). Changing those hyperparameters intentionally changes output — that's fine. The problem is that today, even holding everything fixed, outputs still vary — breaking reproducibility for debugging, evaluation, RL training, and compliance-sensitive deployments.</div></details>
+      <details><summary><span class="q">Q9</span>What is "grouped verification" solving, exactly?<span class="chev">▾</span></summary><div class="a">A pure trade-off between two costs that both scale with the verification window: per-token verification cost (high for small windows — memory-bound) and recomputation cost on rollback (high for large windows — more gets discarded per mismatch). Grouping many requests' small windows into one verifier pass gets the low per-token cost of a large batch while each request individually keeps the low rollback cost of a small window.</div></details>
+      <details><summary><span class="q">Q10</span>Was record-and-replay of exact batch sizes considered instead?<span class="chev">▾</span></summary><div class="a">Yes, and rejected. Logging the batch size used at every one of a request's decode iterations and replaying it exactly would work, but fundamentally conflicts with dynamic batching's ability to add/remove requests every iteration — replaying a mismatched batch size would force padding (wasted compute) or preempting/migrating other in-flight requests (added complexity), for every deterministic request, every step.</div></details>
+      <details><summary><span class="q">Q11</span>What's MarginGate, and how does it extend LLM-42?<span class="chev">▾</span></summary><div class="a">A follow-on optimization: token flips concentrate almost entirely on decode steps where the top-1/top-2 logit margin is small (only 0.3–1.3% of steps actually flip). MarginGate flags the ~15–19% of steps with a small margin as the only ones needing verification, skipping the always-on verifier for high-margin steps — reported at 2.23× (Llama-3.1-8B) and 1.99× (Qwen2.5-14B) overhead reduction versus LLM-42's always-verify baseline.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results, and provenance</h2>
+      <p class="sub">Every term in one place, then where the numbers actually came from.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>DVR (Decode-Verify-Rollback)</b><span>LLM-42's protocol: speculate on a nondeterministic fast path, replay under a fixed batch size to verify, roll back mismatches.</span></div>
+      <div class="term-def"><b>Fast path</b><span>Ordinary, high-throughput dynamically-batched decoding — nondeterministic, but usually correct in the sense of matching a fixed-batch replay.</span></div>
+      <div class="term-def"><b>Verifier</b><span>A forward pass over a fixed-size window at a fixed batch size, producing the deterministic reference output for that window.</span></div>
+      <div class="term-def"><b>Batch-invariance</b><span>Forcing one universal reduction schedule for a kernel regardless of batch size — deterministic, but discards batch-size-dependent optimizations like split-K.</span></div>
+      <div class="term-def"><b>Position-invariance</b><span>For a <i>fixed</i> batch size, every element gets the same reduction schedule regardless of its position in the batch — the weaker property LLM-42 relies on.</span></div>
+      <div class="term-def"><b>Grouped verification</b><span>Batching several requests' small per-request verification windows into one verifier pass — cheap rollback per request, cheap compute per token overall.</span></div>
+      <div class="term-def"><b>is_deterministic flag</b><span>Per-request API flag (default False) that opts a request into verification — the mechanism behind selective determinism.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>O1–O4</b><span>The paper's four observations: consistent-span persistence (O1), kernel position-invariance (O2), position-consistency sufficing for determinism (O3), and the all-or-nothing failure of existing systems (O4).</span></div>
+      <div class="term-def"><b>split-K</b><span>A GEMM optimization partitioning the reduction dimension across more thread blocks at low batch sizes — a major source of batch-shape-dependent rounding.</span></div>
+      <div class="term-def"><b>Consistent span</b><span>The run of leading tokens that match between two runs of the same request; the "second consistent span" measures re-alignment after a first mismatch.</span></div>
+      <div class="term-def"><b>Forward progress guarantee</b><span>Every verification pass yields at least one new, consistent token, even under worst-case rollback — DVR can never stall.</span></div>
+      <div class="term-def"><b>MoE routing</b><span>Token-to-expert assignment in a Mixture-of-Experts model; variable tokens-per-expert is an extra source of shape-dependent kernel behavior.</span></div>
+      <div class="term-def"><b>MarginGate</b><span>A follow-on scheme that verifies only decode steps with a small top-1/top-2 logit margin, since flips concentrate there.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What LLM-42 buys, vs. the alternatives</div>
+      <div class="viz-kicker">selected results across the paper's offline/online experiments</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">LLM-42 @ low det%<small>vs. nondet</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="10"><span>within ~10%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">SGLang-det<small>overhead</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="52"><span>up to 52% slower</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">1-of-9 selective<small>vs. all-9 det</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="45"><span>+45% throughput</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">GEMM slowdown<small>batch-invariant, worst case</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="55"><span>7.21×</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Verify cost drop<small>window 16→1024, 70B</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="45"><span>45× cheaper/token</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 60 (bar 4/5 are multiplicative factors, shown proportionally)</p>
+      <figcaption><b>The through-line:</b> every cost the batch-invariant approach pays globally, LLM-42 pays only for the fraction of traffic that's tagged deterministic. (Paper §5, abstract)</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes</div>
+    <div class="read-item reveal">
+      <h4>Paper facts vs. this guide's framing</h4>
+      <p>All numbers (TFLOPS, slowdown factors, throughput, latency percentiles, recompute %, verification-pass %) are taken directly from the paper's Figures 4, 5, 9–14 and Table 4, recomputed here only for illustrative arithmetic (e.g., the 45%/33%/2.4% derivations in Worked Example ①, which reproduce the paper's own stated percentages from its raw throughput figures). The analogies, SVG diagrams, the DVR figure's redrawing of Fig. 8, the split-K redrawing of Fig. 3, and the verification-window interactive's framing are this guide's original explanatory scaffolding, not the paper's. The grouped-verification interactive uses the paper's exact Figure 13 ablation values for Llama-3-8B.</p>
+    </div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Defeating Nondeterminism in LLM Inference <span class="diff med">medium</span></h4><div class="meta">He et al. (Thinking Machines Lab) · blog, 2025</div><p>Identifies FP non-associativity + dynamic batching as the root cause and proposes batch-invariant computation — the baseline LLM-42 improves on.</p></div>
+    <div class="read-item reveal"><h4>Fast Inference from Transformers via Speculative Decoding <span class="diff med">medium</span></h4><div class="meta">Leviathan, Kalman, Matias · ICML 2023</div><p>The origin of the draft-then-verify structure LLM-42 repurposes for determinism instead of raw speedup.</p></div>
+    <div class="read-item reveal"><h4>Efficient Memory Management for LLM Serving with PagedAttention <span class="diff med">medium</span></h4><div class="meta">Kwon et al. (vLLM) · SOSP 2023</div><p>The dynamic-batching-and-KV-cache serving foundation whose throughput benefits LLM-42 is built to preserve.</p></div>
+    <div class="read-item reveal"><h4>Taming Throughput-Latency Tradeoff with Sarathi-Serve <span class="diff med">medium</span></h4><div class="meta">Agrawal et al. · OSDI 2024</div><p>Chunked-prefill scheduling technique from the same performance lineage LLM-42's evaluation baseline (SGLang) builds on.</p></div>
+    <div class="read-item reveal"><h4>MarginGate: Sparse Margin-Triggered Verification <span class="diff hard">hard</span></h4><div class="meta">Chu, Zhou, Zhang · arXiv, 2026</div><p>Direct follow-on to LLM-42, skipping verification on high-margin decode steps for a further 2×-ish overhead reduction.</p></div>
+    <div class="read-item reveal"><h4>Deterministic Inference Across Tensor Parallel Sizes <span class="diff hard">hard</span></h4><div class="meta">Zhang et al. · arXiv, 2025</div><p>A complementary angle: eliminating training–inference numeric mismatch across different TP degrees, related to but distinct from LLM-42's run-to-run determinism goal.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Gond, Kamath, Ramjee, Panwar, "LLM-42: Enabling Determinism in LLM Inference with Verified Speculation" (SOSP '26)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 60;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- VERIFICATION WINDOW / GROUP EXPLORER (real Fig.13 ablation numbers, Llama-3-8B) ---- */
+  var sizes = [16,32,64,128,256,512,1024];
+  // recompute[g_idx][w_idx], null = not measured (window*group > 1024)
+  var recompute = [
+    [3.87, 8.23, 16.55, 30.83, 59.62, 92.06, 102.59],  // group 1
+    [4.05, 8.20, 15.17, 30.15, 59.19, 90.83, null],    // group 2
+    [4.04, 7.58, 14.16, 29.91, 58.40, null, null],     // group 4
+    [3.75, 6.77, 14.03, 29.47, null, null, null],      // group 8
+    [2.95, 6.66, 13.85, null, null, null, null],       // group 16
+    [2.91, 6.49, null, null, null, null, null],        // group 32
+    [2.78, null, null, null, null, null, null]         // group 64
+  ];
+  var throughput = [
+    [0.16, 0.27, 0.40, 0.52, 0.57, 0.54, 0.39],
+    [0.29, 0.45, 0.61, 0.73, 0.73, 0.52, null],
+    [0.46, 0.64, 0.81, 0.84, 0.72, null, null],
+    [0.67, 0.83, 0.96, 0.84, null, null, null],
+    [0.88, 0.99, 0.92, null, null, null, null],
+    [1.00, 0.95, null, null, null, null, null],
+    [0.95, null, null, null, null, null, null]
+  ];
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(wIdx, gIdx){
+    if(!strip) return;
+    var ok = recompute[gIdx][wIdx] !== null;
+    var html = '';
+    for(var i=0;i<12;i++){ html += '<div class="way '+(ok ? (i<6?'vpr':'eq') : 'eq')+'" style="opacity:'+(ok?1:0.35)+'">'+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(wIdx, gIdx){
+    wIdx = Math.max(0, Math.min(6, wIdx)); gIdx = Math.max(0, Math.min(6, gIdx));
+    document.getElementById('partRange').value = wIdx;
+    document.getElementById('groupRange').value = gIdx;
+    document.getElementById('partRangeVal').textContent = sizes[wIdx];
+    document.getElementById('groupRangeVal').textContent = sizes[gIdx];
+    var rc = recompute[gIdx][wIdx], tp = throughput[gIdx][wIdx];
+    var tokensPerPass = sizes[wIdx] * sizes[gIdx];
+    document.getElementById('pVpr').textContent = rc === null ? '—' : rc.toFixed(2) + '%';
+    document.getElementById('pEq').textContent = tokensPerPass;
+    document.getElementById('pTot').textContent = tp === null ? '—' : tp.toFixed(2) + '×';
+    buildStrip(wIdx, gIdx);
+    var verd = document.getElementById('pVerdict');
+    if(rc === null){
+      verd.className = 'pverdict sub';
+      verd.textContent = 'Not measured — window × group = ' + tokensPerPass + ' exceeds the paper\'s 1024-token-per-pass cap.';
+    } else if(tp >= 0.99){
+      verd.className = 'pverdict opt';
+      verd.textContent = '✓ Near the global peak — ' + (tp*100).toFixed(0) + '% of best-observed throughput at ' + rc.toFixed(1) + '% recompute cost.';
+    } else if(sizes[gIdx] === 1){
+      verd.className = 'pverdict sub';
+      verd.textContent = 'No grouping — memory-bound verification passes are wasting most of the GPU\'s efficiency.';
+    } else if(sizes[wIdx] >= 512){
+      verd.className = 'pverdict sub';
+      verd.textContent = 'Window is large — recompute cost is climbing fast, eating into the compute-bound efficiency gain.';
+    } else {
+      verd.className = 'pverdict sub';
+      verd.textContent = 'A reasonable middle ground — not peak throughput, but nowhere near the recompute blow-up of huge windows.';
+    }
+  }
+  var partRange = document.getElementById('partRange');
+  var groupRange = document.getElementById('groupRange');
+  if(partRange && groupRange){
+    partRange.addEventListener('input', function(){ setPart(parseInt(this.value,10), parseInt(groupRange.value,10)); });
+    groupRange.addEventListener('input', function(){ setPart(parseInt(partRange.value,10), parseInt(this.value,10)); });
+    document.querySelectorAll('[data-w]').forEach(function(b){
+      b.addEventListener('click', function(){ setPart(parseInt(b.dataset.w,10), parseInt(b.dataset.g,10)); });
+    });
+    setPart(1,4);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
