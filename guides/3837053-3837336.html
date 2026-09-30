@@ -1,0 +1,1020 @@
+<!DOCTYPE html>
+<!-- Field guide: "LLM KV-cache: To Restore or To Recompute" (Najafizadeh, Tarasov, Merenstein, Zhu, Zadok — HotStorage'26).
+     Palette: --dram (steel blue) = GPU / recompute path · --optane (terracotta) = disk/SSD / restore path (the slow baseline)
+     --ltram (indigo) = the I/O-aware policy that arbitrates between them · --honey (gold) = headline results / signature accents. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Restore or Recompute? A Field Guide to I/O-Aware KV-Cache Management</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style — see learn/template/DESIGN.md) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E0A23D; --honey-deep:#B87A12; --honey-soft:#FAE8C8;
+  --dram:#2C6E9C; --dram-soft:#DCE9F2;      /* steel blue = GPU / recompute path        */
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;    /* indigo = the I/O-aware policy               */
+  --optane:#B4503A; --optane-soft:#F5DFD6;  /* terracotta = disk/SSD / restore (the baseline) */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HotStorage 2026 · A Field Guide</span>
+    <h1>When fetching a memory back is slower than just <span class="swash">redoing the math</span></h1>
+    <p class="lede">Every LLM request that reuses old conversation history faces a choice: pull its attention memory (the <strong>KV-cache</strong>) back from storage, or recompute it fresh on the GPU. This paper shows that choice should never be fixed — it should be measured, live, and split.</p>
+    <div class="hero-meta">
+      <span>📄 Najafizadeh, Tarasov, Merenstein, Zhu, Zadok · HotStorage'26</span>
+      <span>🎓 Assumes some LLM-serving &amp; storage-tiering background</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">⚖️</div>
+      <p>Split a request's KV-cache blocks between <span class="ro">GPU recompute</span> and <span class="wo">storage restore</span> so both paths <strong>finish together</strong> — never let the slower one set the pace.<br><em style="font-size:.9rem">Measure GPU and storage speed first, then divide.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then eight ideas the paper assumes you know</h2>
+      <p class="sub">The paper's acronyms first, defined once so nothing later is opaque. Then eight collapsible primers — open whatever looks unfamiliar.</p>
+    </div>
+
+    <div class="card" style="background:var(--ltram-soft);border-color:#bcbfe8">
+      <h3 style="color:#3a409a">Quick glossary</h3>
+      <div class="gloss">
+        <div class="term-def"><b>LLM</b><span>Large Language Model — the transformer being served.</span></div>
+        <div class="term-def"><b>KV-cache</b><span>Stored key/value attention vectors for already-processed tokens.</span></div>
+        <div class="term-def"><b>HBM</b><span>High Bandwidth Memory — the GPU's own on-package memory.</span></div>
+        <div class="term-def"><b>DRAM</b><span>CPU-side memory; here, a transient buffer for KV-cache in transit.</span></div>
+        <div class="term-def"><b>TTFT</b><span>Time To First Token — prefill latency, what this paper optimizes.</span></div>
+        <div class="term-def"><b>TTLT</b><span>Time To Last Token — full generation latency (out of scope here).</span></div>
+        <div class="term-def"><b>SLO</b><span>Service-Level Objective — a throughput or latency target to satisfy.</span></div>
+        <div class="term-def"><b>P95</b><span>95th-percentile (tail) latency — the slow 5% of requests.</span></div>
+        <div class="term-def"><b>MFU</b><span>Model FLOPs Utilization — hardware efficiency, written η in the paper's formulas.</span></div>
+        <div class="term-def"><b>PCIe / link</b><span>The CPU↔GPU interconnect; often the bottleneck for restoring from DRAM or disk.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> GPU / recompute path</span>
+      <span><i style="background:var(--optane)"></i> disk-SSD / restore path (the baseline)</span>
+      <span><i style="background:var(--ltram)"></i> the I/O-aware policy</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Why LLM inference is expensive, and quadratically so<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Generating text means running the input through many transformer layers of matrix multiplication. Producing the very first output token — <b>prefill</b> — requires attending every input token to every other input token, so cost grows roughly with the <em>square</em> of context length. The paper's headline number: an H200 GPU needs <b>18 seconds</b> to produce the first token for a 128K-token Llama-3.1-70B prompt if it must redo all that attention work from scratch.</p>
+          <div class="ready"><b>Now you're ready:</b> that 18-second number is exactly what a KV-cache is built to erase — if you don't have to recompute it.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>What a KV-cache actually stores<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>For every token already processed, each attention layer produces a <b>key</b> and <b>value</b> vector. Future tokens reuse those vectors instead of recomputing them. Reuse turns the cost of processing N tokens from <b>O(N²)</b> down to <b>O(N)</b>. With KV-cache reuse enabled, that same 128K-token H200 example drops from 18s to <b>under 2 seconds</b>.</p>
+          <div class="ready"><b>Now you're ready:</b> the whole paper is about what happens when that cache doesn't fit in GPU memory and has to live somewhere else.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>The storage hierarchy: HBM, DRAM, disk — capacity vs. bandwidth<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>GPU <b>HBM</b> is fast but tiny and expensive (H200: 141GB at up to <b>3,360 GB/s</b>). CPU <b>DRAM</b> is bigger, slower to reach from the GPU. Local or remote <b>disk/SSD</b> is huge but slow (NVMe Gen5: roughly <b>10 GB/s</b>) — a ~300× bandwidth gap from HBM. This paper considers exactly that three-tier hierarchy connected by one interconnect (e.g., PCIe).</p>
+          <div class="ready"><b>Now you're ready:</b> whichever tier holds a KV-cache block determines how long it takes to bring back — the core variable in the restore-vs-recompute decision.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Blocks and the block table<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>KV-cache isn't one blob — it's split into <b>blocks</b>, each holding a fixed number of tokens (e.g., 16). A <b>block table</b> maps each block to its physical location so the model can read it directly, in place — no copying into a contiguous buffer (<b>zero-copy</b>). For a Llama-3 model with 16-token blocks, one block is about <b>2MB</b>.</p>
+          <div class="ready"><b>Now you're ready:</b> restore-vs-recompute is decided per block, which is what makes a <em>partial</em>, mixed allocation (some blocks restored, some recomputed) possible at all.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Why KV-cache gets evicted in the first place<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Inference engines serve many users concurrently; each session's KV-cache competes for GPU memory. Worse, model weights themselves eat into HBM — a 70B-parameter model at bf16 precision needs 2 bytes/parameter, i.e. <b>~140GB</b>, on an H200 with only 141GB of HBM total. With 10 users each needing ~30GB of KV-cache for a 128K context, demand hits <b>300GB</b> — far beyond what's left. Inactive sessions' KV-cache gets evicted to lower tiers to make room.</p>
+          <div class="ready"><b>Now you're ready:</b> when an evicted session returns, its data must be restored from wherever it landed — or recomputed instead.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Prefill vs. decode, TTFT vs. TTLT<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Prefill</b> processes the whole input prompt at once, producing the first output token (TTFT). <b>Decode</b> then generates subsequent tokens one at a time (contributing to TTLT). Restoring or recomputing KV-cache only affects <em>prefill</em> — decode latency is assumed unchanged across policies, so the paper measures prefill (P95) latency specifically.</p>
+          <div class="ready"><b>Now you're ready:</b> every SLO number in this paper is about prefill, not the full request.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Lookup, store, restore — and why restore is the dangerous one<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Cache systems perform three operations: <b>lookup</b> (metadata only, cheap), <b>store</b> (asynchronous, low impact), and <b>restore</b> (bringing evicted blocks back). Restore is <em>asynchronous from the cache's perspective</em> but effectively <b>blocking</b> from inference's perspective — the request must wait for its data before proceeding, creating queueing delay.</p>
+          <div class="ready"><b>Now you're ready:</b> restore is the one operation worth optimizing, because it's the one on the critical path of a stalled request.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>The roofline model — why recompute time ignores storage<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A <b>roofline model</b> estimates compute time from the model's FLOP cost divided by the GPU's peak throughput (adjusted by utilization efficiency, MFU/η). Recomputation time therefore depends only on the <b>model and the GPU</b> — never on which storage tier anything sits in. Restoration time depends only on <b>storage and interconnect</b> bandwidth — never on GPU compute power. Two independent clocks, racing.</p>
+          <div class="ready"><b>Now you're ready:</b> because these two times are governed by disjoint hardware, they can be computed independently and compared live — exactly what the policy in Section 4 does.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>An I/O-aware policy, in a nutshell</h2>
+      <p class="sub">The problem, the balancing trick that fixes it, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>When a KV-cache block has been evicted to disk, an inference engine has two ways to get it back: <span class="mem-chip chip-lru">restore</span> it over the storage/interconnect path, or <span class="mem-chip chip-hi">recompute</span> it from scratch on the GPU. Existing systems pick one policy — a fixed threshold on time or token count — and hard-code it. The paper's core finding: across <b>1,764</b> hardware configurations (6 GPUs × 6 interconnects × 7 DRAM configs × 7 storage devices), restoration time varies by <b>2–3 orders of magnitude</b> at a fixed context length, while recomputation time depends only on the GPU and model. A threshold tuned for one deployment is simply wrong for the next.</p>
+      <p>Their fix is a small <span class="mem-chip chip-ucp">I/O-aware policy</span> that, for every restore request, measures the GPU's current recompute throughput <code>X</code> and the storage tier's current restore throughput <code>Y</code>, then computes how many of the request's blocks to reassign from restore to recompute so that <b>both paths finish at the same time</b> — no idle GPU waiting on a slow disk, no idle disk bandwidth while the GPU churns. The allocation is then checked against throughput and tail-latency SLOs; if neither path alone can satisfy both, the policy falls back to a best-effort split that minimizes the worst violation.</p>
+      <p><strong>The payoff:</strong> up to <b>10×</b> improvement in SLO-success rate over static restore-only or recompute-only policies, at an average decision cost of just <b>5.07 µs</b> — negligible next to the millisecond-to-hour restoration times it's arbitrating between.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Restoration time depends on storage/interconnect; recomputation time depends on GPU/model — two independent clocks.</li>
+        <li>Across 1,764 configs, restoration time spans 2–3 orders of magnitude at fixed context length; a static threshold can't generalize.</li>
+        <li>The policy reassigns <code>k</code> cache-hit blocks from restore to recompute so <code>T_c ≈ T_s</code> (both paths finish together).</li>
+        <li>Allocation is validated against tail-latency (P95) and throughput SLOs; infeasible cases fall back to a best-effort minimum-violation split.</li>
+        <li>Result: up to <b>10×</b> success-rate improvement, <b>5.07 µs</b>/decision, no extra state beyond what the cache and inference engine already track.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Two clocks that don't run on the same track</div>
+      <div class="viz-kicker">completion time vs. aggregate context length · illustrative, shapes matched to the paper's Fig. 2 case study</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> H200 recompute</span>
+        <span><i style="background:var(--optane)"></i> H200 restore</span>
+        <span><i style="background:#8aa9c4"></i> A5000 recompute</span>
+        <span><i style="background:#d99a86"></i> A5000 restore</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 360" role="img" aria-label="Restore and recompute completion time vs context length for H200 and A5000">
+        <line x1="70" y1="30" x2="70" y2="255" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="255" x2="700" y2="255" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end">
+          <text x="62" y="250">1s</text><text x="62" y="180">30s</text><text x="62" y="108">5m</text><text x="62" y="36">1h</text>
+        </g>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle">
+          <text x="150" y="270">1.6e3</text><text x="330" y="270">1.6e4</text><text x="510" y="270">1.6e5</text><text x="690" y="270">1.6e6</text>
+        </g>
+        <text x="385" y="286" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">aggregate context length (tokens, log)</text>
+        <text x="22" y="145" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 22,145)">completion time (log)</text>
+        <!-- H200 recompute: nearly flat -->
+        <polyline fill="none" stroke="#2C6E9C" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" points="150,213 330,208 510,203 690,198"/>
+        <!-- H200 restore: rises steeply -->
+        <polyline fill="none" stroke="#B4503A" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" points="150,246 330,150 510,72 690,42"/>
+        <!-- A5000 recompute -->
+        <polyline fill="none" stroke="#8aa9c4" stroke-width="2.4" stroke-dasharray="5 3" stroke-linejoin="round" stroke-linecap="round" points="150,142 330,120 510,98 690,84"/>
+        <!-- A5000 restore -->
+        <polyline fill="none" stroke="#d99a86" stroke-width="2.4" stroke-dasharray="5 3" stroke-linejoin="round" stroke-linecap="round" points="150,130 330,113 510,92 690,66"/>
+        <circle cx="298" cy="172" r="5" fill="#fff" stroke="#B4503A" stroke-width="2.4"/>
+        <text x="308" y="165" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">H200: restore crosses recompute here</text>
+        <text x="694" y="196" text-anchor="end" font-family="Fraunces" font-size="12" font-weight="600" fill="#2C6E9C">H200 recompute</text>
+        <text x="694" y="40" text-anchor="end" font-family="Fraunces" font-size="12" font-weight="600" fill="#B4503A">H200 restore</text>
+        <!-- allocation strip -->
+        <text x="20" y="312" font-family="JetBrains Mono" font-size="11" fill="#6E6456">restore-only</text>
+        <text x="20" y="346" font-family="JetBrains Mono" font-size="11" fill="#6E6456">I/O-aware</text>
+        <rect x="70" y="298" width="590" height="22" rx="4" fill="#B4503A"/>
+        <text x="365" y="313" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">all blocks restored from disk → ~17 min</text>
+        <rect x="70" y="332" width="60" height="22" rx="4" fill="#5A61B4"/><rect x="130" y="332" width="90" height="22" rx="4" fill="#B4503A"/>
+        <text x="100" y="347" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#fff">recompute</text>
+        <text x="330" y="347" text-anchor="start" font-family="JetBrains Mono" font-size="11" fill="#6E6456">split by policy → ~1.8 min (up to 10× faster)</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> on the H200, restore starts cheap (data still in HBM/DRAM) but crosses above recompute once context spills to disk — recomputation stays essentially flat because it never touches storage at all. On the slower A5000, the two paths track each other closely across the whole range — restoring and recomputing cost about the same, so either is a viable choice. A fixed threshold tuned for one GPU is the wrong answer for the other. (Shapes matched to paper Fig. 2; case-study numbers, §3.)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → measure → decide → validate → scale</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Static restore/recompute thresholds don't generalize across hardware (2–3 orders of magnitude variance)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Measure</div><div class="nd">Read current GPU recompute throughput X and storage restore throughput Y</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Decide</div><div class="nd">Compute k: reassign k cache-hit blocks from restore to recompute so T_c ≈ T_s</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Validate</div><div class="nd">Check T_req ≤ p (tail latency) and r·T_c, r·T_s ≤ 1 (throughput)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Enforce or fall back</div><div class="nd">Accept if all constraints hold; else best-effort minimizes the worst violation</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Repeat</div><div class="nd">~5.07 µs/decision, ~2×10⁵ decisions/s — cheap enough to run per restore request</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about restore vs. recompute</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with an honest note about where it breaks.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="46" width="34" height="30" rx="3" fill="#DCE9F2" stroke="#2C6E9C" stroke-width="2.5"/>
+          <circle cx="33" cy="38" r="9" fill="#DCE9F2" stroke="#2C6E9C" stroke-width="2.5"/>
+          <path d="M78 30 h44 M78 30 l10 -8 M78 30 l10 8" stroke="#B4503A" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+          <rect x="90" y="52" width="36" height="26" rx="3" fill="#F5DFD6" stroke="#B4503A" stroke-width="2.5"/>
+        </svg></div>
+        <span class="term">The core idea · Balance</span>
+        <h3>Delivery vs. cooking from scratch</h3>
+        <p>Restoring is ordering delivery: fast if the kitchen is next door (HBM/DRAM), slow if it's across town (disk). Recomputing is cooking it yourself — the time is set by your own stove (the GPU), not by distance. The policy's trick: split your order so the delivery and your cooking finish plating <b>at the same moment</b>.</p>
+        <div class="breaks"><b>Where it breaks:</b> a real kitchen can't cook and wait for delivery on the *same dish* at once — but here restore and recompute act on <i>different blocks</i> of the same request, genuinely running in parallel on separate hardware.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="14" y="18" width="34" height="24" rx="2" fill="#DCE9F2" stroke="#2C6E9C" stroke-width="2"/>
+          <rect x="14" y="46" width="46" height="22" rx="2" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <rect x="14" y="72" width="60" height="18" rx="2" fill="#F5DFD6" stroke="#B4503A" stroke-width="2"/>
+          <text x="96" y="34" font-family="monospace" font-size="9" fill="#2C6E9C">3360GB/s</text>
+          <text x="96" y="58" font-family="monospace" font-size="9" fill="#5A61B4">link-limited</text>
+          <text x="96" y="82" font-family="monospace" font-size="9" fill="#B4503A">~10GB/s</text>
+        </svg></div>
+        <span class="term">The hierarchy · Capacity vs. bandwidth</span>
+        <h3>A desk, a back room, and an off-site warehouse</h3>
+        <p>HBM is your desk — small, everything within arm's reach, instant. DRAM is the back room — bigger, a short walk (bounded by the link). Disk is the off-site warehouse — vast, but a real trip (~10GB/s vs. HBM's 3,360GB/s, a ~300× gap). What you keep on the desk vs. ship to the warehouse determines how long any given fetch takes.</p>
+        <div class="breaks"><b>Where it breaks:</b> in a real office you choose what goes where once; here, model weights alone claim most of the desk (140GB of a 141GB H200 for one 70B bf16 model) before any KV-cache gets a seat.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="30" cy="70" r="6" fill="#5A61B4"/><circle cx="60" cy="50" r="6" fill="#5A61B4"/><circle cx="90" cy="34" r="6" fill="#5A61B4"/><circle cx="118" cy="22" r="6" fill="#5A61B4"/>
+          <path d="M30 70 L60 50 M30 70 L90 34 M30 70 L118 22 M60 50 L90 34 M60 50 L118 22 M90 34 L118 22" stroke="#bcbfe8" stroke-width="1.6"/>
+        </svg></div>
+        <span class="term">Why cost is quadratic · N²</span>
+        <h3>Introducing every guest to every guest</h3>
+        <p>At a party, the Nth guest must be introduced to all N−1 already there. Total introductions grow as N² — add guests slowly, work explodes. Attention does the same: token N attends to all N−1 before it. That's the N² term in the paper's compute-time formula, and why doubling context length roughly quadruples recompute time.</p>
+        <div class="breaks"><b>Where it breaks:</b> guests remember introductions forever; a KV-cache block, once evicted, has to be re-fetched or re-"introduced" every time — the party never truly ends.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="30" width="46" height="16" rx="3" fill="#DCE9F2" stroke="#2C6E9C" stroke-width="2"/>
+          <rect x="16" y="52" width="30" height="16" rx="3" fill="#DCE9F2" stroke="#2C6E9C" stroke-width="2"/>
+          <rect x="78" y="30" width="20" height="16" rx="3" fill="#F5DFD6" stroke="#B4503A" stroke-width="2"/>
+          <rect x="78" y="52" width="46" height="16" rx="3" fill="#F5DFD6" stroke="#B4503A" stroke-width="2"/>
+          <path d="M70 38 h6 M70 60 h6" stroke="#332C24" stroke-width="1.6"/>
+        </svg></div>
+        <span class="term">The balancing formula · k</span>
+        <h3>Two checkout lines, split so you leave together</h3>
+        <p>An express lane (fast GPU) and the regular line (slow disk) both lead to the exit. Put too much in your cart for the express lane and it's no longer express; put too little and the regular line drags you down. The right split sends just enough items to each line that both carts reach the exit <b>at the same time</b> — exactly what solving <code>T_c = T_s</code> for <code>k</code> does.</p>
+        <div class="breaks"><b>Where it breaks:</b> real checkout lines don't know each other's speed in advance; here the policy explicitly reads current GPU throughput X and storage throughput Y before deciding.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <path d="M20 70 q30 4 40 -20 q6 -18 26 -26 q10 -4 34 -4" fill="none" stroke="#9A8E7C" stroke-width="2.5" stroke-dasharray="5 3"/>
+          <circle cx="20" cy="70" r="4" fill="#2C6E9C"/><circle cx="120" cy="20" r="4" fill="#B4503A"/>
+          <path d="M60 55 l8 -8 M60 55 l-2 -11" stroke="#332C24" stroke-width="2" fill="none" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">Why one threshold fails · variance</span>
+        <h3>One umbrella size fits nobody</h3>
+        <p>A fixed rain-or-shine threshold ("bring an umbrella past 40% humidity") works for one city's climate and fails in the next. Across 1,764 hardware configurations, restoration time swings 2–3 orders of magnitude at a fixed context length — a threshold tuned for one GPU+storage pairing is simply the wrong size for another.</p>
+        <div class="breaks"><b>Where it breaks:</b> climate is roughly stable; a deployment's GPU/storage mix is a one-time hardware choice, so the "wrong size" doesn't average out over time — it's wrong every single day.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="44" width="20" height="30" fill="#DCE9F2" stroke="#2C6E9C" stroke-width="2"/>
+          <rect x="42" y="36" width="20" height="38" fill="#DCE9F2" stroke="#2C6E9C" stroke-width="2"/>
+          <rect x="68" y="52" width="20" height="22" fill="#DCE9F2" stroke="#2C6E9C" stroke-width="2"/>
+          <rect x="94" y="20" width="20" height="54" fill="#F5DFD6" stroke="#B4503A" stroke-width="2.5"/>
+          <path d="M104 14 l-6 -10 l12 0 z" fill="#B4503A"/>
+        </svg></div>
+        <span class="term">SLOs · Tail latency</span>
+        <h3>The convoy waits for the slowest truck</h3>
+        <p>A convoy's arrival time is set by its slowest truck, not the average. P95 prefill latency is exactly that: the slowest 5% of requests, which is what actually determines SLO compliance — a great average hides a convoy stuck behind one truck restoring a huge block from disk.</p>
+        <div class="breaks"><b>Where it breaks:</b> in a convoy the slow truck is usually the same one; here, which request lands in the tail can shift request-to-request depending on which blocks happen to be evicted to the slow tier.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How the policy actually works</h2>
+      <p class="sub">From the tiered-storage model to the balancing formula to SLO validation, with the paper's key relationships rebuilt as diagrams.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Modeling the tiered hierarchy</h3>
+      <p>The simulator models one GPU with <span class="mem-chip chip-hi">HBM</span>, one <span class="mem-chip chip-ucp">CPU DRAM</span> tier, and one <span class="mem-chip chip-lru">disk/SSD</span> tier, connected by a single interconnect. Model weights first claim HBM space (2 bytes/parameter at bf16); only what's left is available for KV-cache:</p>
+      <pre class="sketch">Effective_HBM = Capacity_HBM − 2P            <span class="cm"># P = parameter count; weights reserved first</span>
+KVC_Space_HBM = floor(Effective_HBM / S_block)  <span class="cm"># S_block ≈ 2MB for 16-token Llama-3 blocks</span></pre>
+      <p>Restoration is charged piece-wise across tiers, bandwidth-limited by whichever is slower — the tier itself or the interconnect:</p>
+      <pre class="sketch">effective_bw(DRAM) = min(β_dram, β_link)
+effective_bw(disk)  = min(β_disk,  β_link)</pre>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The hierarchy, by the numbers</div>
+      <div class="viz-kicker">capacity ↓, bandwidth ↓ — one interconnect gates DRAM and disk alike</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">GPU HBM</div><div class="nd">141GB · up to 3,360 GB/s (H200)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">CPU DRAM</div><div class="nd">min(β_dram, β_link) — link-limited transfer buffer</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-lru"><div class="nt">Disk / SSD</div><div class="nd">~10 GB/s (NVMe Gen5) — min(β_disk, β_link)</div></div>
+      </div>
+      <figcaption>Model weights eat into HBM first — a 70B-parameter model at bf16 needs ~140GB, leaving an H200's 141GB HBM almost nothing for KV-cache. That's why offloading is unavoidable, not optional. (Paper §3)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · Compute time via the roofline model</h3>
+      <p>Recomputation cost is estimated independently of storage — purely from the model and GPU:</p>
+      <pre class="sketch">t_compute = N² · T_block · t̂        <span class="cm"># N = blocks; T_block = tokens/block</span>
+t̂ = F_token / (Φ_peak · η)          <span class="cm"># F_token: FLOPs/token; Φ_peak: GPU peak FLOP/s; η: MFU</span></pre>
+      <div class="callout why"><span class="ic">💡</span><div>Because <code>t_compute</code> has no storage term at all, and restoration time has no GPU term at all, the two can be estimated <b>independently and compared live</b> — that independence is what makes a per-request balancing decision possible.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · The balancing formula</h3>
+      <p>Of <code>N</code> requested blocks, <code>M</code> are unconditional cache misses (must be recomputed). Let <code>k</code> be additional cache-hit blocks reassigned from restore to recompute. Because the two paths run in parallel, the request finishes when the <em>slower</em> path finishes — minimized exactly when both paths take equal time:</p>
+      <pre class="sketch">T_c = N_c·B / X          <span class="cm"># N_c = M + k blocks recomputed, throughput X</span>
+T_s = N_s·B / Y          <span class="cm"># N_s = N − M − k blocks restored, throughput Y</span>
+<span class="hl">k = max(0, min(N−M,  N·X/(X+Y) − M))</span></pre>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Balanced vs. unbalanced allocation</div>
+      <div class="viz-kicker">same request, two splits — only one finishes as fast as possible</div>
+      <svg class="full" viewBox="0 0 700 210" role="img" aria-label="Balanced versus unbalanced restore/recompute allocation timelines">
+        <text x="20" y="30" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Unbalanced: too much sent to restore</text>
+        <rect x="20" y="42" width="130" height="26" rx="5" fill="#DCE9F2" stroke="#2C6E9C" stroke-width="1.6"/><text x="85" y="59" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f4f6e">recompute · T_c</text>
+        <rect x="20" y="74" width="420" height="26" rx="5" fill="#F5DFD6" stroke="#B4503A" stroke-width="1.6"/><text x="230" y="91" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22">restore · T_s (bottleneck)</text>
+        <line x1="440" y1="36" x2="440" y2="106" stroke="#B4503A" stroke-width="1.4" stroke-dasharray="4 3"/>
+        <text x="446" y="46" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">request waits here</text>
+
+        <text x="20" y="140" font-family="Fraunces" font-size="14" font-weight="600" fill="#332C24">Balanced: k blocks moved to recompute</text>
+        <rect x="20" y="152" width="230" height="26" rx="5" fill="#DCE9F2" stroke="#2C6E9C" stroke-width="1.6"/><text x="135" y="169" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#1f4f6e">recompute · T_c</text>
+        <rect x="20" y="184" width="230" height="18" rx="5" fill="#F5DFD6" stroke="#B4503A" stroke-width="1.6"/><text x="135" y="197" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9a3a22">restore · T_s</text>
+        <line x1="250" y1="146" x2="250" y2="206" stroke="#2C8C7C" stroke-width="1.6" stroke-dasharray="4 3"/>
+        <text x="256" y="150" font-family="JetBrains Mono" font-size="10" fill="#1f5b51">both finish together — minimum T_req</text>
+      </svg>
+      <figcaption>Send too many blocks to the slower path and the whole request waits on it — the faster path's engine sits idle. Solving <code>T_c = T_s</code> for <code>k</code> loads both paths just enough that they cross the finish line together. (Paper §4)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Validate against SLOs, or fall back</h3>
+      <p>The balanced allocation is then checked against the tail-latency target <code>p</code> and the target request rate <code>r</code>:</p>
+      <pre class="sketch">T_req = max(T_c, T_s) ≤ p        <span class="cm"># tail-latency (P95) constraint</span>
+r·T_c ≤ 1  and  r·T_s ≤ 1        <span class="cm"># throughput / no resource overload</span></pre>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>If neither holds:</b> the current storage and compute capabilities simply cannot serve this request within both SLOs at once. The policy then runs in <b>best-effort mode</b>, choosing the allocation that minimizes the maximum constraint violation, rather than blindly forcing an infeasible split.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>5 · What it costs to decide</h3>
+      <p>Measured over <b>20.2 million</b> timed scheduling decisions, the policy averages <b>5.07 µs</b> per decision — sustaining roughly <b>2×10⁵ decisions/second</b>. Scheduling a million real-world requests costs about <b>5.1 s</b> of decision overhead (vs. 0.23 s for a fixed, no-computation policy). Crucially, every parameter the policy reads (GPU throughput, storage throughput, cache-hit state) already exists inside the cache subsystem and inference engine — no new monitoring infrastructure, only this small computation.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces: why offloading is unavoidable, the balancing formula in action, why compute cost explodes, and whether the policy's own overhead is actually negligible.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Why offloading is unavoidable, for a 70B model on an H200</h3>
+      <p style="color:var(--ink-soft)">An H200 has 141GB of HBM. Llama-3.1-70B is served at bf16 (2 bytes/parameter). How much HBM is actually left for KV-cache?</p>
+      <ol class="seq">
+        <li><b>Weight footprint:</b> 2 bytes × 70×10⁹ params = <b>140GB</b> just for model weights.</li>
+        <li><b>Effective HBM for KV-cache:</b> 141GB − 140GB = <b>~1GB</b> — barely anything.</li>
+        <li><b>One user's 128K-token context needs ~30GB of KV-cache</b> (paper's figure) — already 30× more than what's left.</li>
+        <li><b>With 10 concurrent users:</b> demand is ~300GB, and effective on-GPU capacity is ~1GB. Nearly all of it must live off-GPU.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> offloading isn't a tuning knob — for large models it's the default state. The restore-vs-recompute decision is therefore on the hot path for almost every multi-tenant request, not an edge case.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② The balancing formula, in two throughput regimes</h3>
+      <p style="color:var(--ink-soft)">A request needs N=64 blocks (B=2MB each), of which M=16 are unconditional cache misses. Illustrative throughputs: (a) storage faster than GPU, X=200MB/s, Y=800MB/s; (b) GPU faster than storage, X=2000MB/s, Y=200MB/s. Find k, T_c, T_s each time.</p>
+      <ol class="seq">
+        <li><b>Case (a):</b> k = max(0, min(48, 64·200/1000 − 16)) = max(0, min(48, −3.2)) = <b>0</b>. All 48 cache hits stay on the fast restore path; only the 16 misses recompute.</li>
+        <li><b>Case (b):</b> k = max(0, min(48, 64·2000/2200 − 16)) = max(0, min(48, 42.2)) = <b>≈42</b>. N_c = 16+42 = 58 blocks recompute; N_s = 6 restore.</li>
+        <li><b>Check the balance in (b):</b> T_c = 58×2MB / 2000MB/s = <b>58ms</b>. T_s = 6×2MB / 200MB/s = <b>60ms</b> — within 2ms of each other, essentially balanced.</li>
+        <li><b>The lesson:</b> when storage is the faster path, almost everything restores; when the GPU is faster, the policy shifts the bulk of the work to recompute — automatically, from the same formula.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Note the formula never needs to know <i>which</i> hardware it's running on — only the currently observed X and Y. That's what makes it generalize across the 1,764-configuration space instead of needing a threshold per deployment.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Why prefill cost explodes quadratically</h3>
+      <p style="color:var(--ink-soft)">Using <code>t_compute = N²·T_block·t̂</code> with T_block=16 and an illustrative t̂=1µs/token, compare compute time at N=10 blocks vs. N=100 blocks (a 10× increase in blocks).</p>
+      <ol class="seq">
+        <li><b>N=10:</b> t_compute = 10² × 16 × 1µs = 100 × 16µs = <b>1.6ms</b>.</li>
+        <li><b>N=100 (10× more blocks):</b> t_compute = 100² × 16 × 1µs = 10,000 × 16µs = <b>160ms</b>.</li>
+        <li><b>Ratio:</b> 160ms / 1.6ms = <b>100×</b> — a 10× increase in blocks yields a 100× increase in compute time, exactly the N² scaling.</li>
+        <li><b>Matches the paper's own headline number:</b> going from a short prompt to a 128K-token Llama-3.1-70B prompt on an H200 costs <b>18 seconds</b> of pure recompute — the same quadratic wall, at real scale.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> this is exactly why restoring (which is only O(N), linear in blocks moved) becomes attractive for long contexts — but only if the storage path is actually fast enough, which is precisely what the balancing formula checks.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Is the policy's own overhead actually negligible?</h3>
+      <p style="color:var(--ink-soft)">The paper reports 5.07µs/decision average and ≈2×10⁵ decisions/s. Verify the claimed cost of scheduling 10⁶ real-world requests, and compare it to typical restoration times.</p>
+      <ol class="seq">
+        <li><b>10⁶ requests × 5.07µs/decision</b> = 5.07 × 10⁶ µs = <b>5.07s</b> — matches the paper's reported ≈5.1s.</li>
+        <li><b>Fixed policy (no computation), reported 0.23s for 10⁶ requests</b> implies ≈0.23µs/decision — pure overhead floor, consistent with "no additional state required."</li>
+        <li><b>Compare to restoration times:</b> from the case study, restoring even moderate context lengths costs tens of ms to minutes. A 5.07µs decision is <b>3–7 orders of magnitude</b> smaller than the thing it's optimizing.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>For a reader used to weighing OS-level migration or page-fault overhead against DRAM/NVM access latency: this is the same shape of argument — a microsecond-scale scheduling decision is cheap fuel for a millisecond-to-second-scale I/O decision, so the smarter policy essentially costs nothing extra.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one ends with the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A deployment always restores KV-cache from disk, never recomputes. On a high-end GPU (H200), why can this be a bad policy even though restoring "reuses work already done"?</div>
+      <details><summary>Show answer</summary><div class="ans">Because reuse only helps if fetching the result is faster than redoing it. On an H200, recompute throughput is very high, while disk restoration is bandwidth-limited to ~10GB/s (or slower, link-limited). Once context length pushes data onto disk, restoring can cost up to <b>10×</b> longer than just recomputing on the GPU — "already computed" doesn't mean "cheap to retrieve."<span class="mis">Misconception: that avoiding recomputation is always a win. It's a win only when the retrieval path is actually faster than the compute path — which depends on the specific GPU and storage tier.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">N=32 blocks, B=2MB, M=8 unconditional misses, GPU throughput X=1000MB/s, storage throughput Y=250MB/s. Compute k, N_c, N_s, and check whether T_c and T_s are roughly balanced.</div>
+      <details><summary>Show answer</summary><div class="ans">k = max(0, min(24, 32·1000/1250 − 8)) = max(0, min(24, 17.6)) = <b>17.6 ≈ 18</b>. N_c = 8+18 = 26, N_s = 32−26 = 6. T_c = 26×2/1000 = <b>52ms</b>. T_s = 6×2/250 = <b>48ms</b> — within 4ms, essentially balanced, confirming the formula works as intended.<span class="mis">Misconception: that k should just be N−M (send every possible block to the faster path). That would starve the restore path entirely and waste its available bandwidth — the formula finds the point where both paths are used <i>as fully as balance allows</i>, not where one is maximized.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">The policy is applied only at the disk tier — CPU DRAM is treated purely as a transient transfer buffer, with no restore-vs-recompute decision made there. Why might that be a reasonable simplification for a first version?</div>
+      <details><summary>Show answer</summary><div class="ans">DRAM sits much closer to HBM bandwidth-wise than disk does, so the restore-vs-recompute gap is much narrower there — the tradeoff is least pronounced exactly where it's most expensive to build extra machinery. The paper explicitly scopes the policy to "where its impact is most pronounced and can be most clearly observed" and leaves DRAM-tier extension to future work.<span class="mis">Misconception: that every tier needs its own restore/recompute decision to be useful. The biggest win comes from targeting the tier with the worst bandwidth gap first — disk, not DRAM.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Recomputation time is essentially constant across the 1,764 hardware configurations for a fixed GPU, while restoration time varies by 2–3 orders of magnitude at the same context length. Explain the asymmetry using the paper's two formulas.</div>
+      <details><summary>Show answer</summary><div class="ans">t_compute = N²·T_block·t̂ depends only on N (blocks), T_block, and t̂ = F_token/(Φ_peak·η) — all fixed once you pick a model and GPU, with zero dependence on storage hardware. Restoration time, by contrast, is gated by min(β_tier, β_link), and both storage bandwidth and interconnect bandwidth vary enormously across real hardware (6 interconnects × 7 storage devices in the study) — so restoration inherits all of that variance while recomputation inherits none of it.<span class="mis">Misconception: that "I/O overhead" scales with the same factors as compute. They're governed by entirely disjoint hardware, which is exactly why they can — and must — be measured and compared independently rather than assumed proportional.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why does the paper focus on prefill (TTFT) latency specifically, rather than the full request latency (TTLT)?</div>
+      <details><summary>Show answer</summary><div class="ans">Restoring or recomputing KV-cache only affects the prefill phase — turning the input context into usable attention state before generation begins. Decode (token-by-token generation afterward) is assumed unchanged across policies, since it doesn't touch the offloaded KV-cache. Measuring TTLT would blend in decode latency that has nothing to do with the restore-vs-recompute decision, diluting the signal.<span class="mis">Misconception: that any latency SLO is a fair evaluation metric here. Only phases actually affected by the policy under test should be measured, or the comparison gets noisy.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">Suppose the computed allocation satisfies the tail-latency constraint T_req ≤ p but violates the throughput constraint r·T_s ≤ 1 (storage would be overloaded at the target request rate). What should the policy do, and why not just force the balanced k anyway?</div>
+      <details><summary>Show answer</summary><div class="ans">The policy falls back to best-effort mode, picking the allocation that minimizes the maximum constraint violation — which here likely means shifting more blocks toward recompute (increasing k beyond the pure time-balancing point) to relieve pressure on storage, even if that makes T_c and T_s slightly less balanced. Forcing the "balanced" k anyway would satisfy the balance goal while quietly overloading storage across many concurrent requests, degrading throughput for the whole system, not just this one request.<span class="mis">Misconception: that minimizing one request's completion time is always correct. The throughput constraint is a system-wide resource-utilization guard, and it can outrank per-request time-balancing when they conflict.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 7 · easy</span>
+      <div class="qtext">Two GPUs serve the same model and storage hierarchy: one is an H200, the other an RTX A5000. For which GPU does the restore-vs-recompute decision matter less, and why?</div>
+      <details><summary>Show answer</summary><div class="ans">The A5000 — because its lower compute throughput makes recomputation slow enough that it's often comparable to restoration time across the whole context-length range, so either choice yields similar performance (both are "viable alternatives that produce the same outputs," per the case study). On the H200, the gap is stark (restore can cost up to 10× more at long context), so getting the decision right matters far more.<span class="mis">Misconception: that a smarter policy always buys a big win. Its value scales with how far apart the two paths' speeds are — on hardware where they're already close, an adaptive policy has less headroom to exploit.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 8 · medium</span>
+      <div class="qtext">The paper notes 6 GPUs × 6 interconnects × 7 DRAM configs × 7 storage devices = 1,764 configurations, and that for nearly all GPUs except the H200, recomputation curves intersect the restoration-time distributions. What does that intersection imply for policy design?</div>
+      <details><summary>Show answer</summary><div class="ans">An intersection means that, for a given context length, some hardware configurations favor restoration and others favor recomputation — there is no single globally-better choice, even holding context length fixed. Only the H200's recompute curve stays cleanly below (or crosses least often), because its compute throughput is high enough to nearly always win. This is exactly why a single static threshold across configurations is unsound, and why the policy reads live X and Y instead of using a fixed cutoff.<span class="mis">Misconception: that "faster hardware always restores better" or vice-versa. The crossover point is hardware-specific and workload-specific; only measuring live throughput handles all cases correctly.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Ten questions newcomers ask most. Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What exactly is being decided — one choice per request, or per block?<span class="chev">▾</span></summary><div class="a">Per block, within a request. A restore request may contain many evicted blocks; the policy computes how many of them (k) get reassigned to GPU recompute vs. how many stay on the storage restore path, mixing both within a single request.</div></details>
+      <details><summary><span class="q">Q2</span>Why can restore and recompute run in parallel at all?<span class="chev">▾</span></summary><div class="a">They use disjoint hardware paths — recompute runs on the GPU's compute units, restore runs over the storage/interconnect path. As long as the missing blocks are correctly partitioned between the two, both engines can work simultaneously on different pieces of the same request.</div></details>
+      <details><summary><span class="q">Q3</span>Does the policy need to know the specific GPU or storage model?<span class="chev">▾</span></summary><div class="a">No — it only needs the <i>currently observed</i> throughput X (GPU recompute) and Y (storage restore), which the cache subsystem and inference engine already track. That's what lets one formula generalize across all 1,764 evaluated hardware configurations without per-deployment tuning.</div></details>
+      <details><summary><span class="q">Q4</span>What happens to blocks that were never cached at all (true cache misses)?<span class="chev">▾</span></summary><div class="a">They're recomputed unconditionally — that's the M term in the formula. The policy only has a choice for the N−M blocks that <i>are</i> available on disk (cache hits); M is fixed overhead on the recompute path regardless of the split.</div></details>
+      <details><summary><span class="q">Q5</span>Why measure tail latency (P95) instead of average latency?<span class="chev">▾</span></summary><div class="a">Averages hide the slow requests that actually break an SLO. If most requests are fast but 5% wait minutes for a disk restore, the average looks fine while user experience doesn't. P95 prefill latency directly captures that slow tail.</div></details>
+      <details><summary><span class="q">Q6</span>Is this the same problem as choosing an eviction policy (what to keep in HBM)?<span class="chev">▾</span></summary><div class="a">No — eviction decides what leaves GPU memory and when; this policy decides, after something has already been evicted and is being requested back, how to retrieve it. They're complementary: a good eviction policy reduces how often this restore-vs-recompute decision is even needed.</div></details>
+      <details><summary><span class="q">Q7</span>Does this work require modifying the inference engine's internals?<span class="chev">▾</span></summary><div class="a">The described policy sits at the KV-cache management layer, using metadata (which blocks are cached, current throughputs) that pluggable cache connectors already expose to inference engines like vLLM or SGLang — the paper positions it as complementary to, not a replacement for, those systems.</div></details>
+      <details><summary><span class="q">Q8</span>Why is the reported 10× improvement described as "theoretical" / "initial"?<span class="chev">▾</span></summary><div class="a">The results come from the performance-modeling simulator (Section 3), not a deployed production system. The authors explicitly list implementing the policy in a real LLM-serving system as future work, to validate the model's accuracy under real operating conditions.</div></details>
+      <details><summary><span class="q">Q9</span>How does cache-hit ratio affect which policy wins?<span class="chev">▾</span></summary><div class="a">At low cache-hit ratios (&lt;25%), most blocks must be recomputed anyway (few are cached), so restoration's remaining share is small and it can outperform blind recomputation by up to 25%. As the cache-hit ratio rises, more blocks would be restored under a restore-only policy, increasing storage load — and the I/O-aware policy's advantage grows, up to 10×, by shifting excess load to the GPU.</div></details>
+      <details><summary><span class="q">Q10</span>What's explicitly left for future work?<span class="chev">▾</span></summary><div class="a">A real production-system implementation (to measure actual overhead and validate the model), extending the policy to the DRAM tier, studying how data placement/cache-hit ratios/access patterns affect it in dynamic multi-tier hierarchies, and extending to distributed inference where KV-cache is shared or migrated across nodes.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results, and provenance</h2>
+      <p class="sub">Every term in one place, the headline numbers, then exactly which claims come from the paper vs. this guide's framing.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Restore</b><span>Fetching an evicted KV-cache block back from a lower storage tier into GPU memory. Blocking from inference's perspective.</span></div>
+      <div class="term-def"><b>Recompute</b><span>Regenerating a block's key/value vectors on the GPU instead of fetching them, using ordinary attention compute.</span></div>
+      <div class="term-def"><b>I/O-aware policy</b><span>The paper's mechanism: read live GPU (X) and storage (Y) throughput, compute k, split blocks so both paths finish together.</span></div>
+      <div class="term-def"><b>k</b><span>Number of cache-hit blocks reassigned from restore to recompute; k = max(0, min(N−M, NX/(X+Y) − M)).</span></div>
+      <div class="term-def"><b>T_c / T_s / T_req</b><span>Recompute time, restore time, and overall request completion time = max(T_c, T_s).</span></div>
+      <div class="term-def"><b>Best-effort mode</b><span>Fallback when no allocation satisfies both SLOs: picks the split minimizing the largest constraint violation.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Roofline model</b><span>Estimates compute time from FLOPs required ÷ (peak GPU FLOP/s × utilization efficiency η/MFU).</span></div>
+      <div class="term-def"><b>Cache-hit ratio</b><span>Fraction of requested KV-cache blocks that are actually available for restoration (vs. true misses needing recompute).</span></div>
+      <div class="term-def"><b>Block / block table</b><span>KV-cache unit (e.g., 16 tokens, ~2MB for Llama-3); block table maps each block to its physical location for zero-copy reads.</span></div>
+      <div class="term-def"><b>Lookup / store / restore</b><span>The three KV-cache operations; lookup and store are cheap/async, restore is the latency-critical, blocking one.</span></div>
+      <div class="term-def"><b>Effective HBM capacity</b><span>HBM capacity minus space reserved for model weights (2 bytes/parameter at bf16); what's left for KV-cache.</span></div>
+      <div class="term-def"><b>N (blocks) / M (misses)</b><span>N = total blocks a request needs; M = subset unconditionally missing from the cache hierarchy.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What the I/O-aware policy buys</div>
+      <div class="viz-kicker">selected headline numbers from the paper</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Restore advantage<small>at &lt;25% cache-hit ratio</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="25"><span>+25% success rate vs. recompute-only</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">I/O-aware policy<small>vs. static policies</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="100"><span>up to 10× success-rate improvement</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">TTFT with reuse<small>H200 · 128K context</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="89"><span>18s → &lt;2s (~89% cut)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Slower GPUs (a–d)<small>recompute-only success</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="20"><span>below 20%</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">bars saturate at 100% — labels carry the true magnitude</p>
+      <figcaption>Decision overhead itself: <b>5.07 µs</b>/decision average over 20.2M timed decisions, sustaining ≈2×10⁵ decisions/s — roughly 5.1s to schedule 1M real-world requests, versus 0.23s for a fixed no-computation policy. (Paper §5)</figcaption>
+    </figure>
+
+    <div class="subhead">Concepts to shore up first</div>
+    <div class="read-item reveal"><h4>PagedAttention / vLLM's block-table KV-cache <span class="diff easy">easy</span></h4><div class="meta">Kwon et al., SOSP 2023 [24]</div><p>The block/zero-copy model this paper's simulator assumes — read this if "block table" or "zero-copy" felt unfamiliar.</p></div>
+    <div class="read-item reveal"><h4>Roofline modeling for LLM inference <span class="diff med">medium</span></h4><div class="meta">Patwari, Sirasao, Das, arXiv 2025 [41]</div><p>The hardware-agnostic analytical model this paper's compute-time formula is built on.</p></div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Mooncake: a KVCache-centric architecture for serving LLM chatbots <span class="diff med">medium</span></h4><div class="meta">Qin et al. · FAST 2025 [43]</div><p>"Trading more storage for less computation" — a production multi-tier KV-cache system this paper's policy could plug into.</p></div>
+    <div class="read-item reveal"><h4>LMCache: an efficient KV-cache layer for enterprise-scale LLM inference <span class="diff med">medium</span></h4><div class="meta">Liu et al. · arXiv 2025 [30]</div><p>Cited throughout for KV-cache offloading behavior (lookup/store/restore semantics) that this paper's model approximates.</p></div>
+    <div class="read-item reveal"><h4>Efficient LLM inference with I/O-aware partial KV-cache recomputation <span class="diff hard">hard</span></h4><div class="meta">Jiang, Gao, Zarch, Annavaram · arXiv 2024 [20]</div><p>A closely related tunable-threshold approach that this paper's dynamic policy is positioned against.</p></div>
+    <div class="read-item reveal"><h4>Compute Or Load KV Cache? Why Not Both? <span class="diff med">medium</span></h4><div class="meta">Jin, Liu, Zhang, Mao · arXiv 2024 [21]</div><p>Independently arrives at the same "split the work in parallel" idea — worth comparing formulas directly.</p></div>
+    <div class="read-item reveal"><h4>IMPRESS: importance-informed multi-tier prefix KV storage <span class="diff hard">hard</span></h4><div class="meta">Chen et al. · FAST 2025 [6]</div><p>A complementary axis — which blocks to keep, informed by importance rather than just recency/eviction order.</p></div>
+
+    <div class="subhead">Source notes</div>
+    <div class="callout note" style="margin-top:0"><span class="ic">📋</span><div>
+      <b>From the paper, verbatim or directly computed:</b> all §1–§5 numbers (141GB H200 HBM, 3,360GB/s HBM / ~10GB/s NVMe Gen5, 30GB per 128K-token context, 18s→&lt;2s H200 TTFT, 1,764 = 6×6×7×7 configurations, 2GB/1GB constrained case-study capacities, ~2MB/16-token Llama-3 block, up to 25%/10× success-rate figures, 5.07µs/2×10⁵ decisions/s/5.1s overhead figures), the formulas for effective HBM capacity, restoration bandwidth, roofline compute time, k, T_c/T_s/T_req, and the SLO/best-effort constraints (§3–§4).<br><br>
+      <b>This guide's framing (not in the paper):</b> all analogies (delivery/cooking, party introductions, checkout lines, umbrella sizing, convoy); the signature figure's exact pixel positions (shapes matched to Fig. 1/2 descriptions, not extracted data); Worked Examples ②③ (illustrative X/Y/t̂ values, explicitly labeled); the OS/CXL memory-tiering framing tying decision overhead to page-fault/migration cost comparisons.
+    </div></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Najafizadeh, Tarasov, Merenstein, Zhu, Zadok, "LLM KV-cache: To Restore or To Recompute, That Is the Question" (HotStorage'26)</span>
+    <span><b>DOI:</b> 10.1145/3837053.3837336</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source text</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- PARTITION EXPLORER (unused on this page; guarded no-op) ---- */
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'">'+(i<=v?'':'')+'</div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Adjust the slider.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
