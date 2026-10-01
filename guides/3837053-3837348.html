@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<!-- Nexus field guide — User-Space Page Cache with Kernel-Bypass Data Plane (Pan et al., HotStorage'26).
+     Semantic colors: blue = user-space data plane (fast path) · purple = kernel control plane (coordination)
+     · brick = kernel/ext4 baseline (the slow default) · amber = the core design rule / highlights. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A Page Cache That Lives in User Space — Nexus, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D9941F; --honey-deep:#A96E0E; --honey-soft:#F6E3BE;
+  --dram:#2E6FA3; --dram-soft:#DCE9F3;      /* blue = user-space data plane (fast path) */
+  --ltram:#6B4FA0; --ltram-soft:#E8E1F4;    /* purple = kernel control plane (coordination) */
+  --optane:#C0452E; --optane-soft:#F6DAD2;  /* brick = kernel page cache / ext4 baseline */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(46,111,163,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,160,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,148,31,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(107,79,160,.05) 31px,rgba(107,79,160,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,148,31,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1d4e6e;font-size:.96rem}
+.primer .ready b{color:#163c55}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1d4e6e}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#432f78}
+.chip-lru{background:var(--optane-soft);color:#8f331f}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #BBD6E9;color:#1d4e6e}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#8f331f}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fc3dd;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c6b7e4;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#ddd4f0}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#3f84bc,#2E6FA3)}
+.bf-hi{background:linear-gradient(90deg,#7f63b8,#6B4FA0)}
+.bf-lru{background:linear-gradient(90deg,#cf6350,#C0452E)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#163c55;border:1px solid #9fc3dd}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1d4e6e}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#8f331f}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#d9941f} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8d7ad6}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1d4e6e}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#8f331f}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(46,111,163,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,79,160,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,148,31,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HotStorage 2026 · A Field Guide</span>
+    <h1>Let <span class="swash">every cache hit</span> stay in user space — but let the <span class="swash" style="color:var(--optane)">whole system</span> decide who gets evicted</h1>
+    <p class="lede">NVMe SSDs are fast enough that the kernel's own bookkeeping — syscalls, VFS, page-cache locks — is now the bottleneck for small I/O. Nexus moves the hot path out of the kernel without losing the one thing a kernel is good at: seeing every process at once.</p>
+    <div class="hero-meta">
+      <span>📄 "User Space Buffer Cache with the Bells and Whistles of a Kernel Page Cache" · Pan et al.</span>
+      <span>🎓 Some OS / page-cache basics assumed — primers cover them</span>
+      <span>⏱ ~20 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🗂️</div>
+      <p>Put cache <span class="ro">HITS</span> entirely in user space (zero syscalls) — but keep <span class="wo">EVICTION &amp; ALLOCATION</span> decisions in a place that can see every process.<br><em style="font-size:.9rem">Split the hot path from the coordination problem.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1 -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then eight primers</h2>
+      <p class="sub">Acronyms first, then the concepts Nexus assumes. Primers are collapsed — open what's unfamiliar.</p>
+    </div>
+
+    <div class="card">
+      <h3>Quick glossary</h3>
+      <div class="gloss">
+        <div class="term-def"><b>NVMe</b><span>Modern SSD interface; sub-10 μs latency, millions of IOPS — fast enough that software is now the bottleneck.</span></div>
+        <div class="term-def"><b>IOPS</b><span>I/O operations per second — throughput measured in requests, not bytes.</span></div>
+        <div class="term-def"><b>VFS</b><span>Virtual File System — the kernel's abstraction layer that every file-system call passes through.</span></div>
+        <div class="term-def"><b>POSIX</b><span>The standard read/write/pread API; "buffered I/O" means these calls go through the page cache.</span></div>
+        <div class="term-def"><b>DMA</b><span>Direct Memory Access — the device writes/reads memory without CPU copying; needed for zero-copy I/O.</span></div>
+        <div class="term-def"><b>IPC</b><span>Inter-process communication — e.g. messages between a client and a coordinating server process. Costly per call.</span></div>
+        <div class="term-def"><b>SPDK / io_uring / eBPF</b><span>Kernel-bypass building blocks: a user-space NVMe driver, an async syscall batching API, and in-kernel sandboxed programs.</span></div>
+        <div class="term-def"><b>U2K / K2U queue</b><span>Nexus's shared-memory queues that operate without system calls: user→kernel (report new pages) and kernel→user (request evictions).</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> data plane (user space, fast)</span>
+      <span><i style="background:var(--ltram)"></i> control plane (kernel, coordinating)</span>
+      <span><i style="background:var(--optane)"></i> kernel page cache / ext4 baseline</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Why NVMe flipped the bottleneck<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Spinning disks were slow enough that software overhead was noise. NVMe SSDs now answer in single-digit microseconds — comparable to a single syscall's own cost (~160 ns of ring transition, register save, page-table switch, <i>per call</i>, before the device is even touched).</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's whole premise is that for small I/O, the kernel's fixed per-call tax, not the device, is what you're paying for.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Buffered I/O vs. direct I/O<span class="chev">▾</span></summary>
+        <div class="body">
+          <p><b>Buffered</b> I/O goes through the OS page cache: writes land in memory and return immediately (writeback happens later); reads may already be cached. <b>Direct</b> I/O bypasses the cache and talks straight to the device — used for huge sequential transfers where caching adds no value.</p>
+          <div class="ready"><b>Now you're ready:</b> almost all kernel-bypass work (SPDK, XRP, BypassD) only accelerates direct I/O. Buffered I/O — the default for nearly everything — was left untouched.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>What the kernel page cache actually does<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>It keeps recently-used file pages (4 KB units) in memory, indexed by a radix tree per file, so reads can be served without touching disk. It also does readahead (prefetch sequential pages), async writeback, and LRU-style reclamation when memory is tight.</p>
+          <div class="ready"><b>Now you're ready:</b> Nexus's design goal is to keep all of this — "file-level caching" — but move the fast-path parts to user space.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Where the kernel's per-I/O cost comes from<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Three stacked costs: (i) the syscall itself (~160 ns), (ii) traversal through VFS and the filesystem (indirect calls, locks), (iii) page-cache bookkeeping (radix-tree lookup, refcounts, LRU list maintenance). Cost (iii) is unavoidable for <i>any</i> cache; (i) and (ii) are pure kernel-path tax.</p>
+          <div class="ready"><b>Now you're ready:</b> a user-space cache eliminates (i) entirely and shrinks (ii) to one short code path — which is exactly where Nexus's speedups come from.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Kernel-bypass frameworks — and their blind spot<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>SPDK put the whole NVMe driver in user space. io_uring, XRP, BypassD, UnICom each shave layers off the <i>direct</i>-I/O path. None of them touch buffered I/O: BypassD and UnICom, for instance, fall back to the ordinary POSIX path whenever a request doesn't meet their direct-I/O preconditions (e.g., isn't page-aligned and block-sized).</p>
+          <div class="ready"><b>Now you're ready:</b> this is the gap Nexus targets — the paper's claim is that no existing approach meets all four properties (file-level caching, low overhead, memory efficiency, hardware agnosticism) for buffered I/O at once, not that nobody has looked at user-space caching before.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Process address-space isolation<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Each process has its own private virtual memory. A user-space cache library linked into process A cannot see or reclaim memory held by process B's copy of the same library — there's no shared view, unlike the kernel which maps all physical pages in one global structure.</p>
+          <div class="ready"><b>Now you're ready:</b> this single fact is why naive "port the page cache to user space" designs (Aeolia, uFS) end up with static, per-process memory pools instead of one shared, dynamically-sized cache.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>CLOCK and "recently accessed" bits<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>CLOCK is a cheap approximation of LRU: pages are arranged in a ring with a reference bit each; a sweeping hand clears bits and evicts the first page it finds already clear. The kernel normally gets reference bits for free from the MMU's hardware Accessed bit.</p>
+          <div class="ready"><b>Now you're ready:</b> Nexus has no MMU hook in user space, so it fakes the reference bit with a plain memory store into a shared bitmap on every hit.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>DMA and zero-copy I/O<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Normally the device DMAs data into a kernel buffer, then the CPU copies it into the user buffer — one extra copy. "Zero-copy" means the device DMAs straight into memory the application will read, with no intermediate copy.</p>
+          <div class="ready"><b>Now you're ready:</b> Nexus's cache memory is pre-mapped for DMA once at allocation time, so the same segment serves as both the cache backing store and the I/O target — no per-I/O mapping, no extra copy.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2 -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>Nexus in a nutshell</h2>
+      <p class="sub">Four requirements, why a naive port fails one of them, and the split that fixes it.</p>
+    </div>
+    <div class="prose">
+      <p>A user-space page cache needs four properties to be a real substitute for the kernel one: <b>file-level caching</b> (not just raw blocks), <b>low access overhead</b> (no syscalls on the hot path), <b>efficient memory usage</b> across all processes (not a fixed pool per process), and <b>hardware agnosticism</b> (no exotic CPU features). Existing systems each sacrifice one: block-level caches (TriCache, ScalaCache) drop file semantics; uFS pays IPC on every operation; Aeolia needs a specific CPU instruction (user interrupts) and still uses static per-process pools.</p>
+      <p>The obvious move — port the kernel's page cache straight into user space — gets three of the four for free (file-level, low-cost, hardware-agnostic), because cache <i>hits</i> never need to leave one process. It fails the fourth: <span class="mem-chip chip-lru">memory efficiency</span>. Isolated address spaces mean one process can't see another's idle pages, so each process ends up hoarding a static pool, exactly like Aeolia.</p>
+      <p><strong>Nexus's fix:</strong> split the design into a <span class="mem-chip chip-hi">user-space data plane</span> that does every cache hit and I/O submission as a plain function call (zero syscalls), and a <span class="mem-chip chip-ucp">lightweight kernel control plane</span> that — because the kernel already sees every process — handles global memory allocation and cross-process cold-page reclamation. The two sides talk through shared-memory segments and two shared-memory queues (U2K, K2U) that operate without system calls, never blocking the hot path.</p>
+      <p><strong>The payoff:</strong> up to <b>3.4×</b> throughput for small sequential reads and <b>1.5–1.8×</b> for random reads over ext4, with the memory pool growing and shrinking dynamically across processes — something no prior user-space cache achieved.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🗝️ Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Small buffered I/O (32 B–4 KB) costs <b>2–15×</b> more than an "ideal" in-memory user-space cache — and dominates real server/mobile workloads.</li>
+        <li>No prior system hits all four properties at once: file-level caching, low overhead, cross-process memory efficiency, hardware agnosticism.</li>
+        <li>A straight port of the kernel page cache gets 3 of 4 — it fails only on <b>cross-process memory efficiency</b>, because address spaces are isolated.</li>
+        <li>Nexus's fix: <b>data plane</b> (user space, 0 syscalls) for hits + I/O submit; <b>control plane</b> (kernel module) for global allocation + reclamation.</li>
+        <li>Two-level allocation: coarse 4 MB <b>segments</b> from the kernel, fine 4 KB <b>pages</b> managed entirely in user space.</li>
+        <li>Reclamation is fully async: a shared access bitmap + CLOCK + U2K/K2U queues, off the critical path.</li>
+        <li>Result: up to <b>3.4×</b> sequential, <b>1.5–1.8×</b> random read throughput over ext4.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">quasi-user-space split: who does what, and how they talk</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> user-space data plane</span>
+        <span><i style="background:var(--ltram)"></i> kernel control plane</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 340" role="img" aria-label="Nexus data plane and control plane split">
+        <rect x="30" y="30" width="330" height="230" rx="14" fill="#DCE9F3" stroke="#2E6FA3" stroke-width="1.6"/>
+        <text x="48" y="58" font-family="JetBrains Mono" font-size="11" fill="#1d4e6e" letter-spacing="1">USER SPACE — DATA PLANE</text>
+        <rect x="52" y="78" width="286" height="62" rx="10" fill="#fff" stroke="#9fc3dd" stroke-width="1.4"/>
+        <text x="195" y="103" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#1d4e6e">Page lookup</text>
+        <text x="195" y="122" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#3a6a8c">plain function call · 0 syscalls</text>
+        <rect x="52" y="152" width="286" height="62" rx="10" fill="#fff" stroke="#9fc3dd" stroke-width="1.4"/>
+        <text x="195" y="177" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#1d4e6e">I/O submit</text>
+        <text x="195" y="196" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#3a6a8c">direct to NVMe SQ · zero-copy DMA</text>
+        <text x="195" y="248" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#1d4e6e">fast path — nothing blocks</text>
+
+        <rect x="400" y="30" width="330" height="230" rx="14" fill="#E8E1F4" stroke="#6B4FA0" stroke-width="1.6"/>
+        <text x="418" y="58" font-family="JetBrains Mono" font-size="11" fill="#432f78" letter-spacing="1">KERNEL — CONTROL PLANE</text>
+        <rect x="422" y="78" width="286" height="62" rx="10" fill="#fff" stroke="#c6b7e4" stroke-width="1.4"/>
+        <text x="565" y="103" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#432f78">Segment allocator</text>
+        <text x="565" y="122" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#5e4a8c">4MB segments → 4KB pages</text>
+        <rect x="422" y="152" width="286" height="62" rx="10" fill="#fff" stroke="#c6b7e4" stroke-width="1.4"/>
+        <text x="565" y="177" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#432f78">CLOCK reclaim</text>
+        <text x="565" y="196" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#5e4a8c">access bitmap + U2K/K2U queues</text>
+        <text x="565" y="248" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#432f78">cold path — fully async</text>
+
+        <line x1="360" y1="110" x2="400" y2="110" stroke="#9A8E7C" stroke-width="1.6" stroke-dasharray="4 3"/>
+        <text x="380" y="100" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6E6456">rare syscall</text>
+        <line x1="400" y1="184" x2="360" y2="150" stroke="#2E6FA3" stroke-width="1.6" stroke-dasharray="4 3"/>
+        <text x="372" y="172" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1d4e6e">U2K: new page→inode</text>
+        <line x1="400" y1="212" x2="360" y2="186" stroke="#6B4FA0" stroke-width="1.6" stroke-dasharray="4 3"/>
+        <text x="372" y="222" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#432f78">K2U: evict this page</text>
+        <text x="380" y="290" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">shared-memory segments back both sides — no copy</text>
+      </svg>
+      <figcaption><b>Read it as two rooms sharing a wall:</b> everything an application does — lookups, hits, I/O submission — happens in the left room, in user space, with zero syscalls. Only coordination that genuinely needs a global view — handing out new memory, deciding what's cold — crosses into the kernel, and even that crossing is asynchronous. (Paper §3)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → split → mechanisms → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Kernel's per-I/O fixed cost (syscall + VFS) dominates small buffered I/O</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Data plane</div><div class="nd">Hits + I/O submit as plain function calls, 0 syscalls</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Control plane</div><div class="nd">Kernel module: segment allocation, CLOCK reclaim across all processes</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Coordinate</div><div class="nd">U2K/K2U shared-memory queues (no syscalls) — async, off the critical path</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Unified I/O</div><div class="nd">Lazy polling: submit now, check completion at a safe later point</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Result</div><div class="nd">3.4× seq / 1.5–1.8× random reads over ext4</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3 -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about Nexus</h2>
+      <p class="sub">Each stands alone; every card ends with where it breaks down.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="50" width="104" height="14" rx="4" fill="#DCE9F3" stroke="#2E6FA3" stroke-width="2"/>
+          <circle cx="40" cy="57" r="4" fill="#2E6FA3"/><circle cx="90" cy="57" r="4" fill="#2E6FA3"/>
+          <path d="M30 30 h20 v-8 h-20 z" fill="#F6DAD2" stroke="#C0452E" stroke-width="2"/>
+          <path d="M22 34 l8 -4 l8 4" stroke="#C0452E" stroke-width="2" fill="none"/>
+        </svg></div>
+        <span class="term">The core move · Data vs. control plane</span>
+        <h3>A tollbooth you don't stop at</h3>
+        <p>Imagine a highway where every car used to stop and show ID at a booth (a syscall) even for a 30-second trip. Nexus installs an E-ZPass lane: cars with cached credentials (cache hits) cruise straight through, in-lane. The booth still exists — for the rare car that needs a new permit (a new memory segment) — but almost nobody waits at it.</p>
+        <div class="breaks"><b>Where it breaks:</b> E-ZPass still needs a central authority issuing passes. Nexus's "pass issuer" is the kernel control plane — it just operates rarely enough to stay invisible.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="22" width="36" height="52" rx="4" fill="#E8E1F4" stroke="#6B4FA0" stroke-width="2"/>
+          <rect x="84" y="22" width="36" height="52" rx="4" fill="#E8E1F4" stroke="#6B4FA0" stroke-width="2"/>
+          <line x1="56" y1="48" x2="84" y2="48" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3"/>
+          <text x="38" y="86" text-anchor="middle" font-family="monospace" font-size="8" fill="#432f78">proc A</text>
+          <text x="102" y="86" text-anchor="middle" font-family="monospace" font-size="8" fill="#432f78">proc B</text>
+        </svg></div>
+        <span class="term">The problem a naive port doesn't fix</span>
+        <h3>Two apartments, no shared hallway</h3>
+        <p>Each tenant (process) has their own locked apartment (address space) and stocks their own fridge (memory pool). Tenant A's fridge sits half-empty while Tenant B is out of milk — but A can't see into B's apartment, so nobody reallocates. Just porting the page cache into each apartment recreates this: fast, but wasteful.</p>
+        <div class="breaks"><b>Where it breaks:</b> real apartments don't want a shared fridge for privacy reasons; memory pages have no such constraint — which is exactly why routing coordination through the kernel (the one party who <i>can</i> see every apartment) is the natural fix, not a compromise.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="20" width="80" height="24" rx="4" fill="#DCE9F3" stroke="#2E6FA3" stroke-width="2"/>
+          <text x="70" y="36" text-anchor="middle" font-family="monospace" font-size="9" fill="#1d4e6e">4MB segment</text>
+          <g stroke="#2E6FA3" stroke-width="1">
+            <line x1="40" y1="48" x2="40" y2="78"/><line x1="50" y1="48" x2="50" y2="78"/><line x1="60" y1="48" x2="60" y2="78"/><line x1="70" y1="48" x2="70" y2="78"/><line x1="80" y1="48" x2="80" y2="78"/><line x1="90" y1="48" x2="90" y2="78"/><line x1="100" y1="48" x2="100" y2="78"/>
+          </g>
+          <rect x="32" y="48" width="76" height="30" rx="2" fill="none" stroke="#9fc3dd" stroke-width="1.4"/>
+          <text x="70" y="90" text-anchor="middle" font-family="monospace" font-size="8" fill="#6E6456">...1024 × 4KB pages</text>
+        </svg></div>
+        <span class="term">Two-level allocation</span>
+        <h3>Buying by the pallet, selling by the can</h3>
+        <p>A warehouse buys soda by the pallet (a 4 MB segment, via a rare syscall) but a cashier rings up individual cans (4 KB pages) all day without calling the warehouse each time. Most of the work happens at can-granularity, entirely on the shop floor (user space); only restocking crosses to the warehouse (kernel).</p>
+        <div class="breaks"><b>Where it breaks:</b> a real warehouse call is slow regardless of size; here the point is specifically that pallet-sized calls are <i>rare</i> — not that they're individually fast.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="26" fill="none" stroke="#6B4FA0" stroke-width="2.5"/>
+          <line x1="70" y1="48" x2="70" y2="28" stroke="#6B4FA0" stroke-width="2.5" stroke-linecap="round"/>
+          <line x1="70" y1="48" x2="86" y2="54" stroke="#C0452E" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="70" cy="48" r="3" fill="#332C24"/>
+          <path d="M18 76 l12 -4 l-2 10 z" fill="#D9941F"/>
+        </svg></div>
+        <span class="term">Global reclamation · CLOCK + async queues</span>
+        <h3>A night janitor, not a bouncer</h3>
+        <p>A bouncer checking every guest at the door (synchronous eviction on every allocation) would create a line. Instead, Nexus posts a janitor who sweeps overnight: guests just raise a hand when they use a seat (a store into the shared access bitmap), and the janitor later walks the room with a clipboard (CLOCK), politely asking stragglers to move (K2U eviction request) — never interrupting the party.</p>
+        <div class="breaks"><b>Where it breaks:</b> a janitor sweeps on a fixed schedule; Nexus's kernel module polls queues continuously, so "overnight" here really means "whenever cycles are free, off the critical path."</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="30" width="36" height="46" rx="4" fill="#F6DAD2" stroke="#C0452E" stroke-width="2"/>
+          <rect x="80" y="30" width="36" height="46" rx="4" fill="#DCE9F3" stroke="#2E6FA3" stroke-width="2"/>
+          <path d="M60 40 h20" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3"/>
+          <path d="M60 60 h20" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3"/>
+          <text x="42" y="86" text-anchor="middle" font-family="monospace" font-size="7" fill="#8f331f">CPU copy</text>
+          <text x="98" y="86" text-anchor="middle" font-family="monospace" font-size="7" fill="#1d4e6e">zero-copy</text>
+        </svg></div>
+        <span class="term">Zero-copy I/O</span>
+        <h3>Delivering straight to the shelf</h3>
+        <p>A normal delivery drops boxes at the loading dock (kernel buffer), and a worker re-carries them to the shelf (CPU copy to user buffer). Nexus pre-wires the shelf itself as the delivery address (DMA mapping set up once, at segment allocation), so the truck (NVMe device) unloads directly where the data will be read.</p>
+        <div class="breaks"><b>Where it breaks:</b> the "pre-wiring" has to happen once per segment, not per delivery — which is exactly why Nexus does the DMA mapping at allocation time and reuses it, rather than per I/O.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4 -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Three challenges, three solutions, then how disk I/O rides the same architecture.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · Why a straight port isn't enough</h3>
+      <p>Porting the kernel page cache to user space gets <b>file-level caching</b>, <b>low-cost access</b>, and <b>hardware agnosticism</b> for free — a hit never needs to leave the process. It fails <b>memory efficiency</b>: private memory is invisible across isolated address spaces, so without extra machinery each process is stuck with a static pool (exactly uFS's and Aeolia's failure mode).</p>
+      <table class="tbl">
+        <thead><tr><th>Approach</th><th>File-level</th><th>Low-cost access</th><th>Memory efficiency</th><th>Hardware-agnostic</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">ext4 (kernel)</td><td>✓</td><td>✗</td><td>✓</td><td>✓</td></tr>
+          <tr><td class="mono">TriCache / ScalaCache</td><td>✗</td><td>✓</td><td>✗</td><td>TriCache ✓ / ScalaCache ✗</td></tr>
+          <tr><td class="mono">uFS</td><td>✓</td><td>✗ (IPC)</td><td>✗</td><td>✓</td></tr>
+          <tr><td class="mono">Aeolia</td><td>✓</td><td>✓</td><td>✗</td><td>✗ (user interrupts)</td></tr>
+          <tr class="best"><td class="mono"><b>Nexus</b></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Challenge 1 — system-wide dynamic allocation</h3>
+      <p>Nexus uses <b>two-level allocation</b>. The control plane maps coarse <b>4 MB segments</b> into user space, backing the cache in <b>4 KB pages</b>; segment metadata is shared between kernel and user. On the fast path, the data plane carves pages out of already-mapped segments with zero kernel involvement. Only when the local segment pool runs dry does it make a (rare, and pre-fetchable) syscall for a new one.</p>
+    </div>
+
+    <div class="prose">
+      <h3>3 · Challenge 2 — global cold-page reclamation</h3>
+      <p>Eviction is inherently off the critical path: no cache hit needs to wait for it. Nexus exploits this. Each segment carries a shared <b>access bitmap</b>; a hit sets its bit with one plain store. New pages are announced to the kernel via the shared-memory <b>U2K</b> queue (no syscalls). The kernel module polls all processes' U2K queues, reads the access bitmaps directly from shared memory, and runs <b>CLOCK</b> globally across every process's pages to find cold ones — then requests their release via the <b>K2U</b> queue. Segment-level reclamation works the same way one level up: the control plane periodically retires the least-utilized segments (e.g. greedy: fewest active pages).</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">One sweep, every process</div>
+      <div class="viz-kicker">access bitmap → U2K/K2U queues → global CLOCK</div>
+      <svg class="full" viewBox="0 0 700 220" role="img" aria-label="U2K K2U reclamation flow">
+        <rect x="20" y="20" width="150" height="56" rx="8" fill="#DCE9F3" stroke="#2E6FA3" stroke-width="1.5"/><text x="95" y="53" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#1d4e6e">Process A hit</text>
+        <rect x="20" y="144" width="150" height="56" rx="8" fill="#DCE9F3" stroke="#2E6FA3" stroke-width="1.5"/><text x="95" y="177" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#1d4e6e">Process B hit</text>
+        <rect x="270" y="82" width="160" height="56" rx="8" fill="var(--paper-2)" stroke="#D8C8AC" stroke-width="1.5"/><text x="350" y="106" text-anchor="middle" font-family="Fraunces" font-size="12" font-weight="600" fill="#6E6456">Shared bitmap</text><text x="350" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">one store per hit</text>
+        <rect x="500" y="20" width="180" height="180" rx="10" fill="#E8E1F4" stroke="#6B4FA0" stroke-width="1.6"/><text x="590" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="10.5" fill="#432f78" letter-spacing="1">KERNEL</text>
+        <text x="590" y="76" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#432f78">Global CLOCK</text>
+        <text x="590" y="96" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5e4a8c">polls U2K, reads bitmap,</text>
+        <text x="590" y="112" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5e4a8c">picks cold pages</text>
+        <text x="590" y="150" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#432f78">→ K2U: evict this page</text>
+        <line x1="170" y1="48" x2="270" y2="100" stroke="#2E6FA3" stroke-width="1.6"/>
+        <line x1="170" y1="172" x2="270" y2="120" stroke="#2E6FA3" stroke-width="1.6"/>
+        <line x1="430" y1="110" x2="500" y2="110" stroke="#6B4FA0" stroke-width="1.8"/>
+        <line x1="500" y1="160" x2="300" y2="200" stroke="#C0452E" stroke-width="1.6" stroke-dasharray="4 3"/>
+        <text x="380" y="214" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#8f331f">K2U: release at safe point</text>
+      </svg>
+      <figcaption><b>No request ever blocks on this diagram.</b> Hits only ever write a bit; the kernel's sweep, and the eventual release, both happen asynchronously, on the control plane's own schedule. (Paper §3, Challenge 2)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Challenge 3 — a unified kernel-bypass data plane</h3>
+      <p>Readahead, writeback and fsync must run without blocking the caller, but user space has no interrupt handler to learn when NVMe I/O finishes. Nexus's answer is <b>lazy polling</b>: submit the I/O straight to the NVMe submission queue and return immediately; check the completion queue later, at a convenient point (before the next readahead, during eviction, or at an explicit fsync). Synchronous reads just do submit→poll→return directly. The same segment memory serves as both cache storage and the DMA target, mapped once at allocation — so prefetch and writeback ride one zero-copy DMA path straight into the cache; a cache hit still copies the cached bytes into the caller's buffer, it just never has to pass through a separate kernel buffer first.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why this works:</b> async operations don't need an answer <i>now</i> — only before their result is actually used. Lazy polling isn't free, but it avoids blocking the caller and sidesteps the complexity of interrupt-driven control-plane involvement — the cost of checking completion just gets folded into work the caller was already going to do (the next readahead, an eviction sweep, an explicit fsync).</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5 -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations straight from the paper's reported figures.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Why 32 B sees a bigger speedup than 128 KB</h3>
+      <p style="color:var(--ink-soft)">The kernel pays a roughly fixed per-call cost regardless of I/O size. At 32 B sequential reads, the ideal user-space cache is 15× faster; at 4 KB, only 2.6×; at 128 KB, ~2×. Why does the ratio shrink?</p>
+      <ol class="seq">
+        <li><b>Model the kernel's cost</b> as fixed_tax + transfer_cost(size). The fixed_tax (syscall + VFS + indexing) barely changes with I/O size.</li>
+        <li><b>At 32 B</b>, transfer_cost ≈ 0, so total time ≈ fixed_tax almost entirely. Removing that tax (user space) removes almost the whole latency → ~15×.</li>
+        <li><b>At 128 KB</b>, transfer_cost (the memcpy / DMA of 128 KB) is now large relative to fixed_tax, so even eliminating fixed_tax only shaves a smaller fraction off the total → ~2×.</li>
+        <li><b>Conclusion:</b> the fixed tax is "the dominant source of overhead for small I/O" exactly because it doesn't scale — which is why the paper frames Nexus around small buffered I/O specifically.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Segment/page math</h3>
+      <p style="color:var(--ink-soft)">A segment is 4 MB; a page is 4 KB. How many pages does one control-plane allocation buy the data plane, and why does that matter?</p>
+      <ol class="seq">
+        <li><b>Pages per segment</b> = 4 MB ÷ 4 KB = <b>1024 pages</b>.</li>
+        <li><b>One syscall</b> (segment request) therefore supplies 1024 subsequent page allocations that need zero kernel involvement.</li>
+        <li><b>Amortized cost:</b> even at the (worst-case) ~160 ns syscall cost, that's under 0.16 ns of kernel tax per page amortized — negligible next to a ~400 ns–μs-scale cache operation.</li>
+        <li><b>Insight:</b> this 1024:1 ratio is what makes "rare syscalls, hidden by async pre-allocation" a credible claim rather than hand-waving.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Reading Table 2: two real speedup rows</h3>
+      <p style="color:var(--ink-soft)">From the paper's throughput table (ext4 / Nexus, GiB/s), single-threaded: 32 B sequential read is 0.09 / 0.23; 4 KB random read is 5.0 / 7.6.</p>
+      <ol class="seq">
+        <li><b>32 B sequential:</b> 0.23 ÷ 0.09 = <b>2.56×</b> — matches the paper's reported "2.6×," within rounding.</li>
+        <li><b>4 KB random:</b> 7.6 ÷ 5.0 = <b>1.52×</b> — matches the paper's "1.5×" for 4 KB random reads at 1 thread.</li>
+        <li><b>Why random &lt; sequential at the same size:</b> sequential access is CPU-cache-friendly (hardware prefetchers keep lines warm along the short path); random access pays the full cost of radix-tree-style indexing on every lookup, a cost no software layer removes.</li>
+        <li><b>At 32 threads</b>, this isn't a uniform shrink toward 1.0×: small, cache-friendly sequential cases hold onto much of their advantage (32 B sequential is still around 2.9× at 32 threads in Table 2), while larger or random-access cases drop toward 1.0× as the platform's ~56 GiB/s memory bandwidth ceiling and 8-core contention come to dominate the software path.</li>
+      </ol>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Why Aeolia's 32 KB cache unit backfires</h3>
+      <p style="color:var(--ink-soft)">Aeolia uses a 32 KB cache/I/O unit for high sequential throughput, but a 4 KB request still consumes a full 32 KB slot and incurs up to ~13.5 μs of disk I/O (vs. ~4 μs for a 4 KB I/O).</p>
+      <ol class="seq">
+        <li><b>Space amplification:</b> one 4 KB request occupies 32 KB ÷ 4 KB = <b>8×</b> the cache space it needs.</li>
+        <li><b>Latency amplification:</b> 13.5 μs ÷ 4 μs ≈ <b>3.4×</b> the disk latency a right-sized 4 KB I/O would cost.</li>
+        <li><b>Why it happens:</b> a fixed large unit optimizes one access pattern (long sequential) at the expense of the other (small, scattered) — exactly the small-I/O-dominant pattern the paper shows is most common.</li>
+        <li><b>Nexus's choice:</b> a 4 KB page unit (matching the kernel's own page size) avoids this trade entirely — no amplification either way.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6 -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">An engineer says "Nexus is fast because it bypasses the page cache, like direct I/O." Is that right?</div>
+      <details><summary>Show answer</summary><div class="ans">No — it's the opposite. Nexus keeps the page cache (file-level caching, readahead, writeback) but relocates it to user space so <i>cache hits</i> need no syscall. Direct I/O skips caching altogether; Nexus's whole point is to make buffered I/O (the cached path) fast, not to avoid caching.<span class="mis">Misconception: conflating "faster than ext4" with "bypasses caching." Nexus bypasses the kernel, not the cache.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Why can't a pure user-space library (no kernel component at all) achieve both low overhead and efficient cross-process memory usage simultaneously?</div>
+      <details><summary>Show answer</summary><div class="ans">Low overhead wants zero IPC/syscalls on the hot path. Cross-process efficiency wants one party to see every process's memory usage and reallocate it — but address-space isolation means no single user-space process has that view without IPC to the others (uFS's approach), which reintroduces overhead. The kernel is the only entity that already spans every process for free, which is why Nexus routes only the *coordination* (not the hot path) through it.<span class="mis">Misconception: that "more user space is always better." The isolation that makes user space fast is the same isolation that makes cross-process coordination expensive there.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">The paper says eviction is "inherently asynchronous." What property of eviction justifies moving it entirely off the critical path?</div>
+      <details><summary>Show answer</summary><div class="ans">No cache hit needs an eviction to have already happened — hits either find the page present or they don't, and misses just trigger a fresh fetch. Nothing about serving the *next* request depends on *this* request's page being reclaimed *now*. That slack is what lets Nexus defer eviction to whenever the kernel module gets around to polling.<span class="mis">Misconception: that eviction must keep pace with allocation in real time. It only needs to keep pace on average, over the segment pool's lifetime — not per-request.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">Nexus fakes a hardware Accessed bit with a shared bitmap written on every hit. What would go wrong if, instead, every hit sent a message through the U2K queue?</div>
+      <details><summary>Show answer</summary><div class="ans">The U2K queue is for infrequent events (new page allocations); routing every single cache hit through it would turn the hot path into a producer against a shared queue — adding synchronization/contention cost to literally every access, defeating the "plain function call" goal. A plain memory store to a bitmap bit, by contrast, is as cheap as a cache hit itself and needs no queue machinery.<span class="mis">Misconception: that "communicate with the kernel" always means "send a message." A shared-memory bit the kernel reads later is communication without a queue, and it's far cheaper when the event (a hit) is this frequent.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">Why does the speedup from Nexus shrink as thread count rises from 1 to 32 in Table 2, even though Nexus is still "faster" by the paper's own account?</div>
+      <details><summary>Show answer</summary><div class="ans">Two separate ceilings take over: the platform's memory bandwidth (~56 GiB/s) is shared by both ext4 and Nexus, so once a workload is bandwidth-bound, no software-path improvement can add more throughput; and beyond 8 threads (the available P-cores), CPU contention degrades both systems similarly. Nexus's advantage is in the *software path*, which matters less once hardware limits dominate.<span class="mis">Misconception: that a diminishing speedup means the optimization "stopped working." It means a different resource (bandwidth, cores) became the bottleneck — Nexus still wins, just by a smaller margin.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">A colleague argues ScalaCache is strictly better than Nexus because it also achieves low-cost cache access. What's missing from that comparison?</div>
+      <details><summary>Show answer</summary><div class="ans">ScalaCache is a block-level cache (no file-level semantics — no readahead/writeback at file granularity), needs custom hardware support, and uses a static per-process pool (not memory-efficient across processes). Low access cost is only one of the four properties; ScalaCache trades away three of the other four to get it.<span class="mis">Misconception: judging a system on a single axis. The paper's whole framing is that all four properties must hold simultaneously — a win on one doesn't make a system "better" overall.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7 -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is Nexus a filesystem?<span class="chev">▾</span></summary><div class="a">Not primarily — it's an I/O stack layered to provide file-level caching and I/O submission; the paper doesn't describe it as replacing ext4's on-disk format, just the hot-path access to cached data and the I/O path to disk.</div></details>
+      <details><summary><span class="q">Q2</span>Does the "zero system calls" claim apply to every operation?<span class="chev">▾</span></summary><div class="a">It applies to cache hits, page lookups, and I/O submission on the data plane. Rare events — requesting a new 4 MB segment when the local pool is exhausted — still need one syscall, but these are infrequent and can be hidden with async pre-allocation.</div></details>
+      <details><summary><span class="q">Q3</span>How is Nexus different from mmap-based caching?<span class="chev">▾</span></summary><div class="a">mmap-style designs rely on page faults to trigger kernel involvement, which is synchronous and adds latency on the critical path. Nexus avoids page-fault-driven synchronization entirely: hits are served directly from pre-mapped segments, and eviction is communicated via async queues instead of faults.</div></details>
+      <details><summary><span class="q">Q4</span>What exactly does the kernel control plane do that a daemon process couldn't?<span class="chev">▾</span></summary><div class="a">A user-space daemon (like uFS's server process) requires IPC for every coordinated operation. The kernel module instead lives at a privilege level that already maps every process's relevant shared memory, so it can read access bitmaps and queues directly — the "coordination" is just reads/writes to shared memory, not message-passing to a separate process.</div></details>
+      <details><summary><span class="q">Q5</span>Why 4 MB segments specifically?<span class="chev">▾</span></summary><div class="a">The paper gives 4 MB as the example coarse-grained unit; the design principle is that segments should be large enough that kernel-crossing calls are rare relative to the much more frequent 4 KB page-level operations, not that 4 MB is uniquely optimal.</div></details>
+      <details><summary><span class="q">Q6</span>Does Nexus help write-heavy workloads too?<span class="chev">▾</span></summary><div class="a">The preliminary evaluation in this paper focuses on reads; the motivation section notes RocksDB's small WAL writes and SQLite's 24 B frame headers as evidence of small buffered *writes* being common, but write throughput numbers aren't yet reported — it's listed under future work (realistic workload evaluation).</div></details>
+      <details><summary><span class="q">Q7</span>What happens if the U2K or K2U queue fills up?<span class="chev">▾</span></summary><div class="a">The paper flags this explicitly as open future work — "how to handle queue overflow" is listed as a practical aspect still to be studied, alongside when to harvest messages to minimize combined overhead.</div></details>
+      <details><summary><span class="q">Q8</span>Is crash consistency handled?<span class="chev">▾</span></summary><div class="a">Not yet — the paper lists protecting dirty user-space pages against application crashes, without reintroducing kernel overhead, as a key open problem for future work.</div></details>
+      <details><summary><span class="q">Q9</span>Does Nexus need special CPU features like Aeolia's user interrupts?<span class="chev">▾</span></summary><div class="a">No — hardware agnosticism is one of its four required properties. It uses ordinary shared memory, lock-free queues, and standard NVMe submission/completion queues, no exotic instructions.</div></details>
+      <details><summary><span class="q">Q10</span>What's the single biggest open question before this could ship?<span class="chev">▾</span></summary><div class="a">Crash consistency for dirty user-space pages, arguably — losing acknowledged writes on a crash is a correctness issue, not just a performance one, and the paper is explicit that it's unresolved.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8 -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, then a path to go deeper.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>Nexus</b><span>The paper's system: a quasi-user-space I/O stack splitting hot-path cache/I/O (data plane) from global coordination (control plane).</span></div>
+      <div class="term-def"><b>Data plane</b><span>The user-space component: page lookup and I/O submission as plain function calls, zero syscalls.</span></div>
+      <div class="term-def"><b>Control plane</b><span>The lightweight kernel module: global memory allocation and cross-process cold-page reclamation.</span></div>
+      <div class="term-def"><b>Segment</b><span>Coarse-grained (e.g. 4 MB) memory unit allocated by the control plane and mapped into user space.</span></div>
+      <div class="term-def"><b>Page</b><span>Fine-grained (4 KB) unit the data plane manages within already-mapped segments, with no kernel involvement.</span></div>
+      <div class="term-def"><b>U2K / K2U queue</b><span>Shared-memory queues that operate without system calls: user-to-kernel (report new page ownership) and kernel-to-user (request eviction).</span></div>
+      <div class="term-def"><b>Access bitmap</b><span>Per-segment shared structure; a single store on each cache hit records recency without an MMU Accessed bit.</span></div>
+      <div class="term-def"><b>Lazy polling</b><span>Submit async I/O immediately, check its completion queue entry later at a convenient safe point, instead of blocking.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>CLOCK</b><span>Approximate-LRU eviction using a reference bit and a sweeping hand; what the control plane runs globally.</span></div>
+      <div class="term-def"><b>VFS</b><span>Virtual File System — the kernel layer every buffered syscall traverses; a source of fixed per-I/O cost.</span></div>
+      <div class="term-def"><b>Zero-copy I/O</b><span>DMA writes directly into the final destination buffer; no CPU-driven intermediate copy.</span></div>
+      <div class="term-def"><b>Direct I/O</b><span>I/O that bypasses the page cache entirely, for large transfers where caching adds no value.</span></div>
+      <div class="term-def"><b>Read/write amplification</b><span>Doing more I/O or using more cache space than an access strictly needs, e.g. Aeolia's 32 KB unit for a 4 KB request.</span></div>
+      <div class="term-def"><b>WAL / SST</b><span>Write-ahead log and sorted-string table — RocksDB structures whose small, size-clustered I/O motivates this work.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What Nexus buys (vs. ext4)</div>
+      <div class="viz-kicker">throughput speedups vs. ext4, selected I/O sizes &amp; thread counts · higher is better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Seq. read, 32 B<small>1 thread</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="18" style="--target:18"><span>2.6× (0.09→0.23 GiB/s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Seq. read, 256 B<small>1 thread</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="15"><span>3.4× (0.68→2.30 GiB/s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Seq. read, 4 KB<small>1 thread</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="9"><span>1.7× (5.5→9.5 GiB/s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Rand. read, 4 KB<small>1 thread</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="7"><span>1.5× (5.0→7.6 GiB/s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Seq. read, 128 KB<small>32 threads</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="1"><span>~1.0× (bandwidth-bound)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ ~3.5×</p>
+      <figcaption><b>The gap shrinks as I/O gets bigger or the platform saturates:</b> small I/O (the dominant real-world pattern) sees the largest gains; at high thread counts and large sizes, memory bandwidth (~56 GiB/s) becomes the shared ceiling. (Paper Table 2, §4)</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes</div>
+    <div class="card" style="margin-top:0">
+      <p style="margin-bottom:.6em"><b>From the paper directly:</b> the four design properties (Table 1), the 2–15× kernel overhead measurement (Fig. 2), all Table 2 throughput numbers, the three challenges and their solutions (§3), the test platform (Ubuntu 20.04, kernel 6.5.1, i9-14900K, Intel Optane SSD P5801x, 32 GB DRAM), and the future-work list (§5).</p>
+      <p style="margin:0"><b>Framing added for this guide:</b> all analogies, the signature split-architecture SVG, the worked-example arithmetic (2.56×, 1.52×, 1024 pages/segment, 8× space / 3.4× latency amplification for Aeolia), and the practice-problem misconceptions. These connect the paper's claims to the reader's own tiering/CXL background but are not direct quotes from the source.</p>
+    </div>
+
+    <div class="subhead">Related systems (from the paper's references)</div>
+    <div class="read-item reveal"><h4>TriCache <span class="diff med">medium</span></h4><div class="meta">Feng et al. · OSDI 2022</div><p>User-transparent block cache for out-of-core processing; low-cost but block-level, single-process memory pool.</p></div>
+    <div class="read-item reveal"><h4>ScalaCache <span class="diff med">medium</span></h4><div class="meta">Peng et al. · USENIX ATC 2024</div><p>Scalable user-space page cache via software-hardware coordination; low cost but needs custom hardware support.</p></div>
+    <div class="read-item reveal"><h4>uFS <span class="diff hard">hard</span></h4><div class="meta">Liu et al. · SOSP 2021</div><p>User-level filesystem, semi-microkernel architecture; file-level and hardware-agnostic but high IPC overhead per operation.</p></div>
+    <div class="read-item reveal"><h4>Aeolia <span class="diff hard">hard</span></h4><div class="meta">Li et al. · SOSP 2025</div><p>Fast userspace-interrupt-based storage stack; low cost and file-level, but needs x86 user interrupts and suffers read/write amplification from its 32 KB unit.</p></div>
+    <div class="read-item reveal"><h4>BypassD <span class="diff med">medium</span></h4><div class="meta">Yadalam et al. · ASPLOS 2024</div><p>Fast userspace access to shared SSDs — accelerates direct I/O only; the paper's Fig. 1 comparison point for buffered I/O being left behind.</p></div>
+    <div class="read-item reveal"><h4>UnICom <span class="diff med">medium</span></h4><div class="meta">Pan et al. · FAST 2026</div><p>High-performance I/O completion mechanism bypassing most of the Linux I/O stack; same authors, another comparison point for buffered I/O being overlooked.</p></div>
+    <div class="read-item reveal"><h4>CAR: Clock with Adaptive Replacement <span class="diff med">medium</span></h4><div class="meta">Bansal &amp; Modha · FAST 2004</div><p>The CLOCK-family replacement algorithm Nexus's control plane runs globally across all processes.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Pan, Liang, Noh, Li, Guan, Kuo &amp; Xue, "User Space Buffer Cache with the Bells and Whistles of a Kernel Page Cache" (HotStorage '26, 2026)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  var vprMiss = [5.0,4.0,3.3,2.8,2.45,2.1,1.85,1.6,1.4,1.2,1.05,0.9,0.75,0.65,0.57,0.5];
+  var eqMiss  = [4.5,3.7,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3,3.3];
+  var optV = 1, optTot = Infinity;
+  for(var v=1; v<=15; v++){ var t = vprMiss[v-1] + eqMiss[(16-v)-1]; if(t < optTot){ optTot = t; optV = v; } }
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(v){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=16;i++){ html += '<div class="way '+(i<=v?'vpr':'eq')+'"></div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(v){
+    var range = document.getElementById('partRange'); if(!range) return;
+    v = Math.max(1, Math.min(15, v));
+    range.value = v;
+    document.getElementById('partRangeVal').textContent = v;
+    var vm = vprMiss[v-1], em = eqMiss[(16-v)-1], tot = vm + em;
+    document.getElementById('pVpr').textContent = vm.toFixed(2);
+    document.getElementById('pEq').textContent  = em.toFixed(2);
+    document.getElementById('pTot').textContent = tot.toFixed(2);
+    buildStrip(v);
+    var verd = document.getElementById('pVerdict');
+    if(v === optV){ verd.className = 'pverdict opt'; verd.textContent = '✓ Optimal.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Not optimal — adjust.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(9);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
