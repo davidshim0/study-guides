@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<!-- CopyCat field guide — Harvesting the Frequency Tax of Bulk Memory Copy (Li & Zhang, HotStorage'26).
+     Semantic colors: teal = async offload path (overlap, keeps paying off) · honey-gold = sync in-place down-clock (saturates, simple)
+     · indigo = CopyCat's own machinery (router/controller) · terracotta = baseline schedutil+HWP (the villain, stuck at max freq). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spending Watts Wisely — CopyCat, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#E8A33D; --honey-deep:#C27D14; --honey-soft:#FBEACB;
+  --dram:#2C8C7C; --dram-soft:#DCEFE9;      /* teal  = async offload path        */
+  --ltram:#5A61B4; --ltram-soft:#E6E6F6;    /* indigo = CopyCat machinery        */
+  --optane:#C0563B; --optane-soft:#F7E1D8;  /* terracotta = baseline schedutil+HWP */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(44,140,124,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(90,97,180,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(90,97,180,.05) 31px,rgba(90,97,180,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(232,163,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1f5b51;font-size:.96rem}
+.primer .ready b{color:#16463e}
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1f5b51}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#1f5b51}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9fd2c7;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bcbfe8;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#6f76c9,#5A61B4)}
+.bf-hi{background:linear-gradient(90deg,#3aa392,#2C8C7C)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#C0563B)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#16463e;border:1px solid #9fd2c7}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1f5b51}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#7e8ad6}
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1f5b51}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(90,151,140,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(140,148,230,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(232,163,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+</style>
+</head>
+<body>
+<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HotStorage 2026 · A Field Guide</span>
+    <h1>Why a CPU stuck <span class="swash">copying memory</span> doesn't need to run <span class="swash" style="color:var(--optane)">full speed</span></h1>
+    <p class="lede">Past a point, more clock speed doesn't move more bytes — it just burns watts waiting on memory. This is the plain-English story of <strong>CopyCat</strong>, a runtime that notices and claws the energy back.</p>
+    <div class="hero-meta">
+      <span>📄 "CopyCat: Harvesting the Frequency Tax of Bulk Memory Copy" · Li &amp; Zhang</span>
+      <span>🎓 DVFS/CXL/tiering background assumed — primers fill small gaps</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🌡️</div>
+      <p>If more frequency buys <span class="ro">no more throughput</span>, it's only buying <span class="wo">more heat</span> — so measure throughput directly, then turn the clock down.<br><em style="font-size:.9rem">Probe, don't guess from utilization.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- TAB 1: START HERE -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary + eight primers</h2>
+      <p class="sub">Your tiering/CXL background covers the "why memcpy is everywhere" part. These fill the DVFS/power-management plumbing the paper leans on.</p>
+    </div>
+
+    <div class="card" style="margin-top:8px">
+      <h3 style="font-size:1.1rem">Acronyms, up front</h3>
+      <div class="gloss">
+        <div class="term-def"><b>DVFS</b><span>Dynamic Voltage/Frequency Scaling — lowering clock (and voltage) to cut power.</span></div>
+        <div class="term-def"><b>HWP</b><span>Intel Hardware-Controlled Performance States — firmware picks the final frequency from internal telemetry the OS can't see.</span></div>
+        <div class="term-def"><b>schedutil</b><span>Linux's default CPU governor; sets a frequency target from per-core utilization.</span></div>
+        <div class="term-def"><b>RAPL</b><span>Running Average Power Limit — Intel's on-chip energy counters, used here to measure package energy.</span></div>
+        <div class="term-def"><b>MBA</b><span>Memory Bandwidth Allocation (Intel RDT) — per-tenant bandwidth throttling/quotas.</span></div>
+        <div class="term-def"><b>NUMA</b><span>Non-Uniform Memory Access — remote-socket memory with higher latency, lower bandwidth than local DRAM.</span></div>
+        <div class="term-def"><b>DSA</b><span>Intel Data Streaming Accelerator — a hardware copy-offload engine, the dedicated-silicon alternative to CopyCat.</span></div>
+        <div class="term-def"><b>Package energy</b><span>Total energy drawn by the whole CPU package (all cores + uncore) over an interval — RAPL's unit of account.</span></div>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top:18px">
+      <span><i style="background:var(--dram)"></i> async offload path</span>
+      <span><i style="background:var(--honey-deep)"></i> sync in-place down-clock</span>
+      <span><i style="background:var(--ltram)"></i> CopyCat's machinery</span>
+      <span><i style="background:var(--optane)"></i> baseline schedutil+HWP</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>The memory wall, in one sentence<span class="chev">▾</span></summary>
+        <div class="body"><p>Cores keep getting faster; the path to memory hasn't kept pace. Once enough threads are copying, they collectively saturate the memory controller — adding threads (or clock) stops producing more delivered bytes/sec, it only adds stalled cycles.</p>
+        <div class="ready"><b>Now you're ready:</b> CopyCat's whole premise is this saturation point, where clock speed and throughput decouple.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>DVFS: what you buy and what it costs<span class="chev">▾</span></summary>
+        <div class="body"><p>Lower voltage/frequency cuts dynamic power roughly with the square of voltage. The catch: if a task is compute-bound, running slower just makes it take proportionally longer, often costing more total energy (static/leakage power keeps flowing the whole time).</p>
+        <div class="ready"><b>Now you're ready:</b> DVFS is a net win only when the task doesn't actually need the faster clock — exactly the memory-stalled case.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>schedutil and HWP — two hands on the same dial<span class="chev">▾</span></summary>
+        <div class="body"><p>The OS governor (schedutil) watches per-core utilization and requests a frequency. Modern Intel chips then let HWP firmware make the final call from telemetry the OS never sees. A core that's 100% busy spinning on memory stalls looks indistinguishable from one doing useful compute — both read "100% busy."</p>
+        <div class="ready"><b>Now you're ready:</b> this blind spot is why both layers keep copying cores pinned at max frequency long after it stops helping.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>Why stall counters don't fix it either<span class="chev">▾</span></summary>
+        <div class="body"><p>You might think "just read per-core memory-stall-cycle counters." The paper shows these mislabel some copy kernels — the real problem is a <i>level mismatch</i>: safety to down-clock is a system-wide bandwidth fact (is the memory controller saturated?), but the counter is per-core and can't see the other cores.</p>
+        <div class="ready"><b>Now you're ready:</b> CopyCat sidesteps this by measuring delivered throughput directly instead of inferring from any local proxy.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>RAPL and "package energy"<span class="chev">▾</span></summary>
+        <div class="body"><p>RAPL exposes a running energy counter for the CPU package (cores + uncore). The paper measures CPU-package energy specifically via this counter. Reading it before and after a phase gives joules consumed — the paper's currency for every energy number you'll see.</p>
+        <div class="ready"><b>Now you're ready:</b> "saves 24% package energy" means the RAPL delta over that phase, not an estimate.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Spatial vs temporal separation<span class="chev">▾</span></summary>
+        <div class="body"><p>A workload alternating memory and compute phases every few microseconds can't be chased by a governor whose frequency changes take tens of milliseconds — temporal tracking is just too slow. The alternative: separate the two phases onto different cores (one fast, one slow) running at the same time — spatial separation needs no fast switching at all.</p>
+        <div class="ready"><b>Now you're ready:</b> this is exactly why CopyCat's async path offloads copies to dedicated cores rather than toggling one core's frequency in time.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Futexes and the "don't syscall on the fast path" rule<span class="chev">▾</span></summary>
+        <div class="body"><p>A futex lets a thread sleep in the kernel only when it actually needs to wait — checking a user-space flag first avoids the syscall entirely when the answer is already known. Spin briefly first (cheap), then futex-sleep only if still waiting (expensive but rare).</p>
+        <div class="ready"><b>Now you're ready:</b> CopyCat's <code>copycat_sync()</code> uses exactly this three-stage pattern so synchronization is nearly free in the common case.</div></div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Tiered memory's role here (your home turf)<span class="chev">▾</span></summary>
+        <div class="body"><p>CXL-attached memory, remote NUMA, and PMEM commonly offer less bandwidth than local DRAM — though this isn't universal across all CXL configurations — so page migration (TPP-/Pond-style transparent tiering) and DAX-style persistent-memory writes often saturate the memory controller at fewer concurrent threads than pure local-DRAM copying. That shifts CopyCat's "safe to down-clock" threshold lower, not just its applicability.</p>
+        <div class="ready"><b>Now you're ready:</b> this paper treats memcpy as the shared primitive underneath tiering, not a separate concern — see FAQ for how it relates to TPP/Pond-style migration specifically.</div></div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: THE BIG IDEA -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>CopyCat in a nutshell</h2>
+      <p class="sub">The waste, the direct fix, and how the pieces fit.</p>
+    </div>
+    <div class="prose">
+      <p>Bulk <code>memcpy</code> is already one of the most expensive standard-library calls in data centers, and tiered memory (CXL, PMEM, remote NUMA) is adding more of it: every page promotion/demotion is a 4 KB memcpy, and lower-bandwidth tiers saturate the memory controller at fewer concurrent threads. Once that saturation hits, a higher core frequency buys <b>next to no</b> extra throughput — down-clocking at this point costs the paper's measured <b>1–2%</b> or less, while the extra frequency mostly produces more stalled cycles at peak power. On the authors' Skylake-SP server, saturation arrives at 8–10 threads, and the default <span class="mem-chip chip-lru">schedutil+HWP</span> baseline keeps every copying core at max frequency anyway, wasting up to <b>24%</b> of package energy.</p>
+      <p><strong>CopyCat</strong> is a user-space runtime that intercepts every <code>memcpy</code> call and measures delivered throughput directly — no utilization heuristic, no unreliable stall counter. A <span class="mem-chip chip-ucp">router</span> then picks one of two paths: <span class="mem-chip chip-sat">sync</span> down-clocks the copying core <i>in place</i> when there's no compute to free it for; <span class="mem-chip chip-hi">async</span> offloads the copy to a dedicated low-frequency worker core, freeing the issuing core to keep computing at full speed. A joint controller tunes worker-pool size and frequency together using a step-search rule (try a step, keep it if throughput survives, revert if not).</p>
+      <p><strong>The payoff:</strong> up to <b>24%</b> package energy saved at under <b>1–2%</b> throughput cost in microbenchmarks; on a blob-cache prototype, async offload in the serve phase delivers <b>+15%</b> throughput at roughly neutral energy, and down-clocking the dedicated workers saves a further <b>~15%</b> package energy on top of that (net ≈ <b>−15%</b>) — see Worked Example ② for the breakdown.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Past bandwidth saturation, frequency and throughput decouple — but schedutil+HWP can't see that and stay at max clock.</li>
+        <li>Per-core utilization and stall counters are the wrong signal (level mismatch); CopyCat probes <b>delivered throughput</b> instead.</li>
+        <li>Phases alternate in microseconds; OS frequency changes take ~44 ms — too slow to chase in time, so CopyCat separates phases <b>in space</b> (dedicated low-freq workers) instead.</li>
+        <li>Router picks sync (in-place down-clock) when fully memory-bound, async (offload) when compute and copy alternate.</li>
+        <li>Enqueueing a copy costs ~6 ns, and <code>copycat_sync()</code> returns immediately if the copy's already done — the expensive spin/futex path only triggers when a copy is genuinely still in flight.</li>
+        <li>Result: up to 24% package energy saved, &lt;1–2% throughput cost, validated on a real blob-cache prototype.</li>
+      </ul>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">throughput &amp; energy vs. thread count, 2.5 GHz vs 1.2 GHz — qualitative sketch, not digitized data</div>
+      <div class="legend">
+        <span><i style="background:var(--optane)"></i> 2.5 GHz (baseline, always max)</span>
+        <span><i style="background:var(--honey-deep)"></i> 1.2 GHz (down-clocked)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 320" role="img" aria-label="throughput and energy curves vs thread count">
+        <line x1="70" y1="30" x2="70" y2="230" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="230" x2="700" y2="230" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="middle"><text x="109" y="246">1</text><text x="227" y="246">4</text><text x="385" y="246">7</text><text x="542" y="246">9</text><text x="700" y="246">10</text></g>
+        <text x="385" y="266" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">concurrent memcpy threads</text>
+        <text x="22" y="130" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 22,130)">throughput (relative)</text>
+        <polyline fill="none" stroke="#C0563B" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" points="109,160 148,110 188,80 227,62 306,48 385,40 463,36 542,34 621,33 700,33"/>
+        <polyline fill="none" stroke="#C27D14" stroke-width="2.8" stroke-dasharray="0" stroke-linejoin="round" stroke-linecap="round" points="109,190 148,130 188,92 227,70 306,52 385,42 463,37 542,35 621,34 700,34"/>
+        <line x1="463" y1="20" x2="463" y2="230" stroke="#9A8E7C" stroke-dasharray="4 3" opacity="0.6"/>
+        <text x="470" y="26" font-family="JetBrains Mono" font-size="10" fill="#6E6456">saturation (~8 threads)</text>
+        <text x="700" y="27" text-anchor="end" font-family="Fraunces" font-size="13" font-weight="600" fill="#C0563B">2.5 GHz</text>
+        <text x="700" y="46" text-anchor="end" font-family="Fraunces" font-size="13" font-weight="600" fill="#C27D14">1.2 GHz</text>
+        <text x="20" y="290" font-family="JetBrains Mono" font-size="11" fill="#6E6456">1 thread</text>
+        <rect x="70" y="276" width="140" height="22" rx="4" fill="#C0563B"/><rect x="210" y="276" width="110" height="22" rx="4" fill="#C27D14"/>
+        <text x="140" y="291" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#fff">100% energy</text>
+        <text x="265" y="291" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#fff">108%: a loss</text>
+        <text x="20" y="316" font-family="JetBrains Mono" font-size="11" fill="#6E6456">8–10 threads</text>
+        <rect x="70" y="302" width="200" height="22" rx="4" fill="#C0563B"/><rect x="270" y="302" width="152" height="22" rx="4" fill="#C27D14"/>
+        <text x="170" y="317" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#fff">100% energy</text>
+        <text x="346" y="317" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#fff">76%: −24%</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> throughput at 1.2 GHz catches up to 2.5 GHz as threads saturate bandwidth (top), while at 1 thread down-clocking costs energy but at 8–10 threads it saves ~24% (bottom). Same silicon, free energy once saturated. (Qualitative illustration of the trend reported in Paper Fig. 1 — curve shape is illustrative, not digitized from the figure.)</figcaption>
+    </figure>
+
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">intercept → classify → probe → act</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Baseline fails</div><div class="nd">schedutil+HWP keep copying cores at max freq past saturation</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Intercept (API)</div><div class="nd"><code>copycat_memcpy</code>/<code>copycat_sync</code>, ~6 ns enqueue</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Classify (Router)</div><div class="nd">sustained / fragmented / thread-limited, from submission pattern</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Probe</div><div class="nd">step-search: lower freq, keep if throughput survives tolerance</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Sync path</div><div class="nd">down-clock the copying core in place</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Async path</div><div class="nd">offload to a self-sizing pool of low-freq workers</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- TAB 3: ANALOGIES -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Five everyday pictures</div>
+      <h2>How to think about CopyCat</h2>
+      <p class="sub">Read in any order. Each ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="16" y="52" width="108" height="16" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <circle cx="36" cy="60" r="9" fill="#C0563B"/><circle cx="66" cy="60" r="9" fill="#C0563B"/><circle cx="96" cy="60" r="9" fill="#C0563B"/>
+          <path d="M30 34 l12 -12 M60 34 l12 -12 M90 34 l12 -12" stroke="#9a3a22" stroke-width="2" stroke-linecap="round"/>
+        </svg></div>
+        <span class="term">The core problem · Saturation</span>
+        <h3>Revving the engine in a traffic jam</h3>
+        <p>Floor the gas in bumper-to-bumper traffic and you don't arrive faster — you just burn more fuel idling between inches gained. Once enough cars (threads) fill the road (memory bandwidth), speed and progress decouple. CopyCat is the driver who notices the jam and eases off the pedal.</p>
+        <div class="breaks"><b>Where it breaks:</b> an idling engine still burns fuel at any RPM; a stalled CPU core genuinely draws less power at a lower clock — the win is real, not just a wasted-effort metaphor.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="20" width="40" height="56" rx="4" fill="#DCEFE9" stroke="#2C8C7C" stroke-width="2.5"/>
+          <rect x="80" y="36" width="40" height="40" rx="4" fill="#FBEACB" stroke="#C27D14" stroke-width="2.5"/>
+          <path d="M40 20 v-10 M100 36 v-10" stroke="#332C24" stroke-width="2"/>
+          <text x="40" y="52" text-anchor="middle" font-family="monospace" font-size="9" fill="#1f5b51">fast</text>
+          <text x="100" y="60" text-anchor="middle" font-family="monospace" font-size="9" fill="#6e4a09">slow</text>
+        </svg></div>
+        <span class="term">Async path · Spatial separation</span>
+        <h3>Hiring a slow delivery runner</h3>
+        <p>You keep working at your desk while a (deliberately unhurried) courier fetches the package — you never have to stop and wait at courier speed. CopyCat's async mode is this: copy work moves to a dedicated low-frequency core while the issuing core stays at full speed computing. No one waits for anyone unless the package is needed right now.</p>
+        <div class="breaks"><b>Where it breaks:</b> if there's barely any "desk work" to do while waiting, you end up idle anyway, blocked in <code>copycat_sync()</code> — the overlap benefit shrinks when compute is short relative to copy size.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="34" fill="none" stroke="#5A61B4" stroke-width="2.5"/>
+          <path d="M70 48 l0 -22 M70 48 l16 10" stroke="#332C24" stroke-width="2.5" stroke-linecap="round"/>
+          <text x="70" y="86" text-anchor="middle" font-family="monospace" font-size="9" fill="#5A61B4">44 ms</text>
+        </svg></div>
+        <span class="term">Why temporal tracking fails · C2</span>
+        <h3>Steering a container ship by the second</h3>
+        <p>A cargo ship takes minutes to change heading; you can't use it to dodge a jet ski that swerves every second. Frequency changes take ~44 ms; a copy-then-checksum loop can flip phases every few microseconds — thousands of times faster than the ship can turn. Chasing it in time is hopeless.</p>
+        <div class="breaks"><b>Where it breaks:</b> a ship has no alternative but to turn slowly; CopyCat's actual fix isn't a faster rudder, it's assigning a second, differently-tuned vessel (spatial separation) instead of trying to out-turn the problem.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="30" width="92" height="18" rx="4" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <text x="70" y="43" text-anchor="middle" font-family="monospace" font-size="9" fill="#332C24">is utilization 100%?</text>
+          <path d="M70 48 v10" stroke="#9A8E7C" stroke-width="2"/>
+          <rect x="24" y="60" width="92" height="18" rx="4" fill="#F7E1D8" stroke="#C0563B" stroke-width="2"/>
+          <text x="70" y="73" text-anchor="middle" font-family="monospace" font-size="9" fill="#9a3a22">always "yes" — stalled too</text>
+        </svg></div>
+        <span class="term">Why utilization lies · C1</span>
+        <h3>Asking "are you busy?" to someone stuck in traffic</h3>
+        <p>A driver stuck on the highway, not moving, will still say "I'm busy — I'm driving!" Utilization asks the same unhelpful question of a stalled core: it's 100% "busy" waiting on memory, indistinguishable from 100% busy computing. CopyCat instead asks "how far did you actually get?" — delivered throughput, not self-reported busyness.</p>
+        <div class="breaks"><b>Where it breaks:</b> the driver at least knows they're stuck; a per-core stall counter sees its own stalls but not whether the shared road (memory controller) is actually full — that's a system-wide fact no single core can observe alone.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="30" width="80" height="16" rx="3" fill="#E6E6F6" stroke="#5A61B4" stroke-width="2"/>
+          <text x="70" y="42" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">sustained / fragmented / thin</text>
+          <rect x="44" y="56" width="52" height="16" rx="3" fill="#FBEACB" stroke="#C27D14" stroke-width="2"/>
+          <text x="70" y="68" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e4a09">route accordingly</text>
+        </svg></div>
+        <span class="term">The router · Workload classification</span>
+        <h3>A triage nurse, not a one-size bandage</h3>
+        <p>Triage doesn't treat every patient identically — it sorts by what kind of care each case needs, then routes. CopyCat's router watches how continuously threads submit copies and sorts into sustained (down-clock in place), fragmented (offload to free compute), or thread-limited (offload for race-to-idle) — then applies the matching mechanism automatically.</p>
+        <div class="breaks"><b>Where it breaks:</b> triage categories are usually stable per-patient; CopyCat's workload category can shift mid-run, so the classification has to keep re-checking, not decide once and forget.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: HOW IT WORKS -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Section by section, following the paper's three challenges (C1–C3).</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The waste, measured (§2.2)</h3>
+      <p>At 1 thread, halving clock from 2.5→1.2 GHz costs 20% throughput and <i>increases</i> energy (static power keeps flowing over a longer runtime). At 8–10 threads, memory bandwidth is saturated: the same down-clock costs under 2% throughput but saves 20–24% package energy. The saturation point shifts to just 4 threads when copies target remote NUMA memory or are capped by MBA — exactly the tiered-memory case.</p>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Why existing control misses it (§2.3, C1)</h3>
+      <p>schedutil reads <b>utilization</b>, which is always 100% on a copying core whether it's stalled or computing — no signal there. Per-core <b>stall counters</b> fare no better: each of three test kernels mislabels at least one, costing up to 27% throughput if trusted blindly. The root cause is a level mismatch — frequency is set <i>per core</i>, but "is it safe to down-clock" is a <i>system-wide</i> bandwidth fact that no single core's counters can see. CopyCat's fix: skip the proxy, briefly run at two frequencies and compare the actual delivered throughput.</p>
+    </div>
+
+    <div class="prose">
+      <h3>3 · The step-search controller (§3.1)</h3>
+      <pre class="sketch"><span class="cm"># runs on a background thread, off the data path</span>
+<span class="kw">loop</span> every tick:
+    <span class="kw">if</span> not stable or not saturated: <span class="kw">continue</span>   <span class="cm"># safeguards</span>
+    try_freq = current_freq − 1 step
+    measure throughput at try_freq
+    <span class="kw">if</span> throughput ≥ baseline − tolerance:
+        current_freq = try_freq            <span class="cm"># keep going down</span>
+    <span class="kw">else</span>:
+        revert to previous step; hold
+    periodically re-probe upward             <span class="cm"># catch workload shifts</span></pre>
+      <p>In async mode this same idea runs on <i>two</i> variables jointly: a <b>grow phase</b> (frequency fixed, add workers until throughput plateaus) alternates with a <b>drop phase</b> (worker count fixed, step frequency down). Dropping frequency shifts the per-worker bandwidth curve, so the next grow phase may add one more worker at the new, lower clock.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · The three-stage sync protocol (§3.2, C3)</h3>
+      <pre class="sketch"><span class="kw">copycat_sync</span>():
+    <span class="kw">if</span> copy already done: <span class="kw">return</span>              <span class="cm"># zero-cost fast path</span>
+    spin 256× PAUSE                           <span class="cm"># catches µs-scale finishes</span>
+    <span class="kw">if</span> still pending:
+        set waiter flag (seq-cst)
+        futex_sleep()                          <span class="cm"># only now pay the syscall</span></pre>
+      <p>Enqueueing a copy into the lock-free internal queue costs ~6 ns; the worker only calls <code>futex_wake</code> if it observes the waiter flag, so the common case never touches the kernel.</p>
+    </div>
+
+    <div class="prose">
+      <h3>5 · Routing by workload shape (§3.3, C2)</h3>
+      <table class="tbl">
+        <thead><tr><th>Category</th><th>Pattern</th><th>CopyCat's response</th></tr></thead>
+        <tbody>
+          <tr><td><b>Sustained</b></td><td>all threads copying continuously, bandwidth-saturated</td><td class="mono">sync: down-clock in place</td></tr>
+          <tr class="best"><td><b>Fragmented</b></td><td>threads alternate copy and compute</td><td class="mono">async: offload, free issuing cores</td></tr>
+          <tr><td><b>Thread-limited</b></td><td>copy traffic too light to saturate bandwidth</td><td class="mono">async at full freq → race-to-idle</td></tr>
+        </tbody>
+      </table>
+      <div class="callout why"><span class="ic">💡</span><div><b>Size cutoffs matter:</b> copies under 4 KiB run inline (offload overhead would dominate); single copies over 16 MiB also run in place (CopyCat never splits one request across workers, so offloading buys no parallelism there). Both cutoffs, plus the 30 ms control tick, are empirically tuned for this platform.</div></div>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: slide the thread count</div>
+      <div class="viz-kicker">see when down-clocking pays off (illustrative, matched to Fig. 1's shape — not digitized data)</div>
+      <div class="part-viz">
+        <div>
+          <div class="ways-strip" id="waysStrip"></div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">concurrent memcpy threads:</span>
+            <input type="range" min="1" max="10" value="1" id="partRange">
+            <span class="mono" id="partRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">1</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-set="1">1 thread — unsaturated</button>
+            <button class="tbtn" data-set="4">4 threads — remote NUMA sat.</button>
+            <button class="tbtn" data-set="9">9 threads — local DRAM sat.</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">throughput @1.2GHz<b id="pVpr">—</b></div>
+            <div class="pstat">energy @1.2GHz<b id="pEq">—</b></div>
+            <div class="pstat">vs baseline (2.5GHz)<b id="pTot">—</b></div>
+          </div>
+          <div class="pverdict sub" id="pVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>What you'll find:</b> at 1 thread, down-clocking loses throughput and gains nothing. By 8–9 threads (bandwidth saturated), throughput loss shrinks under 2% while energy drops ~24% — the regime CopyCat's controller detects and locks onto. (Curve values above are illustrative, not digitized from the paper.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>6 · Scaling the pool (§3.3)</h3>
+      <p>Workers are pre-created once (one pinned thread per core) but mostly parked in a 0.5 ms sleep loop, costing no cycles. An autoscaler wakes/parks workers every 30 ms, stopping once aggregate throughput plateaus — a soft cap that stabilizes at the fewest cores needed to saturate bandwidth, which the joint controller then down-clocks.</p>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>The tension:</b> down-clocking workers slows the copy itself. If the caller's compute phase is short relative to the copy, it ends up blocking longer in <code>copycat_sync()</code>, eating into the overlap benefit — which is exactly why the drop phase stops once throughput falls below its tolerance budget.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: WORKED EXAMPLES -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces using the paper's real figures.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Async offload's two stacked savings (§4.2, Fig. 6b)</h3>
+      <p style="color:var(--ink-soft)">4 app threads alternate 1 MiB memcpy with compute; 6 copy-workers spin up. Net result vs. the sync baseline: −22% package energy, +26% throughput. Where does −22% come from?</p>
+      <ol class="seq">
+        <li><b>Layer 1 — overlap alone</b> (workers still at full 2.5 GHz): offloading lets compute and copy run concurrently instead of serially → <b>+26% throughput</b>, <b>−6% energy</b> (same work, less total wall time, less static-power overhead).</li>
+        <li><b>Layer 2 — down-clock the now-isolated workers:</b> CopyCat observes the workers are purely memory-bound and steps them 2.5→1.2 GHz, adding <b>−17% energy</b> at no further throughput cost.</li>
+        <li><b>Compound the two multiplicative savings:</b> (1 − 0.06) × (1 − 0.17) = 0.94 × 0.83 ≈ 0.78 → <b>≈22% total energy saved</b>, matching the reported figure.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> neither layer alone gets you there — spatial separation (layer 1) is what <i>reveals</i> the opportunity for layer 2, since only isolated, purely-memory-bound cores are safe to down-clock without risking the application's compute.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Blob-cache serve phase (§4.3, Fig. 6c)</h3>
+      <p style="color:var(--ink-soft)">5 handlers process GETs (1 MiB copy + ~200 µs processing each); the pool stabilizes at 5 copy-workers. Offload alone: +15% throughput at neutral energy. Workers down-clocked to 1.2 GHz: a further −15% energy at no throughput cost. What's the net?</p>
+      <ol class="seq">
+        <li><b>Offload layer:</b> +15% throughput, energy unchanged (0% — the extra work is "free" via overlap, so energy per unit time stays flat even as useful output rises).</li>
+        <li><b>Down-clock layer:</b> energy ×(1 − 0.15) = 0.85 of the offload baseline, throughput unaffected.</li>
+        <li><b>Net vs. no-CopyCat baseline:</b> package energy ≈ <b>−15%</b>, while the +15% throughput gain from overlap is fully retained — the two layers don't trade off against each other here because they act on different axes (speed vs. clock).</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>Contrast with example ①: here the overlap layer changed throughput, not energy, so the two savings simply stack additively rather than compounding — a reminder that "layer the two benefits" isn't always multiplicative.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ Compact phase — sync down-clock (§4.3, Fig. 6d)</h3>
+      <p style="color:var(--ink-soft)">10 threads rewrite the store in place — purely memory-bound, no compute to overlap with. CopyCat reports −24% package energy at −1% throughput. Why does this match the microbenchmark ceiling exactly?</p>
+      <ol class="seq">
+        <li><b>No compute phase exists here</b> — the router classifies this as <b>sustained</b>, so there's nothing for async offload to free up. Sync in-place down-clocking is the only applicable path.</li>
+        <li><b>10 threads already saturate the remote-NUMA memory controller</b> (§2.2's saturation point), so this sits exactly at the regime where down-clocking is cheapest: near-zero throughput cost, maximal energy savings.</li>
+        <li><b>Result: −24% energy, −1% throughput</b> — essentially reproducing the microbenchmark's 8–10-thread sweet spot (§2.2, Fig. 1) inside a real application.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the two blob-cache phases are a clean A/B demonstrating the router's job: pick offload when there's compute to protect, pick in-place down-clock when there isn't — <i>same mechanism, different context, both correct.</i></div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Why temporal tracking is hopeless (§2.3, C2)</h3>
+      <p style="color:var(--ink-soft)">A copy-then-checksum loop flips between memory and compute phases every few microseconds. An OS frequency change takes ~44 ms. How much slower is the control loop than the thing it's trying to track?</p>
+      <ol class="seq">
+        <li><b>Phase duration:</b> "a few microseconds" ≈ 1–10 µs.</li>
+        <li><b>Frequency-change latency:</b> ~44 ms = 44,000 µs.</li>
+        <li><b>Ratio:</b> 44,000 µs ÷ ~5 µs ≈ <b>8,800×</b> — "three orders of magnitude too slow," as the paper puts it.</li>
+        <li><b>Implication:</b> by the time a frequency change lands, the workload has already flipped phase thousands of times over — any attempt to chase it in time is moot, which is exactly the motivation for separating phases in <i>space</i> (dedicated cores) instead.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This arithmetic is the entire justification for the async path's existence — not a performance nicety, but the only physically feasible option at this timescale.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: PRACTICE -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try before opening each answer — every one names the misconception it checks.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">A single thread is running memcpy, far from saturating memory bandwidth. Should CopyCat down-clock it?</div>
+      <details><summary>Show answer</summary><div class="ans">No. At 1 thread the copy is latency-bound, not bandwidth-saturated — lowering frequency directly slows the copy (measured: ~20% throughput loss) and, because the task now runs longer on the same static-power floor, can <i>increase</i> total energy. CopyCat's controller tries one step down, sees throughput drop, and reverts immediately.<span class="mis">Misconception: that down-clocking always saves energy. It only pays off once the core is stalled waiting on memory, not actively limited by its own clock.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Why can't the OS governor just read "percent of cycles stalled on memory" per core and down-clock whenever that's high?</div>
+      <details><summary>Show answer</summary><div class="ans">Because stall fraction is a per-core signal while safety-to-down-clock is a system-wide bandwidth fact. The paper's example: 1 thread and 10 threads can show the <i>same</i> ~90% stall-cycle fraction, yet only the 10-thread case actually saturates the shared memory controller. A core can't tell, from its own stalls, whether its neighbors are also hammering the same memory channel.<span class="mis">Misconception: that a better per-core counter would fix this. The paper shows multiple counter designs each mislabel at least one kernel — the issue is the level of measurement, not counter accuracy.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">A workload alternates 2 µs of memcpy with 2 µs of compute, repeating continuously. Can the OS governor's DVFS track this by raising frequency during compute and lowering it during copy?</div>
+      <details><summary>Show answer</summary><div class="ans">No — a frequency change takes ~44 ms, roughly 10,000× longer than a single phase (~2–4 µs). By the time any change takes effect, the workload has already cycled through thousands of phases. Temporal tracking is physically infeasible at this timescale; CopyCat instead separates the phases onto different cores running simultaneously (spatial separation), which needs no fast switching at all.<span class="mis">Misconception: that a "fast enough" governor could eventually solve this. The mismatch is ~4 orders of magnitude — no incremental speedup to the governor closes that gap; a different mechanism (spatial, not temporal) is required.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">In the async path, why might down-clocking the copy-workers ever reduce the throughput benefit of offloading in the first place?</div>
+      <details><summary>Show answer</summary><div class="ans">Offloading only helps as much as the caller's compute phase can overlap with the copy. If the workers run slower, the copy itself takes longer; if the caller's compute phase is short relative to that copy time, the caller finishes its compute early and then blocks in <code>copycat_sync()</code> waiting for the slow copy to land — eating into the overlap window. The drop phase's throughput-tolerance check exists precisely to stop lowering frequency once this starts happening.<span class="mis">Misconception: that offload and down-clocking are independent, freely stackable wins. They interact — over-aggressive down-clocking on the workers can erode the very overlap benefit offloading was meant to capture.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">A single 20 MiB memcpy arrives. Why does CopyCat run it in place rather than offloading it to the worker pool?</div>
+      <details><summary>Show answer</summary><div class="ans">CopyCat never splits one request across multiple workers — a single large copy is handled by exactly one worker (or inline), so routing it to the pool gains no parallelism; it would just add offload overhead for identical total work. The paper's empirically-chosen cutoff for "large enough that offload helps nothing" is 16 MiB.<span class="mis">Misconception: that bigger copies always benefit more from offload. Offload's benefit comes from overlapping with the issuing thread's compute, or from parallelizing across many <i>separate</i> copies — not from splitting one copy internally, which CopyCat doesn't do.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">Copies smaller than 4 KiB run inline even though async offload exists. Why?</div>
+      <details><summary>Show answer</summary><div class="ans">Below a certain size, the fixed cost of enqueueing, dequeueing, and (if needed) synchronizing with a worker exceeds the cost of just doing the tiny copy locally. The 4 KiB cutoff is the empirical point where offload overhead stops paying for itself on this platform.<span class="mis">Misconception: that offload is "free" because enqueue only costs ~6 ns. The 6 ns is just the submission cost — the worker side still has real dequeue/dispatch/possible wake-up overhead that dominates for small copies.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 7: FAQ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>Is CopyCat a kernel change or a hardware feature?<span class="chev">▾</span></summary><div class="a">Neither — it's a user-space runtime. It intercepts memcpy calls via its own API (<code>copycat_memcpy</code>/<code>copycat_sync</code>), manages a pool of worker threads, and adjusts CPU frequency through existing OS/firmware interfaces. No kernel modification, no new silicon.</div></details>
+      <details><summary><span class="q">Q2</span>How is this different from Intel DSA or (MC)²'s memory-controller offload?<span class="chev">▾</span></summary><div class="a">DSA and (MC)² move the copy itself off the CPU core onto dedicated hardware. CopyCat still runs the copy on a CPU core — its contribution is deciding <i>which</i> core, at <i>what frequency</i>, based on measured throughput. The two approaches are complementary, not competing: CopyCat could, in principle, also apply its frequency logic around hardware-offloaded copies.</div></details>
+      <details><summary><span class="q">Q3</span>Why not just always run copy-heavy cores at the lowest frequency?<span class="chev">▾</span></summary><div class="a">Because at low thread counts (unsaturated), a lower clock directly slows the copy and can increase total energy (longer runtime on the same static-power floor). The "always low" policy is exactly what CopyCat avoids — it probes and only down-clocks once throughput shows the core truly is memory-stalled, not frequency-limited.</div></details>
+      <details><summary><span class="q">Q4</span>Does this apply equally to CXL-attached memory, PMEM, and remote NUMA?<span class="chev">▾</span></summary><div class="a">Largely yes: CXL-attached memory, remote NUMA, and PMEM commonly offer less bandwidth than local DRAM (though not universally, depending on configuration), so the saturation point tends to arrive at fewer concurrent threads — the paper shows 4 threads suffice over remote NUMA (~30 GB/s) versus 8–10 for local DRAM. Tiering systems like TPP or Pond, both cited by the paper, drive sustained page-migration traffic that's a natural high-volume source of this saturating memcpy pattern. (HeMem is a related tiering system but isn't discussed in this paper — mentioned here only as external context.)</div></details>
+      <details><summary><span class="q">Q5</span>What exactly triggers the choice between sync and async mode?<span class="chev">▾</span></summary><div class="a">The router watches how copy requests are submitted: continuous copying with no interleaved compute → sustained → sync in-place down-clock. Copy and compute alternating → fragmented → async offload. Light, infrequent copy traffic that never saturates bandwidth → thread-limited → async offload anyway, for race-to-idle (finishing both sooner lets cores idle earlier).</div></details>
+      <details><summary><span class="q">Q6</span>Could CopyCat make things worse for a co-running workload?<span class="chev">▾</span></summary><div class="a">Potentially — dedicated low-frequency copy-workers still consume cores, memory bandwidth, and share package-level power/thermal budget with anything else running. The paper's evaluation dedicates these workers to CopyCat and doesn't study contention with unrelated co-tenants; that interaction is left open.</div></details>
+      <details><summary><span class="q">Q7</span>Why measure throughput instead of just trusting RAPL energy readings directly as the control signal?<span class="chev">▾</span></summary><div class="a">The goal is a throughput <i>budget</i> (don't lose more than ~1–2%), with energy as the thing being optimized given that constraint. Throughput is also available at much finer time granularity without extra hardware support, making it the natural signal for the fast step-search loop; RAPL energy is used for post-hoc measurement/evaluation (§4), not as the live control variable.</div></details>
+      <details><summary><span class="q">Q8</span>What's the actual per-call overhead of using CopyCat instead of libc memcpy?<span class="chev">▾</span></summary><div class="a">Enqueueing into the lock-free internal queue costs ~6 ns. When <code>copycat_sync()</code> doesn't need to wait (copy already done), it returns immediately at effectively zero cost. The expensive path (spin then futex-sleep) only triggers when a copy is genuinely still in flight.</div></details>
+      <details><summary><span class="q">Q9</span>Is a 1% throughput loss from frequency reduction acceptable for latency-sensitive services?<span class="chev">▾</span></summary><div class="a">The paper frames it as a tunable budget, not a fixed cost — the tolerance in the step-search controller determines how much throughput loss is acceptable, and the controller reverts a step whenever that budget is exceeded. For strict-SLA services, tightening the tolerance trades away some energy savings for a smaller throughput hit; the paper's reported numbers (≤1–2%) reflect its chosen tolerance, not a hard limit.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 8: REFERENCE -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary, results &amp; provenance</h2>
+      <p class="sub">Every term in one place, then where the numbers came from.</p>
+    </div>
+
+    <div class="subhead">CopyCat-specific terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>CopyCat</b><span>User-space runtime that intercepts memcpy, measures delivered throughput, and routes to sync down-clock or async offload to save CPU package energy.</span></div>
+      <div class="term-def"><b>Router</b><span>Classifies submission behavior into sustained / fragmented / thread-limited and selects the execution path.</span></div>
+      <div class="term-def"><b>Step-search controller</b><span>Lowers frequency one step at a time, keeping the change only if measured throughput stays within tolerance of baseline; reverts otherwise.</span></div>
+      <div class="term-def"><b>Sync (in-place down-clock)</b><span>Lowers the copying core's own frequency when there's no compute phase to free it for.</span></div>
+      <div class="term-def"><b>Async offload</b><span>Sends copies to a pool of dedicated, separately-clocked worker cores, freeing the issuing core for full-speed compute.</span></div>
+      <div class="term-def"><b>copycat_memcpy / copycat_sync</b><span>The two-call API: submit a copy (router decides inline vs. offload), then wait for completion (no-op if already done).</span></div>
+      <div class="term-def"><b>Three-stage sync protocol</b><span>Check-already-done → spin 256 PAUSE iterations → futex sleep; keeps the common case syscall-free.</span></div>
+      <div class="term-def"><b>Race-to-idle</b><span>Finishing work sooner at full frequency so cores reach idle (low power) earlier, even without down-clocking.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>DVFS</b><span>Dynamic Voltage/Frequency Scaling — the mechanism CopyCat drives.</span></div>
+      <div class="term-def"><b>schedutil / HWP</b><span>OS governor and Intel firmware controller that jointly (and opaquely) set frequency today.</span></div>
+      <div class="term-def"><b>RAPL</b><span>Hardware energy counters used to measure package energy in the evaluation.</span></div>
+      <div class="term-def"><b>MBA / NUMA</b><span>Bandwidth throttling and remote-socket memory — both shift the saturation point to fewer threads.</span></div>
+      <div class="term-def"><b>Stall cycles</b><span>Cycles a core spends waiting on memory; high but an unreliable per-core proxy for "safe to down-clock."</span></div>
+      <div class="term-def"><b>Energy-proportionality gap</b><span>The mismatch between delivered work (flat past saturation) and power drawn (still at max) — the waste CopyCat targets.</span></div>
+      <div class="term-def"><b>Futex</b><span>Linux fast userspace mutex primitive; lets threads avoid a syscall unless they actually need to sleep.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What CopyCat buys (vs schedutil+HWP baseline)</div>
+      <div class="viz-kicker">headline numbers across experiments · higher bar = larger reported effect</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Sync microbench<small>10 threads, remote</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="24"><span>−24% energy, −1% tput</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Async microbench<small>4 app + 6 workers</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="22"><span>−22% energy, +26% tput</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Blob cache: serve<small>async offload</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="15"><span>−15% energy, +15% tput</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Blob cache: compact<small>sync down-clock</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="24"><span>−24% energy, −1% tput</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ 25% magnitude</p>
+      <figcaption><b>The pattern:</b> every path trades well under 2% throughput for double-digit energy savings — and the mechanism (sync vs async) tracks whether there's compute to protect. (Paper §4)</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes — paper facts vs. framing</div>
+    <div class="card">
+      <p><b>From the paper (verifiable against the text above):</b> saturation at 8–10 threads on the Skylake-SP testbed; up to 24% package energy saved at &lt;2% throughput cost; saturation shifting to 4 threads under remote-NUMA or MBA-throttled conditions (13–15% savings there); ~44 ms OS frequency-change latency; stall-counter mislabeling up to 27% throughput cost; ~6 ns enqueue cost; 4 KiB / 16 MiB routing cutoffs and 30 ms control tick as empirical, platform-specific choices; blob-cache results (serve: +15% throughput at neutral energy from offload, further −15% from down-clocking; compact: −24% energy/−1% throughput); async microbenchmark up to −22% energy with +26% throughput; three design challenges C1–C3 and the sustained/fragmented/thread-limited taxonomy.</p>
+      <p><b>This guide's framing (not in the paper verbatim):</b> all analogies (traffic jam, delivery runner, container ship, triage nurse, "are you busy?"); the interactive thread-count explorer's specific illustrative curve shape (matched qualitatively to Fig. 1, not digitized from it); the multiplicative-vs-additive distinction drawn between Worked Examples ① and ②; explicit ties to TPP/Pond-style tiering as a motivating traffic source, which the paper references only generally under "heterogeneous memory" — HeMem specifically is not cited by the paper and is flagged as external context wherever it appears.</p>
+    </div>
+
+    <div class="subhead">Related work (from the paper's references)</div>
+    <div class="read-item reveal"><h4>Pond: CXL-Based Memory Pooling Systems for Cloud Platforms <span class="diff med">medium</span></h4><div class="meta">Li et al. · ASPLOS 2023</div><p>A CXL-pooling system cited as motivation for the page-migration copy traffic that heterogeneous memory adds; the paper itself doesn't characterize Pond's traffic as bandwidth-saturating.</p></div>
+    <div class="read-item reveal"><h4>TPP: Transparent Page Placement for CXL-Enabled Tiered-Memory <span class="diff med">medium</span></h4><div class="meta">Maruf et al. · ASPLOS 2023</div><p>Sustained page-migration rates from transparent tiering are cited as a continuous source of concurrent copies.</p></div>
+    <div class="read-item reveal"><h4>(MC)²: Lazy MemCopy at the Memory Controller <span class="diff hard">hard</span></h4><div class="meta">Kamath & Peter · ISCA 2024</div><p>A memory-controller-level offload alternative to CPU-driven copying — complementary to CopyCat's frequency-focused approach.</p></div>
+    <div class="read-item reveal"><h4>Profiling a Warehouse-Scale Computer <span class="diff easy">easy</span></h4><div class="meta">Kanev et al. · ISCA 2015</div><p>The fleet-wide profiling data establishing memcpy as among the most expensive standard-library calls in production.</p></div>
+    <div class="read-item reveal"><h4>Cornflakes: Zero-Copy Serialization for Microsecond-Scale Networking <span class="diff hard">hard</span></h4><div class="meta">Raghavan et al. · SOSP 2023</div><p>Treats data copying in network serialization as a first-order cost — the networking analogue of this paper's storage/memory focus.</p></div>
+    <div class="read-item reveal"><h4>Hitting the Memory Wall: Implications of the Obvious <span class="diff easy">easy</span></h4><div class="meta">Wulf & McKee · ACM SIGARCH 1995</div><p>The classic statement of the CPU–memory speed gap underlying every saturation argument in this paper.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Li & Zhang, "CopyCat: Harvesting the Frequency Tax of Bulk Memory Copy" (HotStorage'26)</span>
+    <span><b>Source:</b> paper text supplied in session</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  var barsDone = false, MAXP = 25;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  // illustrative throughput (%) and energy (%) at 1.2GHz relative to 2.5GHz, by thread count 1..10
+  var tput12 = [80,85,90,94,96,97,98,98.5,99,99];
+  var energy12 = [108,100,93,87,83,80,78,77,76,76];
+  var strip = document.getElementById('waysStrip');
+  function buildStrip(n){
+    if(!strip) return;
+    var html = '';
+    for(var i=1;i<=10;i++){ html += '<div class="way '+(i<=n?'eq':'vpr')+'"></div>'; }
+    strip.innerHTML = html;
+  }
+  function setPart(n){
+    var range = document.getElementById('partRange'); if(!range) return;
+    n = Math.max(1, Math.min(10, n));
+    range.value = n;
+    document.getElementById('partRangeVal').textContent = n;
+    var tp = tput12[n-1], en = energy12[n-1];
+    document.getElementById('pVpr').textContent = tp.toFixed(0) + '%';
+    document.getElementById('pEq').textContent  = en.toFixed(0) + '%';
+    document.getElementById('pTot').textContent = (en<100 ? '−' : '+') + Math.abs(100-en).toFixed(0) + '% energy';
+    buildStrip(n);
+    var verd = document.getElementById('pVerdict');
+    if(n <= 2){ verd.className = 'pverdict sub'; verd.textContent = 'Unsaturated — down-clocking directly slows the copy and can cost more energy. Don\'t.'; }
+    else if(n <= 5){ verd.className = 'pverdict sub'; verd.textContent = 'Partial saturation (e.g. remote NUMA) — moderate savings available, throughput loss still small.'; }
+    else { verd.className = 'pverdict opt'; verd.textContent = '✓ Bandwidth-saturated — this is CopyCat\'s sweet spot: near-zero throughput loss, maximal energy savings.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(1);
+  }
+
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
