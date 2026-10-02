@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<!-- LARC field guide — Locality-Aware Remote Compaction on disaggregated LSM-KVS (Shin, Choi, Yoo, Lee, HotStorage'26).
+     Semantic colors: blue = locality-aware worker / LARC · amber = network cost (NA, WA) · indigo = CRUSH / control-plane machinery · terracotta = locality-agnostic baseline (Local / round-robin / least-loaded). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Where Should Compaction Run? Locality-Aware Worker Selection, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D98C3D; --honey-deep:#B06A1D; --honey-soft:#F7E3C4;
+  --dram:#2E7D9E; --dram-soft:#DCEBF2;      /* blue   = locality-aware worker / LARC   */
+  --ltram:#6B5CA5; --ltram-soft:#EAE5F5;    /* indigo = CRUSH / control-plane machinery */
+  --optane:#B6472F; --optane-soft:#F3DCD4;  /* terracotta = locality-agnostic baseline  */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(46,125,158,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,92,165,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,140,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(107,92,165,.05) 31px,rgba(107,92,165,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,140,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#1a4a5e;font-size:.96rem}
+.primer .ready b{color:#12374a}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#1a4a5e}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#433a86}
+.chip-lru{background:var(--optane-soft);color:#8a331f}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #BFE0EC;color:#1a4a5e}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e6b3a5;color:#8a331f}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#a6cfdd;background:var(--dram-soft)}
+.node.n-ucp{border-color:#c6bde3;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdcf3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#3e94b8,#2E7D9E)}
+.bf-hi{background:linear-gradient(90deg,#7b6ec0,#6B5CA5)}
+.bf-lru{background:linear-gradient(90deg,#cf6f56,#B6472F)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* PARTITION EXPLORER (interactive, generic) */
+.part-viz{display:grid;grid-template-columns:1fr;gap:18px}
+.ways-strip{display:flex;gap:4px;margin:6px 0}
+.way{flex:1;height:46px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:#fff;transition:background .15s}
+.way.vpr{background:var(--dram)} .way.eq{background:var(--honey-deep)}
+.part-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:6px}
+.part-controls input[type=range]{flex:1;min-width:200px;accent-color:var(--ltram)}
+.part-readout{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.pstat{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:.85rem;min-width:120px}
+.pstat b{display:block;font-size:1.3rem;color:var(--ink);font-family:var(--display)}
+.pverdict{font-weight:700;font-size:1rem;padding:12px 16px;border-radius:10px;margin-top:4px;transition:.2s}
+.pverdict.opt{background:var(--dram-soft);color:#12374a;border:1px solid #a6cfdd}
+.pverdict.sub{background:var(--paper-2);color:var(--ink-soft);border:1px solid var(--line-strong)}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.tbtn{font-family:var(--body);font-weight:700;font-size:.85rem;border:1.5px solid var(--line-strong);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;transition:all .15s}
+.tbtn:hover{border-color:var(--ltram);color:var(--ltram)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#1a4a5e}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#8a331f}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#d98c3d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8d80cc}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#1a4a5e}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#8a331f}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.part-readout{flex-direction:column}.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(46,125,158,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(107,92,165,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,140,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] figure.paperfig{background:#FFFDF8;padding:14px;border-radius:14px;border:1px solid #E7DBC6}
+:root[data-theme="dark"] figure.paperfig figcaption{color:#9A8E7C !important}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd,
+:root[data-theme="dark"] .pstat,
+:root[data-theme="dark"] .pstat b,
+:root[data-theme="dark"] .tbtn{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HotStorage '26 · A Field Guide</span>
+    <h1>Sending compaction to where the data <span class="swash">already lives</span>, not wherever is <span class="swash" style="color:var(--optane)">idle</span></h1>
+    <p class="lede">Disaggregated LSM key-value stores re-fetch every compaction's input over the network. This is the plain-English story of <strong>LARC</strong>, a client-side scheduler that reads a cached placement map and routes each compaction to the node that already holds the most of its input objects.</p>
+    <div class="hero-meta">
+      <span>📄 Shin, Choi, Yoo, Lee · Dankook University · HotStorage '26</span>
+      <span>🎓 Some LSM/Ceph background assumed — primers cover it</span>
+      <span>⏱ ~25 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🗺️</div>
+      <p>Route each compaction to the worker that <span class="ro">ALREADY HOLDS</span> the most of its input — not whoever is <span class="wo">IDLEST</span> or next in a rotation.<br><em style="font-size:.9rem">Score placement first, then schedule.</em></p>
+    </div>
+  </div>
+</header>
+
+<!-- ============ TAB NAV ============ -->
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Quick glossary, then seven ideas the paper assumes you know</h2>
+      <p class="sub">The acronyms first — scan once, then use them as a lookup while you read. The primers below are collapsed; open whatever's unfamiliar.</p>
+    </div>
+
+    <div class="gloss" style="margin:22px 0 10px">
+      <div class="term-def"><b>LSM-tree</b><span>Log-Structured Merge tree: writes land in memory, flush to sorted files, periodically merged ("compacted") to bound read cost.</span></div>
+      <div class="term-def"><b>SST</b><span>Sorted String Table — an immutable sorted file holding a range of keys; compaction merges SSTs across levels.</span></div>
+      <div class="term-def"><b>OSD</b><span>Object Storage Daemon — a Ceph process that owns a disk and serves reads/writes for the objects placed on it.</span></div>
+      <div class="term-def"><b>RADOS object</b><span>Ceph's fixed-size storage unit (4 MB here); CephFS files are striped across many RADOS objects.</span></div>
+      <div class="term-def"><b>CRUSH</b><span>Ceph's placement algorithm: a deterministic hash-based function mapping an object to its OSDs, computable without a lookup table.</span></div>
+      <div class="term-def"><b>NA (local/global)</b><span>Network amplification — bytes crossing a boundary ÷ user-write bytes. "Local" = compute node's NIC; "global" = whole-cluster traffic.</span></div>
+      <div class="term-def"><b>WA</b><span>Write amplification — total bytes an LSM-tree writes (across all compactions) per byte the user wrote.</span></div>
+      <div class="term-def"><b>ρ (rho)</b><span>Remote-fetch ratio: the fraction of a compaction's input a worker must pull over the network, = 1 − locality.</span></div>
+      <div class="term-def"><b>L(W)</b><span>Locality score — the fraction of a compaction's input objects that worker W can read from its own co-located OSDs.</span></div>
+      <div class="term-def"><b>LARC</b><span>Locality-Aware Remote Compaction — this paper's prototype: score workers client-side, route to the best-scoring one.</span></div>
+    </div>
+
+    <div class="legend" style="margin-top:4px">
+      <span><i style="background:var(--dram)"></i> locality-aware worker / LARC</span>
+      <span><i style="background:var(--honey-deep)"></i> network cost (NA, WA)</span>
+      <span><i style="background:var(--ltram)"></i> CRUSH / control-plane machinery</span>
+      <span><i style="background:var(--optane)"></i> locality-agnostic baseline (Local / round-robin)</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>LSM-trees and why compaction exists<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Writes to an LSM-tree go to an in-memory buffer, then flush as a small, immutable, sorted file (an <b>SST</b>). Over time this produces many overlapping SSTs, which would make reads slow (you'd have to check every file). <b>Compaction</b> periodically merges overlapping SSTs from adjacent levels into fewer, larger, non-overlapping ones.</p>
+          <p>Merging the same logical data repeatedly means the tree writes far more bytes to storage than the user ever wrote — that ratio is <b>write amplification (WA)</b>, measured here at ≈3.8×.</p>
+          <div class="ready"><b>Now you're ready:</b> every byte compaction touches must be read as input and written as output — in a disaggregated system, both legs cross the network.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>Disaggregated storage — compute and storage on separate boxes<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Instead of attaching disks directly to a database server, a <b>disaggregated</b> architecture puts data on a separate distributed storage cluster (here, Ceph) reached over the network. This lets compute and storage scale independently — but every I/O that used to be a local disk access is now a network round trip.</p>
+          <p>If you work on CXL memory pooling: this is the same trade as pooled/tiered memory — decoupling a resource from compute buys elasticity at the cost of making "where is the data relative to where I'm computing" suddenly matter again.</p>
+          <div class="ready"><b>Now you're ready:</b> compaction is the single largest consumer of that network path, since every input SST must be fetched remotely.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>Ceph primitives: OSDs, RADOS objects, CephFS<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Ceph stores data as fixed-size <b>RADOS objects</b> (4 MB in this paper) spread across <b>OSDs</b> — one daemon per disk, several per node (4 OSDs/node here, 32 OSDs total across 8 nodes). <b>CephFS</b> is the POSIX filesystem layer on top: a file (here, an SST) is just a sequence of RADOS objects.</p>
+          <p>Each object is replicated to <b>R</b> OSDs (R = 3 here) for fault tolerance — so one SST's bytes are physically smeared across multiple nodes, each node holding only some of them.</p>
+          <div class="ready"><b>Now you're ready:</b> whether a compaction worker can read an SST locally depends entirely on whether that worker's node happens to host one of the R replicas of each object inside it.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>CRUSH — placement without a lookup table<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Most distributed stores need a central metadata service to answer "where is this block?" Ceph instead uses <b>CRUSH</b>: a deterministic function of the object's name and a small, slowly-changing <b>cluster map</b>. Anyone holding a copy of that map can compute an object's OSD set locally, with no network round trip.</p>
+          <p>This is what makes LARC cheap: a client can score every candidate worker's locality by running CRUSH itself against a cached map, instead of asking a metadata server where 1,000+ objects live.</p>
+          <div class="ready"><b>Now you're ready:</b> LARC's whole trick is legal only because CRUSH makes placement client-computable — a property not every storage system has.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>Network amplification — local vs. global<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>The paper tracks two ratios of network bytes to user-write bytes. <b>NA<sub>local</sub></b> counts traffic crossing the compute node's own NIC. <b>NA<sub>global</sub></b> additionally counts the R-fold replication traffic that happens cluster-wide regardless of which node initiated it.</p>
+          <p>Both are driven by WA (how much the LSM-tree re-writes) and by <b>ρ</b>, the fraction of a compaction's input that must be fetched remotely — which is exactly the quantity worker placement controls.</p>
+          <div class="ready"><b>Now you're ready:</b> lowering ρ by picking a better worker is the only lever in this model that doesn't require changing the LSM-tree or the replication factor.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Existing remote-compaction systems — and their blind spot<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Systems like RocksDB-Cloud, CaaS-LSM, Hailstorm, and Disaggregating RocksDB already move compaction off the primary compute node to relieve its CPU. But they pick the destination worker by <b>round-robin</b> or <b>load</b> — never by where the input data physically sits.</p>
+          <p>Moving the task doesn't reduce network traffic if the new worker has to fetch almost all the input anyway — it just relocates the same bytes to a different node.</p>
+          <div class="ready"><b>Now you're ready:</b> LARC's contribution is orthogonal to all of these — it answers <i>which</i> worker to pick, not whether to offload compaction at all.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Why uniform placement doesn't mean uniform locality<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>CRUSH spreads data uniformly across the cluster in aggregate, so every node ends up with its fair R/N share of the cluster's objects overall. But any single compaction touches only a small slice of that population — the paper's 100M-key run spans just 1,091 unique RADOS objects across 137 SSTs, a handful per compaction. A small sample of a globally-uniform population still exhibits sampling skew, the same way one exit poll can lean one way even though the full electorate is balanced.</p>
+          <p>This is the paper's central empirical finding: skew at the per-task scale survives uniformity at the global scale.</p>
+          <div class="ready"><b>Now you're ready:</b> this is exactly why a per-compaction locality score — not a cluster-wide average — is the right thing to optimize.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>LARC in a nutshell</h2>
+      <p class="sub">The problem, the overlooked signal that fixes it, and how the pieces connect.</p>
+    </div>
+    <div class="prose">
+      <p>In a disaggregated LSM-KVS, every compaction's input SSTs must be fetched over the network, and write amplification multiplies that traffic — the authors measure a local network amplification of <b>8.72×</b> on their testbed. Systems that offload compaction to remote workers already exist, but they pick the worker by <b>round-robin</b> or <b>load</b>, blind to where the input data physically sits. That leaves network traffic close to the baseline, because the chosen worker still has to fetch almost everything remotely.</p>
+      <p>The paper's finding: although Ceph's <span class="mem-chip chip-ucp">CRUSH</span> placement is uniform in aggregate, any single compaction samples only a small slice of the cluster's objects — small enough that <b>sampling skew</b> gives one node a disproportionate share of that task's input, even though no node is favored globally. Measured across 1,674 compactions, the best-locality node holds <b>51.1%</b> of a task's input on average, versus a worst-locality node at <b>24.0%</b> — a persistent 27-point gap, well above the <b>R/N = 37.5%</b> a locality-agnostic scheduler would expect on average.</p>
+      <p><strong>LARC</strong> exploits this: a client-side <span class="mem-chip chip-hi">locality score</span> L(W) — computed by running CRUSH against a cached cluster map, no metadata-server round trip — ranks candidate workers, and the task is routed to <code>argmax<sub>W</sub> L(W)</code>. A three-tier prototype (compute-side plugin → control-plane Agent → storage-node workers) realizes this in RocksDB v9.10.0.</p>
+      <p><strong>The payoff:</strong> LARC lifts mean per-compaction locality to <b>51.1%</b>, cuts measured network amplification from <b>8.72×</b> to <b>5.86×</b> (−32.8%), and raises fillrandom throughput by <b>16.1%</b> (up to <b>27.6%</b> under a write-heavy mixgraph workload) — all from a client-side scheduling decision that adds no new hardware and touches no storage data path.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🧭 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>Existing remote-compaction systems schedule by <b>load</b>, not <b>placement</b> — a locality-agnostic remote worker still averages ρ≈0.63 from replication alone, so network traffic drops only modestly, far short of placement-aware routing.</li>
+        <li>Global uniform placement hides <b>per-task skew</b>: one node typically holds a disproportionate share of any single compaction's input.</li>
+        <li><b>L(W)</b> = fraction of a compaction's input objects a worker can read from its own OSDs; LARC routes to the argmax.</li>
+        <li>Scoring runs <b>client-side</b> via a cached CRUSH map — no metadata-server query, O(|D|), under 2 ms.</li>
+        <li>Measured locality (51.1%) beats the analytical R/N expectation (37.5%) by a wide margin.</li>
+        <li>Result: NA 8.72× → 5.86× (−32.8%); throughput +16.1% (fillrandom), up to +27.6% (write-heavy mixgraph).</li>
+        <li>Open problem: LARC controls where compaction <i>reads</i>, not where it <i>writes</i> — output placement is still CRUSH's call.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">The whole paper in one picture</div>
+      <div class="viz-kicker">per-compaction locality gap (schematic, matched to reported averages) · and the NA payoff</div>
+      <div class="legend">
+        <span><i style="background:var(--dram)"></i> best-locality node (avg 51.1%)</span>
+        <span><i style="background:var(--optane)"></i> worst-locality node (avg 24.0%)</span>
+      </div>
+      <svg class="full" viewBox="0 0 760 360" role="img" aria-label="Best vs worst node locality across compactions, and NA before/after LARC">
+        <line x1="70" y1="30" x2="70" y2="250" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="70" y1="250" x2="700" y2="250" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end"><text x="62" y="253">0%</text><text x="62" y="190">25%</text><text x="62" y="130">50%</text><text x="62" y="70">75%</text></g>
+        <text x="385" y="284" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#6E6456">compaction index (1,674 tasks, schematic trend)</text>
+        <text x="22" y="145" font-family="JetBrains Mono" font-size="10" fill="#6E6456" transform="rotate(-90 22,145)">locality score (%)</text>
+        <line x1="70" y1="160" x2="700" y2="160" stroke="#9A8E7C" stroke-width="1" stroke-dasharray="3 4" opacity="0.7"/>
+        <text x="700" y="153" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">R/N = 37.5% expectation</text>
+        <polyline fill="none" stroke="#2E7D9E" stroke-width="2.6" stroke-linejoin="round" points="70,128 130,110 190,138 250,118 310,128 370,112 430,132 490,120 550,108 610,130 670,116 700,122"/>
+        <polyline fill="none" stroke="#B6472F" stroke-width="2.6" stroke-linejoin="round" points="70,185 130,200 190,178 250,196 310,188 370,202 430,182 490,198 550,190 610,180 670,194 700,188"/>
+        <text x="700" y="110" text-anchor="end" font-family="Fraunces" font-size="13" font-weight="600" fill="#2E7D9E">best node (avg 51.1%)</text>
+        <text x="700" y="206" text-anchor="end" font-family="Fraunces" font-size="13" font-weight="600" fill="#B6472F">worst node (avg 24.0%)</text>
+        <!-- NA strip -->
+        <text x="20" y="312" font-family="JetBrains Mono" font-size="11" fill="#6E6456">Local</text>
+        <text x="20" y="346" font-family="JetBrains Mono" font-size="11" fill="#6E6456">LARC</text>
+        <rect x="70" y="298" width="275" height="22" rx="4" fill="#B6472F"/>
+        <text x="207" y="313" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">NA 8.72×</text>
+        <rect x="70" y="332" width="185" height="22" rx="4" fill="#2E7D9E"/>
+        <text x="162" y="347" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#fff">NA 5.86× (−32.8%)</text>
+      </svg>
+      <figcaption><b>Read it top to bottom:</b> even though CRUSH places data uniformly, the best node for any given compaction averages 51.1% locality — far above the 37.5% a locality-agnostic scheduler would see — while the worst node averages only 24.0%. Table 2 measures this directly: moving from the Local baseline to LARC's best-node routing takes measured network amplification from 8.72× to 5.86×. (Curve shapes are schematic, matched to the paper's reported averages, median, and persistent gap — not the exact per-compaction trace in Fig. 2.)</figcaption>
+    </figure>
+
+    <!-- CONCEPT MAP -->
+    <figure class="viz reveal">
+      <div class="viz-title">How the pieces connect</div>
+      <div class="viz-kicker">problem → measure → decide → enforce → result</div>
+      <div class="flow-row">
+        <div class="node n-lru"><div class="nt">Problem</div><div class="nd">Remote-compaction systems pick workers by load, ignoring where data sits</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Measure</div><div class="nd">Client runs CRUSH against a cached map to score each candidate worker's locality L(W)</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Decide</div><div class="nd">Route to W* = argmax L(W)</div></div>
+      </div>
+      <div style="text-align:center;margin:12px 0;color:var(--ink-faint);font-family:var(--mono);font-size:1.3rem">↓</div>
+      <div class="flow-row">
+        <div class="node n-rule"><div class="nt">Enforce</div><div class="nd">Agent dispatches via gRPC; plugin falls back to local execution on timeout</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Worker reads local share</div><div class="nd">Co-located OSD objects bypass the network; the rest still routes over Ceph</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Result</div><div class="nd">NA 8.72×→5.86×; throughput +16.1% to +27.6%</div></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Six everyday pictures</div>
+      <h2>How to think about LARC</h2>
+      <p class="sub">Each stands alone — read in any order. Every card ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="34" width="36" height="44" rx="3" fill="#DCEBF2" stroke="#2E7D9E" stroke-width="2.5"/>
+          <rect x="86" y="44" width="36" height="34" rx="3" fill="#F3DCD4" stroke="#B6472F" stroke-width="2.5"/>
+          <path d="M26 44 h20 M26 54 h14 M26 64 h20" stroke="#2E7D9E" stroke-width="2"/>
+          <path d="M94 54 h18 M94 64 h10" stroke="#B6472F" stroke-width="2"/>
+          <circle cx="70" cy="18" r="9" fill="#F7E3C4" stroke="#B06A1D" stroke-width="2"/>
+        </svg></div>
+        <span class="term">The core idea · Locality score</span>
+        <h3>Returning a book to the nearest branch</h3>
+        <p>A library patron needs ten titles. One branch happens to shelve seven of them; another, only two. Sending the request to the <b>branch that already holds the most</b> means fewer inter-branch couriers. LARC does exactly this per compaction: score each candidate worker by what fraction of the input it already holds locally, then route there.</p>
+        <div class="breaks"><b>Where it breaks:</b> a library's collection is fixed; a compaction's "collection" (its input SSTs) is freshly assembled from scattered objects at write time — so there's no single branch that was deliberately stocked for this request, only one that happens to hold more by chance.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="18" width="80" height="54" rx="6" fill="#EAE5F5" stroke="#6B5CA5" stroke-width="2.5"/>
+          <path d="M44 34 l12 12 l-12 12 M70 30 v36 M96 34 l-12 12 l12 12" stroke="#433a86" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg></div>
+        <span class="term">The mechanism · Client-side CRUSH</span>
+        <h3>A hiker with a downloaded map</h3>
+        <p>One hiker calls the ranger station for directions at every fork; another carries a downloaded map and works out the route herself. The second hiker is faster precisely because the map doesn't need a round trip. CRUSH is that downloaded map: any client holding the cached cluster map computes an object's location by formula, instantly, with no query to a metadata server.</p>
+        <div class="breaks"><b>Where it breaks:</b> a paper map never changes; CRUSH's map does (nodes join/leave), so clients must refresh their cached copy periodically — a staleness window the paper doesn't quantify.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="70" cy="48" r="34" fill="none" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="3 3"/>
+          <circle cx="52" cy="40" r="7" fill="#DCEBF2" stroke="#2E7D9E" stroke-width="2"/>
+          <circle cx="86" cy="36" r="7" fill="#DCEBF2" stroke="#2E7D9E" stroke-width="2"/>
+          <circle cx="68" cy="62" r="7" fill="#DCEBF2" stroke="#2E7D9E" stroke-width="2"/>
+          <circle cx="46" cy="66" r="4" fill="#F3DCD4" stroke="#B6472F" stroke-width="2"/>
+          <circle cx="92" cy="58" r="4" fill="#F3DCD4" stroke="#B6472F" stroke-width="2"/>
+        </svg></div>
+        <span class="term">The surprise · Sampling skew</span>
+        <h3>An exit poll from one precinct</h3>
+        <p>A country's vote is evenly split 50/50 overall — but ask only the 20 voters leaving one polling place and you might get 14-to-6. Small samples of a uniform population are noisy. A compaction touching roughly a handful of objects (≈8 on average per SST in the paper's run) out of the cluster's much larger population is exactly that small sample: CRUSH's placement is uniform in aggregate, but any one task's input still skews toward whichever node got lucky.</p>
+        <div class="breaks"><b>Where it breaks:</b> exit-poll skew is pure noise with no exploitable structure; compaction skew is noise LARC can <i>act on</i>, because the "poll" (the input SST set) is known in advance and the "precinct" (best node) can be computed before scheduling.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="52" width="100" height="10" rx="3" fill="#E7DBC6"/>
+          <circle cx="40" cy="40" r="12" fill="#F3DCD4" stroke="#B6472F" stroke-width="2.5"/>
+          <circle cx="70" cy="30" r="12" fill="#F3DCD4" stroke="#B6472F" stroke-width="2.5"/>
+          <circle cx="100" cy="40" r="12" fill="#DCEBF2" stroke="#2E7D9E" stroke-width="2.5"/>
+          <path d="M40 40 l30 -10 M70 30 l30 10" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="2 2"/>
+        </svg></div>
+        <span class="term">Why offloading alone isn't enough · Round-robin / load-based</span>
+        <h3>A delivery dispatched to the next driver in line</h3>
+        <p>A dispatcher sends each package to whichever driver is free next, never checking who's already near the pickup address. The package still gets delivered, but the driver may have to cross town. That's round-robin or least-loaded worker selection: it relieves the <i>origin</i> node's workload, but doesn't by itself target the total distance (network bytes) traveled — which is why prior remote-compaction systems still leave measured NA close to the Local baseline, even as they relieve its CPU.</p>
+        <div class="breaks"><b>Where it breaks:</b> a delivery driver can freely reroute mid-trip; a compaction worker's locality is fixed the moment it's assigned — there's no partial credit for "getting closer" after the fact.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="24" width="40" height="48" rx="4" fill="#DCEBF2" stroke="#2E7D9E" stroke-width="2.5"/>
+          <rect x="76" y="24" width="40" height="48" rx="4" fill="#DCEBF2" stroke="#2E7D9E" stroke-width="2.5" opacity="0.5"/>
+          <path d="M44 20 l12 -10 l12 10" stroke="#332C24" stroke-width="2" fill="none"/>
+          <path d="M96 20 l-30 -16" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="3 3"/>
+        </svg></div>
+        <span class="term">The open limitation · Output placement</span>
+        <h3>Packing boxes into whichever storage unit the moving company assigns</h3>
+        <p>You unpacked your old apartment efficiently by working from the nearest boxes. But when you re-pack and the movers choose which storage unit gets your new boxes — independent of which unit you were just working out of — your next trip may have to start across town again. LARC controls which worker <i>reads</i> the input (the "unpacking"), but CRUSH still decides where compaction's <i>output</i> SSTs land, independent of the executing worker.</p>
+        <div class="breaks"><b>Where it breaks:</b> you could choose your own storage unit if you asked; CRUSH's placement is deterministic and not (yet) steerable toward "wherever I just computed," which is exactly the paper's stated next step.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="20" width="24" height="56" rx="4" fill="#DCEBF2" stroke="#2E7D9E" stroke-width="2.5"/>
+          <rect x="60" y="20" width="24" height="56" rx="4" fill="#DCEBF2" stroke="#2E7D9E" stroke-width="2.5"/>
+          <rect x="90" y="20" width="24" height="56" rx="4" fill="#DCEBF2" stroke="#2E7D9E" stroke-width="2.5"/>
+          <path d="M34 48 h16 M64 40 h16 M94 56 h16" stroke="#B6472F" stroke-width="2.5" stroke-dasharray="3 3"/>
+        </svg></div>
+        <span class="term">The tension ahead · Locality vs. load</span>
+        <h3>Everyone's favorite mechanic happens to be the same one</h3>
+        <p>If the mechanic three blocks away is best-positioned for your car, odds are good she's also best-positioned for your neighbor's, since nearby cars share a neighborhood — i.e., overlapping LSM levels tend to share physical placement. Greedily picking "whoever's closest" for every job in parallel can overload that one mechanic. A real scheduler needs to blend locality with how busy each candidate already is.</p>
+        <div class="breaks"><b>Where it breaks:</b> a mechanic can finish one job and move to the next; LARC's current prototype has no load term at all (α·L(W) is the whole score for now) — the paper flags blending in load/bandwidth terms as future work, not something already solved.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">The cost model, the measured opportunity, the scoring mechanism, and the architecture that enforces it.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · The network cost model</h3>
+      <p>The paper models two amplification ratios. Local amplification — bytes crossing the compute node's own interface relative to user writes:</p>
+      <pre class="sketch"><span class="hl">NA_local ≈ WA·(ρ + 1) + 1</span>   <span class="cm"># ρ = remote-fetch ratio; +1 = the initial flush of user writes</span></pre>
+      <p>and global amplification — adding the R-fold replication traffic that happens cluster-wide regardless of which node compacts:</p>
+      <pre class="sketch"><span class="hl">NA_global ≈ WA·(ρ + R) + R</span></pre>
+      <p>For the standard <b>Local</b> config (compaction on the compute node), the worker fetches everything it doesn't already hold — but since it's the compute node, not a storage node, ρ = 1 by construction, giving NA_local ≈ 2·WA + 1 ≈ 8.72× as measured.</p>
+    </div>
+
+    <div class="prose">
+      <h3>2 · Measuring the opportunity — locality is skewed per task</h3>
+      <p>On an 8-node, 32-OSD Ceph cluster (R = 3), a 100M-key fillrandom run produces 137 SSTs over 1,091 unique RADOS objects. Sorting each SST's per-node locality from best to worst reveals a steep, consistent gradient — not the flat R/N = 37.5% a uniform model alone would suggest.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Rank-sorted node locality, averaged over 137 SSTs</div>
+      <div class="viz-kicker">real values from the paper's heatmap (Fig. 1b) · mean ≈ R/N by construction</div>
+      <svg class="full" viewBox="0 0 760 240" role="img" aria-label="Mean locality by rank across 137 SSTs">
+        <line x1="60" y1="20" x2="60" y2="200" stroke="#D8C8AC" stroke-width="1.4"/>
+        <line x1="60" y1="200" x2="700" y2="200" stroke="#D8C8AC" stroke-width="1.4"/>
+        <g font-family="JetBrains Mono" font-size="10" fill="#9A8E7C" text-anchor="end"><text x="52" y="203">0</text><text x="52" y="146">20</text><text x="52" y="89">40</text><text x="52" y="32">60</text></g>
+        <line x1="60" y1="119.6" x2="700" y2="119.6" stroke="#9A8E7C" stroke-width="1" stroke-dasharray="4 3"/>
+        <text x="700" y="113" text-anchor="end" font-family="JetBrains Mono" font-size="10" fill="#9A8E7C">mean of all 8 ranks = R/N = 37.5%</text>
+        <g fill="#2E7D9E">
+          <rect x="70" y="59.9" width="55" height="140.1" rx="3"/><rect x="150" y="84.1" width="55" height="115.9" rx="3"/>
+          <rect x="230" y="99.5" width="55" height="100.5" rx="3"/><rect x="310" y="112.6" width="55" height="87.4" rx="3"/>
+          <rect x="390" y="126.1" width="55" height="73.9" rx="3"/><rect x="470" y="142.6" width="55" height="57.4" rx="3"/>
+          <rect x="550" y="156.1" width="55" height="43.9" rx="3"/><rect x="630" y="176.4" width="55" height="23.6" rx="3"/>
+        </g>
+        <g font-family="JetBrains Mono" font-size="10" fill="#fff" text-anchor="middle">
+          <text x="97" y="75">65.4</text><text x="177" y="99">54.1</text><text x="257" y="115">46.9</text><text x="337" y="128">40.8</text>
+          <text x="417" y="141">34.5</text><text x="497" y="158">26.8</text><text x="577" y="172">20.5</text><text x="657" y="192">11.0</text>
+        </g>
+        <g font-family="JetBrains Mono" font-size="10" fill="#6E6456" text-anchor="middle">
+          <text x="97" y="216">rank 1</text><text x="177" y="216">rank 2</text><text x="257" y="216">rank 3</text><text x="337" y="216">rank 4</text>
+          <text x="417" y="216">rank 5</text><text x="497" y="216">rank 6</text><text x="577" y="216">rank 7</text><text x="657" y="216">rank 8</text>
+        </g>
+      </svg>
+      <figcaption><b>Sorting doesn't change the total, only who holds it:</b> for every SST, rank its 8 nodes by local share, then average each rank across all 137 SSTs. The top-ranked node averages 65.4%; the bottom-ranked, 11.0% — a 54.4-point gap, even though the per-node average is still exactly 37.5% (verified in Worked Example ①). (Paper, Fig. 1)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>3 · The locality score and worker selection</h3>
+      <p>Let D be the set of distinct objects in a compaction's input, OSD(d) the OSDs holding object d, and OSD(W) the OSDs on candidate worker W. LARC's locality score:</p>
+      <pre class="sketch"><span class="hl">L(W) = |{d ∈ D : OSD(d) ∩ OSD(W) ≠ ∅}| / |D|</span></pre>
+      <p>To compute it, the Agent: (1) lists the RADOS object names behind the input SSTs via CephFS inodes, (2) runs CRUSH against its cached cluster map to find each object's OSD set, (3) intersects with each candidate's OSD(W). This runs entirely client-side — <b>O(|D|)</b>, under 2 ms even for |D| ≈ 1,000 — so scoring itself adds negligible latency; the plugin still waits up to a bounded timeout for the Agent's response before falling back. The task goes to <code>W* = argmax<sub>W</sub> L(W)</code>.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Three-tier architecture</div>
+      <div class="viz-kicker">compute plugin → control-plane Agent → storage-node workers</div>
+      <div class="flow-row">
+        <div class="node n-hi"><div class="nt">Plugin (compute node)</div><div class="nd">C++ shim on RocksDB's CompactionService; forwards task metadata via gRPC; falls back to local execution on Agent timeout</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-ucp"><div class="nt">Agent (control plane)</div><div class="nd">Caches the CRUSH map; computes L(W) for all candidates; dispatches to W*; stateless, ≈50 MB footprint</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="node n-hi"><div class="nt">Workers (storage nodes)</div><div class="nd">Modified RocksDB compaction tool reads via local CephFS mount; local-OSD objects bypass the network; writes output, returns only metadata</div></div>
+      </div>
+      <div class="callout why" style="margin-top:18px"><span class="ic">💡</span><div><b>Why a timeout fallback?</b> If the Agent is unreachable, the plugin waits up to a bounded timeout, then runs compaction locally — LARC degrades to the Local baseline rather than blocking indefinitely, with no change to LSM-tree semantics.</div></div>
+    </figure>
+
+    <div class="prose">
+      <h3>4 · Enforcement pseudocode</h3>
+      <pre class="sketch"><span class="cm"># on compaction trigger (compute-node plugin)</span>
+task = {input_SSTs, output_level}
+send(task) <span class="kw">to</span> Agent   <span class="cm"># gRPC; falls back to local() on timeout</span>
+
+<span class="cm"># Agent (control plane)</span>
+D = objects_behind(task.input_SSTs)        <span class="cm"># via CephFS inodes</span>
+<span class="kw">for</span> W <span class="kw">in</span> candidate_workers:
+    L[W] = crush_intersect(D, OSD(W)) / len(D)  <span class="cm"># local, cached map, O(|D|)</span>
+Wstar = argmax(L)
+dispatch(task, Wstar)
+
+<span class="cm"># Worker Wstar</span>
+<span class="kw">for</span> obj <span class="kw">in</span> D:
+    <span class="kw">if</span> obj.local: read_from_disk(obj)   <span class="cm"># bypasses network</span>
+    <span class="kw">else</span>:       read_over_ceph(obj)
+write_output_to_CephFS()
+return metadata <span class="kw">to</span> Agent</pre>
+    </div>
+
+    <!-- INTERACTIVE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Try it: how locality moves the network-cost formula</div>
+      <div class="viz-kicker">slide the achieved locality L(W) and watch ρ, NA_local, NA_global (WA ≈ 3.8, R = 3)</div>
+      <div class="part-viz">
+        <div>
+          <div class="part-controls">
+            <span style="font-family:var(--mono);font-size:.85rem;color:var(--ink-soft)">locality L(W):</span>
+            <input type="range" min="0" max="100" value="51" id="partRange">
+            <span class="mono" id="partRangeVal" style="font-family:var(--mono);font-weight:700;color:var(--ltram)">51%</span>
+          </div>
+          <div class="preset-row">
+            <button class="tbtn" data-set="0">Local baseline (ρ=1, L=0%)</button>
+            <button class="tbtn" data-set="37">Locality-agnostic worker (R/N=37.5%)</button>
+            <button class="tbtn" data-set="51">LARC measured (51.1%)</button>
+            <button class="tbtn" data-set="100">Perfect locality (100%)</button>
+          </div>
+          <div class="part-readout">
+            <div class="pstat">remote-fetch ratio ρ<b id="pVpr">—</b></div>
+            <div class="pstat">NA_local<b id="pEq">—</b></div>
+            <div class="pstat">NA_global<b id="pTot">—</b></div>
+          </div>
+          <div class="pverdict sub" id="pVerdict">Move the slider…</div>
+        </div>
+      </div>
+      <figcaption><b>What you'll find:</b> the model predicts NA_local≈8.6× and NA_global≈18.2× at the Local baseline (L=0%, matching the paper's measured 8.72× and stated ≈18.2×). At LARC's measured 51.1% locality the model estimates NA_local≈6.7× — in the same ballpark as, though not identical to, Table 2's directly-measured 5.86×, since the analytical model holds WA fixed and doesn't capture every empirical effect.</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>5 · Where it doesn't (yet) reach — scaling and output placement</h3>
+      <p>LARC's score only governs where a compaction <i>reads</i>. Output SSTs are still placed by CRUSH, independent of the executing worker. A Monte Carlo simulation in the paper shows this caps the benefit as clusters grow: the best node's absolute locality falls from 43% at N=8 nodes to just 6% at N=256, because a fixed-size input spreads across an ever-larger pool of candidate nodes with no mechanism pulling output back toward the worker that just computed it.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers, step by step</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four calculations straight from the paper's reported figures.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① Sanity-checking the rank-sorted heatmap</h3>
+      <p style="color:var(--ink-soft)">The paper reports mean locality by rank (best→worst across 8 nodes, averaged over 137 SSTs): 65.4, 54.1, 46.9, 40.8, 34.5, 26.8, 20.5, 11.0. Does this stay consistent with the global R/N = 37.5% expectation?</p>
+      <ol class="seq">
+        <li><b>Sorting reorders, it doesn't create or destroy locality.</b> For any one SST, ranking its 8 nodes by share just relabels them. Because each object is replicated R=3 times, a node "has" an object if any of its R copies lands there — so the per-node locality shares summed across all 8 nodes come to R×100% = <b>300%</b>, not 100%.</li>
+        <li><b>Sum the 8 rank-means:</b> 65.4 + 54.1 + 46.9 + 40.8 + 34.5 + 26.8 + 20.5 + 11.0 = <b>300.0</b>.</li>
+        <li><b>Divide by 8 nodes:</b> 300.0 / 8 = <b>37.5%</b> — exactly R/N for R=3, N=8.</li>
+        <li><b>Conclusion:</b> the rank-sorted gradient and the flat global average are the same data viewed two ways — sorting reveals the skew that averaging hides.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🧭</span><div><b>Insight:</b> this is exactly the paper's point. "Globally uniform" and "per-task skewed" are not in tension — they're two statistics of the same distribution.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Reproducing the NA formulas</h3>
+      <p style="color:var(--ink-soft)">Given measured NA_local = 8.72× at the Local baseline (ρ=1), back out WA, then predict NA_global and the locality-agnostic ρ.</p>
+      <ol class="seq">
+        <li><b>Solve for WA:</b> NA_local = WA(ρ+1)+1 with ρ=1 → 8.72 = 2·WA + 1 → WA = 3.86 (paper reports "≈3.8×" — consistent within rounding).</li>
+        <li><b>Predict NA_global for Local (R=3, ρ=1):</b> NA_global = WA(ρ+R)+R = 3.8·(1+3)+3 = 15.2+3 = <b>18.2×</b> — matches the paper's stated value exactly.</li>
+        <li><b>Locality-agnostic remote worker:</b> on average it holds L = R/N = 3/8 = 0.375 of any input, so ρ = 1 − 0.375 = <b>0.625 ≈ 0.63</b> — matches the paper's stated figure.</li>
+        <li><b>Takeaway:</b> even a "dumb" remote worker beats the Local baseline's ρ=1 simply by virtue of replication (R copies exist somewhere); LARC's contribution is pushing ρ further down, to 1−0.511 ≈ 0.49.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is the interactive on the "How It Works" tab, run by hand — move the slider to L=0%, 37%, and 100% to watch these same three numbers appear live.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ What LARC actually bought</h3>
+      <p style="color:var(--ink-soft)">Table 2 reports fillrandom throughput 13,894 → 16,136 ops/s and total cluster traffic 94.2 GB → 63.3 GB over a 100M-key run. Check the paper's headline percentages.</p>
+      <ol class="seq">
+        <li><b>Throughput gain:</b> (16,136 − 13,894) / 13,894 = 2,242 / 13,894 = <b>16.1%</b> — matches the abstract.</li>
+        <li><b>Traffic saved:</b> 94.2 − 63.3 = <b>30.9 GB</b> over the run.</li>
+        <li><b>As a percentage:</b> 30.9 / 94.2 = <b>32.8%</b> — matches the stated NA reduction, and is consistent with 8.72× → 5.86× directly: (8.72−5.86)/8.72 = 32.8%.</li>
+        <li><b>Per key:</b> 30.9 GB ÷ 100,000,000 keys ≈ <b>309 bytes</b> of network traffic avoided per key written (using decimal GB) — a tangible per-operation saving from a purely client-side scheduling decision.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🧭</span><div><b>Insight:</b> the 32.8% NA cut and the 16.1% throughput gain are two views of the same mechanism — less network traffic competing for bandwidth means fewer write stalls from delayed MemTable flushes.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ The compaction-level gap and compaction size</h3>
+      <p style="color:var(--ink-soft)">Across 1,674 compactions: best-locality average 51.1% (median 50.0%), worst-locality average 24.0%. How big is the exploitable gap, and does it hold for large compactions?</p>
+      <ol class="seq">
+        <li><b>Gap:</b> 51.1 − 24.0 = <b>27.1 percentage points</b> (the paper states "27.0," consistent within rounding of the two averages).</li>
+        <li><b>Median vs. mean:</b> median (50.0%) sits close to the mean (51.1%), so the distribution isn't dominated by a few extreme outlier compactions — most tasks genuinely have a clear best node.</li>
+        <li><b>Small vs. large compactions:</b> under 300 MB, best-locality varies widely (40–60%); above that, it converges to a tighter 45–50% band — still well above the 37.5% analytical floor.</li>
+        <li><b>Conclusion:</b> the opportunity shrinks slightly but does not disappear as compactions grow — large compactions have lower relative variance but the absolute bytes saved stay significant.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is why LARC's prototype needs no special-casing for compaction size — the same argmax rule captures most of the benefit across the whole size range measured.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try each before opening the answer. Every one flags the misconception it's checking for.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">CRUSH places data uniformly across the cluster. Does that mean a locality-aware scheduler has nothing to exploit?</div>
+      <details><summary>Show answer</summary><div class="ans">No. Uniformity holds in aggregate across the cluster's whole object population — but a single compaction samples only a small slice of it (the paper's 100M-key run spans 1,091 unique objects across 137 SSTs). That small sample size produces statistical skew: one node ends up holding a disproportionate share of <i>that specific task's</i> input, even though no node is favored across the whole dataset.<span class="mis">Misconception: that global uniformity implies per-task uniformity. It's the gap between a population average and a small-sample draw from it — the same reason a fair coin can land heads 7 times out of 10 in a short run.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">Why does moving compaction to a "remote worker" chosen by round-robin not meaningfully reduce network amplification, even though it relieves the compute node's CPU?</div>
+      <details><summary>Show answer</summary><div class="ans">Relocating a task doesn't relocate the data. A round-robin worker holds, on average, only L=R/N of the task's input locally (37.5% here), so it must fetch the remaining ~63% over the network — almost as much as the compute node itself would have. The compute node's load drops, but total network bytes drop only modestly, since that reduction comes from replication alone rather than any placement awareness — the policy never looked at where the input actually sits.<span class="mis">Misconception: that "offloading" and "reducing network traffic" are the same lever. Offloading addresses compute contention; locality-aware routing addresses the network — they're orthogonal (per Table 1), and you need the second one to cut NA by more than replication alone provides.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Compute the remote-fetch ratio ρ for a worker that LARC scores at L(W) = 0.70, and estimate its NA_local using WA ≈ 3.8.</div>
+      <details><summary>Show answer</summary><div class="ans">ρ = 1 − L(W) = 1 − 0.70 = <b>0.30</b>. NA_local ≈ WA·(ρ+1)+1 = 3.8·(1.30)+1 = 4.94+1 = <b>≈5.94×</b> — well below the Local baseline's 8.72× and below even LARC's measured average-case 51.1%-locality result, since this worker was scored higher than average.<span class="mis">Misconception: that locality score and remote-fetch ratio are two different quantities to track. They're complements of the same number: ρ = 1 − L(W), always.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">LARC always routes to argmax L(W). Explain the failure mode the paper's Discussion section raises with this greedy, per-task rule when many compactions run concurrently.</div>
+      <details><summary>Show answer</summary><div class="ans">Compaction inputs at adjacent LSM levels tend to share physical placement, so the node that maximizes L(W) for one task is often also the best for several other, concurrently-scheduled tasks. Greedily sending every task to its individual best node can pile work onto a single "popular" node, creating a load hotspot — trading a network-locality win for a queuing-delay loss. The paper proposes blending in load and bandwidth terms (α·L(W) + β·(1−load(W)) + γ·(1−bw(W))) as future work, not yet implemented.<span class="mis">Misconception: that maximizing a per-task metric in isolation is the same as optimizing the whole system. It's a classic local-optimum-vs-global-optimum trap once tasks compete for the same resource.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">A colleague says "Now that input reads are local, LARC must have eliminated almost all network traffic." What's wrong with that claim?</div>
+      <details><summary>Show answer</summary><div class="ans">LARC controls where a compaction <i>reads</i> its input, not where it <i>writes</i> its output — CRUSH still places new SSTs independently of the executing worker, and R-fold replication of that output still crosses the network regardless. NA fell by 32.8% (8.72×→5.86×, as reported in Table 2), a substantial but partial reduction — output placement and replication traffic remain untouched, which is exactly the paper's stated open challenge.<span class="mis">Misconception: that solving the read-side of the problem solves the whole NA equation. Output placement and R-fold replication traffic are untouched by LARC — and the paper's own analytical NA_global formula would in fact predict a floor well above the measured 5.86×, a discrepancy the paper doesn't fully reconcile (see the Reference tab's source notes).</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 6 · hard</span>
+      <div class="qtext">The Monte Carlo simulation shows best-node locality falling from 43% at N=8 nodes to 6% at N=256. Why does growing the cluster erode locality, given that R and the input size stay fixed?</div>
+      <details><summary>Show answer</summary><div class="ans">A compaction's input is a fixed-size set of objects, each replicated to R specific nodes out of N. As N grows, those R replicas are spread across a larger and larger pool of candidate nodes, so the chance that any single node happens to hold a large fraction of the whole input set shrinks — the "sampling skew" that LARC exploits at N=8 becomes less pronounced because there are simply more places for the data to be. Without steering output placement toward the executing worker, growing the cluster works directly against the locality opportunity.<span class="mis">Misconception: that locality-aware scheduling scales automatically with cluster size, since the underlying mechanism (CRUSH, client-side scoring) is unchanged. The mechanism scales fine computationally; the *opportunity* it exploits shrinks, which is a statistical fact about fixed R and growing N, not an implementation limitation.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Tap any to expand.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What problem is LARC actually solving?<span class="chev">▾</span></summary><div class="a">Existing remote-compaction systems decouple compaction execution from the compute node but choose the destination worker by round-robin or load, ignoring where the compaction's input data physically sits. LARC answers a narrower, previously unaddressed question: given that a worker must be chosen, which one minimizes the network bytes that compaction actually has to move?</div></details>
+      <details><summary><span class="q">Q2</span>Isn't data placement uniform in a well-configured Ceph cluster?<span class="chev">▾</span></summary><div class="a">Yes, in aggregate. But a single compaction touches only a small slice of the cluster's objects — the paper's 100M-key run spans just 1,091 unique RADOS objects across 137 SSTs — and small samples of a uniform population still skew, the same statistical effect behind exit polls. The paper measures this directly: best-node locality per compaction averages 51.1%, far above the 37.5% you'd expect if every node held an equal share of every task.</div></details>
+      <details><summary><span class="q">Q3</span>How does LARC compute locality scores without a metadata-server query?<span class="chev">▾</span></summary><div class="a">It leverages Ceph's CRUSH algorithm, which deterministically computes an object's OSD placement from its name and a small, cacheable cluster map — no lookup table needed. The Agent keeps a cached copy of this map and runs CRUSH itself, client-side, for every object in a compaction's input. The whole computation is O(|D|) and completes in under 2 ms even for ~1,000-object compactions.</div></details>
+      <details><summary><span class="q">Q4</span>What happens if the Agent is slow or unreachable?<span class="chev">▾</span></summary><div class="a">The compute-node plugin has a timeout; if the Agent doesn't respond in time, the plugin transparently falls back to running compaction locally on the compute node — the same behavior as the unmodified Local baseline. Scoring itself is fast (under 2 ms) and stays off RocksDB's internal path, but the plugin can still wait up to that timeout before falling back if the Agent is slow or unreachable.</div></details>
+      <details><summary><span class="q">Q5</span>What's the difference between NA_local and NA_global?<span class="chev">▾</span></summary><div class="a">NA_local counts network bytes crossing the compute node's own interface relative to user writes. NA_global additionally counts the R-fold replication traffic that happens cluster-wide, regardless of which node executes compaction. Both scale with write amplification (WA) and the remote-fetch ratio ρ = 1 − locality.</div></details>
+      <details><summary><span class="q">Q6</span>Does LARC change RocksDB's LSM-tree semantics or compaction algorithm?<span class="chev">▾</span></summary><div class="a">No. LARC only changes which worker executes a compaction task that RocksDB has already decided to run, via RocksDB's existing CompactionService interface. Merge logic, level structure, and write amplification are untouched — the paper calls out that it's orthogonal to work on tuning LSM structure or compaction timing.</div></details>
+      <details><summary><span class="q">Q7</span>Does LARC generalize beyond Ceph?<span class="chev">▾</span></summary><div class="a">It needs a system where a candidate worker's data placement is determinable without a network round trip on the scheduling path. That includes client-side deterministic systems like Ceph/CRUSH or OpenStack Swift's Ring, and metadata-server-query systems like HDFS, Ozone, or Lustre (with one extra lightweight call). Fully-abstracted object stores like S3-compatible systems expose neither interface and are out of scope.</div></details>
+      <details><summary><span class="q">Q8</span>Why does LARC's benefit shrink as the cluster grows?<span class="chev">▾</span></summary><div class="a">LARC only controls where compaction reads, not where its output is written — CRUSH places outputs independently of the executing worker. As cluster size N grows with replication factor R fixed, a compaction's fixed-size input spreads across more candidate nodes, so the best single node holds a shrinking share. A Monte Carlo simulation shows best-node locality falling from 43% at N=8 to 6% at N=256.</div></details>
+      <details><summary><span class="q">Q9</span>Is this evaluation production-scale?<span class="chev">▾</span></summary><div class="a">No — the authors call it preliminary: an 8-node, 32-OSD testbed, a single 100M-key fillrandom trace for the detailed measurements, plus a mixgraph sweep over read/write ratio. The paper is explicit that validating gains on broader, production-representative workloads remains future work.</div></details>
+      <details><summary><span class="q">Q10</span>How is LARC different from accelerator-based compaction offload (D2Comp, DComp) or RDMA-based disaggregation (dLSM, Nova-LSM)?<span class="chev">▾</span></summary><div class="a">Those systems require specialized hardware (DPUs, FPGAs, or RDMA-capable NICs) and, per Table 1, have no explicit worker-selection policy at all. LARC targets commodity hardware and storage-node execution, and its entire contribution is the worker-selection policy itself — it's a software scheduling layer, not an accelerator.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; further reading</h2>
+      <p class="sub">Every term in one place, the measured results, and where each number came from.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>LARC</b><span>Locality-Aware Remote Compaction — routes each compaction to the candidate worker with the highest locality score, computed client-side.</span></div>
+      <div class="term-def"><b>Locality score L(W)</b><span>Fraction of a compaction's input objects a candidate worker W can read from its own co-located OSDs: |{d∈D : OSD(d)∩OSD(W)≠∅}| / |D|.</span></div>
+      <div class="term-def"><b>Remote-fetch ratio ρ</b><span>The complement of locality: ρ = 1 − L(W), the fraction of input a worker must pull over the network.</span></div>
+      <div class="term-def"><b>NA_local / NA_global</b><span>Network amplification measured at the compute node's interface vs. cluster-wide including replication traffic.</span></div>
+      <div class="term-def"><b>WA (write amplification)</b><span>Total LSM-tree bytes written per byte the user wrote; measured ≈3.8× in this testbed.</span></div>
+      <div class="term-def"><b>CRUSH</b><span>Ceph's deterministic, client-computable data-placement algorithm — the mechanism that lets LARC score locality without a metadata-server query.</span></div>
+      <div class="term-def"><b>Agent / Plugin / Worker</b><span>LARC's three components: a compute-side RocksDB shim, a control-plane scorer/dispatcher, and storage-node compaction executors.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>LSM-tree / SST / Compaction</b><span>The write-optimized storage structure, its sorted-file unit, and the background merge that bounds read amplification.</span></div>
+      <div class="term-def"><b>Disaggregated storage</b><span>Architecture decoupling compute from storage over a network, enabling independent scaling at the cost of network-bound I/O.</span></div>
+      <div class="term-def"><b>OSD / RADOS object / CephFS</b><span>Ceph's per-disk daemon, its fixed-size (4 MB here) storage unit, and the POSIX filesystem layered on top.</span></div>
+      <div class="term-def"><b>Replication factor R</b><span>Number of copies Ceph keeps per object (R=3 here); sets the analytical locality-agnostic baseline R/N.</span></div>
+      <div class="term-def"><b>fillrandom / mixgraph</b><span>db_bench workloads: a pure-write microbenchmark, and a Facebook-trace-derived mixed read/write workload used to vary write pressure.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What LARC buys (vs. the Local baseline)</div>
+      <div class="viz-kicker">8-node, 32-OSD Ceph testbed · 100M-key RocksDB workloads</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">Throughput<small>fillrandom</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="16.1"><span>+16.1% (13,894 → 16,136 ops/s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Throughput<small>mixgraph, 100% write</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="27.6"><span>+27.6% (7,838 → 10,005 ops/s)</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Network amp. cut<small>NA 8.72×→5.86×</small></div><div class="bar-track"><div class="bar-fill bf-ucp" data-w="32.8"><span>−32.8%</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Locality uplift<small>vs. R/N expectation</small></div><div class="bar-track"><div class="bar-fill bf-incache" data-w="36.3"><span>+36.3% rel. (51.1% vs 37.5%)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ +40%</p>
+      <figcaption><b>The first three numbers are reported directly in the paper</b> (Abstract, §5, Table 2); the fourth — the +36.3% relative locality uplift — is computed from the paper's own 51.1% and 37.5% figures, not stated as a percentage itself. The NA cut and locality uplift are independently cross-checked in Worked Examples ② and ③.</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes — what's the paper vs. what's framing</div>
+    <div class="card reveal" style="background:var(--paper-2)">
+      <p style="margin-bottom:10px"><b>From the paper, verbatim or directly computed:</b> all numbers (8.72×, 51.1%, 37.5%, 94.2/63.3 GB, 13,894/16,136 ops/s, 7,838/10,005 ops/s, 1,674 compactions, 137 SSTs, 1,091 objects, 43%→6% at N=8→256, Table 1's system comparison), the locality-score formula, the NA_local/NA_global formulas, and the three-tier architecture description.</p>
+      <p style="margin-bottom:10px"><b>Original framing, not in the paper:</b> the library/hiker/exit-poll/mechanic analogies, the CXL/tiered-memory comparisons in the primers, the "schematic" best-vs-worst locality curve shapes in the signature figure (matched to reported means/medians, not the exact per-compaction trace), and the interactive NA-formula explorer's illustrative WA-fixed extrapolation at L=100% and L=70%.</p>
+      <p style="margin:0"><b>A caveat we flag rather than resolve:</b> the paper's own text calls the Table 2 NA reduction (8.72×→5.86×) a reduction in "NA_global," but 5.86× is far below the NA_global formula's own prediction (≈16–18× range) and much closer to the NA_local formula's prediction at similar locality (~6.7×, Worked Example / interactive). We present both the paper's stated labels and this apparent inconsistency rather than silently reconciling it.</p>
+    </div>
+
+    <div class="subhead">Related papers</div>
+    <div class="read-item reveal"><h4>Disaggregating RocksDB: A Production Experience <span class="diff med">medium</span></h4><div class="meta">Dong et al. · SIGMOD · 2023</div><p>Production system offloading compaction to dedicated servers by cost/load — the "which compactions to offload" dimension LARC's "which worker" is complementary to.</p></div>
+    <div class="read-item reveal"><h4>CaaS-LSM: Compaction-as-a-Service <span class="diff med">medium</span></h4><div class="meta">Yu, Guo, Zhuang, Thakkar, Wang, Cao · SIGMOD · 2024</div><p>Exposes compaction as a stateless service selected by least-load — one of the locality-agnostic baselines LARC's Table 1 contrasts against.</p></div>
+    <div class="read-item reveal"><h4>Hailstorm: Disaggregated Compute and Storage for LSM Databases <span class="diff med">medium</span></h4><div class="meta">Bindschaedler, Goel, Zwaenepoel · ASPLOS · 2020</div><p>Uses idle compute-pool nodes for compaction, selected by load — another locality-agnostic baseline.</p></div>
+    <div class="read-item reveal"><h4>CRUSH: Controlled, Scalable, Decentralized Placement of Replicated Data <span class="diff hard">hard</span></h4><div class="meta">Weil, Brandt, Miller, Maltzahn · SC · 2006</div><p>The placement algorithm LARC's client-side scoring depends on — defines the deterministic, metadata-server-free mapping from object to OSD set.</p></div>
+    <div class="read-item reveal"><h4>Ceph: A Scalable, High-Performance Distributed File System <span class="diff hard">hard</span></h4><div class="meta">Weil, Brandt, Miller, Long, Maltzahn · OSDI · 2006</div><p>The storage substrate (OSDs, RADOS, CephFS) that LARC's testbed and locality measurements are built on.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Shin, Choi, Yoo, Lee, "Where Should Compaction Run? Compaction Worker Selection on Disaggregated LSM-KVS" (HotStorage '26)</span>
+    <span><b>Source:</b> learn/references/sources/larc.md</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 40;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- NA-FORMULA EXPLORER ---- */
+  var WA = 3.8, R = 3;
+  function setPart(Lpct){
+    var range = document.getElementById('partRange'); if(!range) return;
+    Lpct = Math.max(0, Math.min(100, Lpct));
+    range.value = Lpct;
+    document.getElementById('partRangeVal').textContent = Lpct + '%';
+    var L = Lpct/100, rho = 1 - L;
+    var NAl = WA*(rho+1)+1, NAg = WA*(rho+R)+R;
+    document.getElementById('pVpr').textContent = rho.toFixed(2);
+    document.getElementById('pEq').textContent  = NAl.toFixed(2) + '×';
+    document.getElementById('pTot').textContent = NAg.toFixed(2) + '×';
+    var verd = document.getElementById('pVerdict');
+    if(Lpct === 0){ verd.className = 'pverdict sub'; verd.textContent = 'This is the Local baseline: ρ=1, predicting NA_local≈8.6× and NA_global≈18.2× — matching the paper\'s measured 8.72× and stated ≈18.2×.'; }
+    else if(Lpct === 37){ verd.className = 'pverdict sub'; verd.textContent = 'A locality-agnostic remote worker averages L=R/N=37.5% — still better than Local purely from replication, but far from LARC.'; }
+    else if(Lpct === 51){ verd.className = 'pverdict opt'; verd.textContent = '✓ This is LARC\'s measured average. NA_local drops to ~6.7× — in the same ballpark as Table 2\'s directly-measured 5.86×.'; }
+    else if(Lpct === 100){ verd.className = 'pverdict sub'; verd.textContent = 'Perfect locality floors ρ at 0 — but NA doesn\'t reach zero: write amplification and replication still cost real network bytes downstream.'; }
+    else { verd.className = 'pverdict sub'; verd.textContent = 'Custom locality value — ρ = 1−L always, and both NA formulas move linearly with it.'; }
+  }
+  var range = document.getElementById('partRange');
+  if(range){
+    range.addEventListener('input', function(){ setPart(parseInt(this.value,10)); });
+    document.querySelectorAll('[data-set]').forEach(function(b){ b.addEventListener('click', function(){ setPart(parseInt(b.dataset.set,10)); }); });
+    setPart(51);
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
