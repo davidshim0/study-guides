@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<!-- DevMeta field guide — Bridging CPU and GPU I/O with a Device-Resident File System (Chen, Chen, Ren, Zhang, HotStorage'26).
+     Semantic colors: teal = device-resident (DevMeta, the fix) · honey = CPU-resident baseline (GeminiFS) ·
+     indigo = DevMeta's own machinery (MDS/Profiler/Scheduler) · terracotta = GPU-resident baseline (GoFS) / the sync cost. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- DARK-THEME-INIT --><script>(function(){
+  var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nobody Owns the Metadata — DevMeta, a Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ DESIGN TOKENS (house style) ============ */
+:root{
+  --paper:#FBF6EC; --paper-2:#F3EADA; --card:#FFFDF8;
+  --ink:#332C24; --ink-soft:#6E6456; --ink-faint:#9A8E7C;
+  --line:#E7DBC6; --line-strong:#D8C8AC;
+  --honey:#D9A23D; --honey-deep:#B07816; --honey-soft:#F6E8C9;
+  --dram:#1F8A72; --dram-soft:#D7EEE6;      /* teal  = device-resident (DevMeta)      */
+  --ltram:#5B5FC7; --ltram-soft:#E6E6F7;    /* indigo = DevMeta's machinery (MDS/Profiler/Scheduler) */
+  --optane:#B8472F; --optane-soft:#F3DCD2;  /* terracotta = GPU-resident (GoFS) / sync cost */
+  --shadow-sm:0 1px 2px rgba(80,60,30,.06), 0 2px 8px rgba(80,60,30,.05);
+  --shadow-md:0 4px 14px rgba(90,66,28,.10), 0 12px 30px rgba(90,66,28,.07);
+  --shadow-lg:0 10px 40px rgba(90,66,28,.14);
+  --radius:18px; --radius-sm:12px; --maxw:1080px;
+  --display:"Fraunces",Georgia,serif;
+  --body:"Mulish",-apple-system,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--body);color:var(--ink);line-height:1.65;background:var(--paper);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,138,114,.05), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,95,199,.05), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,162,61,.06), transparent 55%);
+  -webkit-font-smoothing:antialiased;}
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.18;color:var(--ink);margin:0 0 .5em}
+p{margin:0 0 1em}
+a{color:var(--honey-deep);text-decoration:none;border-bottom:1.5px solid var(--honey-soft);transition:border-color .2s}
+a:hover{border-color:var(--honey)}
+strong{font-weight:700;color:#231d16}
+em{color:var(--ink-soft)}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+/* HERO */
+.hero{position:relative;overflow:hidden;padding:64px 0 52px;background:linear-gradient(180deg,#FFFBF2 0%,var(--paper) 100%);border-bottom:1px solid var(--line)}
+.hero::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 31px,rgba(91,95,199,.05) 31px,rgba(91,95,199,.05) 32px);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);mask-image:linear-gradient(180deg,transparent,#000 30%,#000 60%,transparent);}
+.hero .wrap{position:relative}
+.eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--honey-deep);background:var(--honey-soft);padding:7px 14px;border-radius:999px;border:1px solid #F0DCB0;margin-bottom:22px;}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--honey);box-shadow:0 0 0 4px rgba(217,162,61,.2)}
+.hero h1{font-size:clamp(2.3rem,6vw,4.1rem);font-weight:600;letter-spacing:-.015em;max-width:18ch;margin-bottom:.3em}
+.hero h1 .swash{font-style:italic;color:var(--dram);font-weight:500}
+.hero .lede{font-size:clamp(1.05rem,2.2vw,1.32rem);color:var(--ink-soft);max-width:44ch;margin-bottom:30px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.hero-meta span{background:var(--card);border:1px solid var(--line);padding:6px 12px;border-radius:999px}
+.rule-plaque{margin-top:34px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;background:var(--card);
+  border:1.5px solid var(--line-strong);border-radius:var(--radius);padding:22px 26px;box-shadow:var(--shadow-md);max-width:700px;position:relative;}
+.rule-plaque::after{content:"THE ONE RULE";position:absolute;top:-11px;left:24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;
+  color:#fff;background:var(--ltram);padding:3px 10px;border-radius:6px;}
+.rule-plaque .glyph{font-size:2.6rem}
+.rule-plaque p{margin:0;font-family:var(--display);font-size:1.16rem;line-height:1.4}
+.rule-plaque .ro{color:var(--dram);font-weight:600}
+.rule-plaque .wo{color:var(--optane);font-weight:600}
+
+/* TAB NAV */
+.tabbar-outer{position:sticky;top:0;z-index:50;background:rgba(251,246,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.tabbar{display:flex;gap:6px;overflow-x:auto;padding:11px 22px;max-width:var(--maxw);margin:0 auto;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab-btn{flex:0 0 auto;font-family:var(--body);font-weight:700;font-size:14px;color:var(--ink-soft);background:transparent;border:1.5px solid transparent;
+  border-radius:999px;padding:8px 16px;cursor:pointer;white-space:nowrap;transition:all .18s;display:flex;align-items:center;gap:7px;}
+.tab-btn .n{font-family:var(--mono);font-size:11px;opacity:.6}
+.tab-btn:hover{color:var(--ink);background:var(--paper-2)}
+.tab-btn.active{color:#fff;background:var(--ink);border-color:var(--ink)}
+.tab-btn.active .n{opacity:.7;color:var(--honey)}
+
+/* PANELS */
+.tab-panel{display:none;animation:fade .4s ease}
+.tab-panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.panel-head{padding:46px 0 8px}
+.panel-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--honey-deep);margin-bottom:12px}
+.panel-head h2{font-size:clamp(1.9rem,4vw,2.8rem);letter-spacing:-.01em;margin-bottom:.25em}
+.panel-head .sub{font-size:1.1rem;color:var(--ink-soft);max-width:62ch}
+
+/* PROSE / CARDS */
+.prose{max-width:74ch}
+.prose p{font-size:1.03rem}
+.prose h3{font-size:1.5rem;margin-top:30px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;box-shadow:var(--shadow-sm);margin:18px 0}
+.card h3{font-size:1.3rem;margin-bottom:.4em}
+.seq{counter-reset:seq;list-style:none;padding:0;margin:18px 0}
+.seq li{position:relative;padding:0 0 18px 52px;margin:0}
+.seq li::before{counter-increment:seq;content:counter(seq,decimal-leading-zero);position:absolute;left:0;top:-2px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--honey-deep);background:var(--honey-soft);border:1px solid #EFD9AC;border-radius:8px;width:34px;height:30px;
+  display:flex;align-items:center;justify-content:center;}
+
+/* PRIMER ACCORDION */
+.primer-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:26px 0}
+.primer{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;transition:box-shadow .2s,border-color .2s}
+.primer[open]{box-shadow:var(--shadow-md);border-color:var(--line-strong)}
+.primer summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:1.04rem}
+.primer summary::-webkit-details-marker{display:none}
+.primer summary .pnum{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--ltram-soft);color:var(--ltram);font-family:var(--mono);font-size:13px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;}
+.primer summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;flex:0 0 auto;font-family:var(--mono)}
+.primer[open] summary .chev{transform:rotate(180deg)}
+.primer .body{padding:2px 20px 20px 64px;color:var(--ink-soft);font-size:1rem}
+.primer .body p:last-child{margin-bottom:0}
+.primer .ready{margin-top:14px;padding:12px 16px;background:var(--dram-soft);border-left:3px solid var(--dram);border-radius:0 10px 10px 0;color:#145b4a;font-size:.96rem}
+.primer .ready b{color:#0f453a}
+
+/* ANALOGY CARDS */
+.analogy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px;margin:24px 0}
+.analogy{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s;overflow:hidden}
+.analogy:hover{transform:translateY(-4px);box-shadow:var(--shadow-md)}
+.analogy .ill{width:100%;height:120px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;background:var(--paper-2);border-radius:12px;border:1px dashed var(--line-strong)}
+.analogy .ill svg{width:140px;height:96px}
+.analogy h3{font-size:1.22rem;margin-bottom:.3em}
+.analogy .term{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--honey-deep);display:block;margin-bottom:8px}
+.analogy p{font-size:.98rem;color:var(--ink-soft);margin-bottom:.8em}
+.analogy .breaks{font-size:.9rem;color:var(--ink-faint);border-top:1px dashed var(--line-strong);padding-top:10px;margin-top:4px}
+.analogy .breaks b{color:var(--optane)}
+
+/* color chips */
+.mem-chip{display:inline-block;font-family:var(--mono);font-size:.82em;font-weight:700;padding:1px 8px;border-radius:6px;vertical-align:baseline}
+.chip-hi{background:var(--dram-soft);color:#145b4a}
+.chip-sat{background:var(--honey-soft);color:#6e4a09}
+.chip-ucp{background:var(--ltram-soft);color:#3a409a}
+.chip-lru{background:var(--optane-soft);color:#9a3a22}
+
+/* CALLOUTS */
+.callout{border-radius:var(--radius-sm);padding:16px 20px;margin:18px 0;font-size:1rem;display:flex;gap:14px;align-items:flex-start}
+.callout .ic{flex:0 0 auto;font-size:1.15rem;line-height:1.3;font-weight:700}
+.callout.takeaway{background:var(--honey-soft);border:1px solid #EFD9AC;color:#6e4a09}
+.callout.why{background:var(--dram-soft);border:1px solid #B9E0D6;color:#145b4a}
+.callout.note{background:var(--paper-2);border:1px solid var(--line-strong);color:var(--ink-soft)}
+.callout.warn{background:var(--optane-soft);border:1px solid #e3b4a5;color:#9a3a22}
+.callout b{color:inherit}
+
+/* FIGURE */
+figure.viz{margin:30px 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:26px;box-shadow:var(--shadow-md)}
+figure.viz figcaption{margin-top:18px;font-size:.94rem;color:var(--ink-soft);border-top:1px dashed var(--line-strong);padding-top:14px}
+.viz-title{font-family:var(--display);font-size:1.25rem;font-weight:600;margin-bottom:4px}
+.viz-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 22px;font-size:.9rem;font-weight:600}
+.legend span{display:inline-flex;align-items:center;gap:7px;color:var(--ink-soft)}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+figure.viz svg.full{width:100%;height:auto;display:block}
+
+/* FLOW DIAGRAM */
+.flow-row{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;justify-content:center}
+.node{background:#fff;border:1.5px solid var(--line-strong);border-radius:14px;padding:14px 16px;min-width:150px;max-width:240px;box-shadow:var(--shadow-sm);position:relative}
+.node .nt{font-weight:700;font-size:.98rem;margin-bottom:4px}
+.node .nd{font-size:.85rem;color:var(--ink-soft);line-height:1.45}
+.node.n-hi{border-color:#9ed4c3;background:var(--dram-soft)}
+.node.n-ucp{border-color:#bfc1e9;background:var(--ltram-soft)}
+.node.n-lru{border-color:#e3b4a5;background:var(--optane-soft)}
+.node.n-rule{border-color:var(--honey);background:var(--honey-soft)}
+.flow-arrow{align-self:center;color:var(--ink-faint);font-size:1.4rem;display:flex;align-items:center;font-family:var(--mono)}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:.92rem}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+.tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
+.tbl td.mono{font-family:var(--mono);font-size:.86rem}
+.tbl tr:hover td{background:var(--paper-2)}
+.tbl .best td{background:var(--ltram-soft)}
+.tbl .best:hover td{background:#dcdef3}
+
+/* BAR CHART */
+.bars{margin:8px 0}
+.bar-row{display:grid;grid-template-columns:128px 1fr;gap:14px;align-items:center;margin:14px 0}
+.bar-label{text-align:right;font-weight:700;font-size:.92rem}
+.bar-label small{display:block;font-family:var(--mono);font-weight:500;font-size:10.5px;color:var(--ink-faint)}
+.bar-track{position:relative;height:38px;background:var(--paper-2);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.bar-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:10px;transition:width 1.2s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;justify-content:flex-end;padding-right:10px}
+.bar-fill span{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;white-space:nowrap;opacity:0;transition:opacity .4s .6s}
+.bars.shown .bar-fill span{opacity:1}
+.bf-ucp{background:linear-gradient(90deg,#2a9c85,#1F8A72)}
+.bf-hi{background:linear-gradient(90deg,#6b6fd4,#5B5FC7)}
+.bf-lru{background:linear-gradient(90deg,#c9603f,#B8472F)}
+.bf-incache{background:repeating-linear-gradient(45deg,#b0a08c,#b0a08c 8px,#a08d76 8px,#a08d76 16px)}
+
+/* FAQ */
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);margin:10px 0;overflow:hidden}
+.faq details[open]{box-shadow:var(--shadow-sm);border-color:var(--line-strong)}
+.faq summary{cursor:pointer;list-style:none;padding:16px 20px;font-weight:700;font-size:1.03rem;display:flex;gap:12px;align-items:center}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary .q{font-family:var(--mono);color:var(--honey-deep);font-size:.9rem;flex:0 0 auto}
+.faq summary .chev{margin-left:auto;color:var(--ink-faint);transition:transform .25s;font-family:var(--mono)}
+.faq details[open] summary .chev{transform:rotate(180deg)}
+.faq .a{padding:0 20px 18px 54px;color:var(--ink-soft);font-size:1rem}
+
+/* PRACTICE */
+.prob{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:20px 22px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.prob .ptag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:10px;font-weight:700}
+.ptag.easy{background:var(--dram-soft);color:#145b4a}
+.ptag.medium{background:var(--honey-soft);color:#6e4a09}
+.ptag.hard{background:var(--optane-soft);color:#9a3a22}
+.prob .qtext{font-weight:600;margin-bottom:8px}
+.prob details{margin-top:6px}
+.prob summary{cursor:pointer;color:var(--honey-deep);font-weight:700;font-size:.92rem;list-style:none}
+.prob summary::-webkit-details-marker{display:none}
+.prob summary::before{content:"▸ ";font-family:var(--mono)}
+.prob details[open] summary::before{content:"▾ "}
+.prob .ans{margin-top:10px;padding:14px 16px;background:var(--paper-2);border-radius:10px;font-size:.96rem;color:var(--ink-soft)}
+.prob .ans .mis{display:block;margin-top:10px;font-size:.9rem;color:var(--optane);font-style:italic}
+
+/* CODE */
+pre.sketch{background:#2c2620;color:#f3ead9;border-radius:14px;padding:20px 22px;overflow-x:auto;font-family:var(--mono);font-size:.86rem;line-height:1.7;margin:12px 0;box-shadow:var(--shadow-md)}
+pre.sketch .kw{color:#d9a23d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pre.sketch .hl{color:#8a8ee0}
+
+/* GLOSSARY */
+.gloss{columns:2;column-gap:26px}
+.gloss .term-def{break-inside:avoid;margin:0 0 14px;font-size:.95rem}
+.gloss .term-def b{display:block;color:var(--ink);font-family:var(--display);font-size:1rem}
+.gloss .term-def span{color:var(--ink-soft)}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--honey-deep);margin:28px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.read-item{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;margin:12px 0}
+.read-item h4{font-size:1.05rem;margin-bottom:6px}
+.read-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:8px}
+.read-item p{font-size:.94rem;color:var(--ink-soft);margin:0}
+.diff{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700;margin-left:6px}
+.diff.easy{background:var(--dram-soft);color:#145b4a}
+.diff.med{background:var(--honey-soft);color:#6e4a09}
+.diff.hard{background:var(--optane-soft);color:#9a3a22}
+
+.foot{margin-top:60px;border-top:1px solid var(--line);background:var(--paper-2)}
+.foot .wrap{padding:30px 22px;font-size:.9rem;color:var(--ink-soft);display:flex;flex-wrap:wrap;gap:8px 28px}
+.foot b{color:var(--ink)}
+
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s,transform .6s}
+.reveal.in{opacity:1;transform:none}
+@media(max-width:820px){.gloss{columns:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
+
+/* === DARK-THEME-INJECT:START === */
+:root[data-theme="dark"]{
+  --paper:#17140F; --paper-2:#201C16; --card:#221E17;
+  --ink:#ECE4D6; --ink-soft:#B6AB98; --ink-faint:#8A7F6C;
+  --line:#38332A; --line-strong:#4A4335;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 4px 14px rgba(0,0,0,.4), 0 12px 30px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] body{
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(31,138,114,.07), transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(91,95,199,.07), transparent 42%),
+    radial-gradient(circle at 50% 120%, rgba(217,162,61,.05), transparent 55%);
+}
+:root[data-theme="dark"] strong{color:var(--ink)}
+:root[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--paper-2) 0%,var(--paper) 100%)}
+:root[data-theme="dark"] .tabbar-outer{background:rgba(23,20,15,.86)}
+:root[data-theme="dark"] .tab-btn.active{background:var(--honey);color:#211705}
+:root[data-theme="dark"] .tab-btn.active .n{color:#211705;opacity:.8}
+:root[data-theme="dark"] figure.viz,
+:root[data-theme="dark"] .analogy .ill{background:#FFFDF8}
+:root[data-theme="dark"] figure.viz figcaption{color:#6E6456}
+:root[data-theme="dark"] .viz-title{color:#332C24}
+:root[data-theme="dark"] .viz-kicker{color:#9A8E7C}
+:root[data-theme="dark"] figure.viz .legend span{color:#6E6456}
+:root[data-theme="dark"] .node .nt,
+:root[data-theme="dark"] .node .nd{color:#332C24}
+:root[data-theme="dark"] .tbl .best td,
+:root[data-theme="dark"] .tbl .best:hover td{color:#332C24}
+:root[data-theme="dark"] .legal-footer{border-top-color:#38332A !important;color:#8A7F6C !important}
+:root[data-theme="dark"] .legal-footer b{color:#B6AB98 !important}
+
+.theme-toggle{position:fixed;top:16px;right:16px;z-index:60;display:inline-flex;align-items:center;justify-content:center;
+  width:42px;height:42px;border-radius:50%;border:1px solid var(--line-strong);background:var(--card);color:var(--ink-soft);
+  cursor:pointer;box-shadow:var(--shadow-sm);font-size:17px;line-height:1;padding:0;transition:border-color .2s,color .2s,transform .15s}
+.theme-toggle:hover{border-color:var(--honey);color:var(--honey-deep);transform:scale(1.06)}
+.theme-toggle .tt-sun,.theme-toggle .tt-moon{display:none}
+:root[data-theme="light"] .theme-toggle .tt-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .tt-sun{display:inline}
+@media(max-width:480px){.theme-toggle{top:10px;right:10px;width:38px;height:38px;font-size:15px}}
+/* === DARK-THEME-INJECT:END === */
+</style>
+</head>
+<body>
+<!-- DARK-THEME-TOGGLE --><button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark mode"><span class="tt-sun">☀</span><span class="tt-moon">☾</span></button>
+<script>function toggleTheme(){
+  var r = document.documentElement, next = r.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  r.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+  var mc = document.querySelector('meta[name="theme-color"]'); if (mc) mc.content = next === 'dark' ? '#17140F' : '#FBF6EC';
+}</script>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>HotStorage 2026 · A Field Guide</span>
+    <h1>Giving metadata to <span class="swash">neither</span> the CPU nor the <span class="swash" style="color:var(--optane)">GPU</span></h1>
+    <p class="lede">A CPU and a GPU share one file. Whoever's turn it is to own the metadata becomes a bottleneck for the other. DevMeta's fix: put the file system <em>inside the SSD</em> and make both processors equal, stateless clients.</p>
+    <div class="hero-meta">
+      <span>📄 "Bridging CPU and GPU I/O with a Device-Resident File System" · Chen, Chen, Ren, Zhang</span>
+      <span>🎓 Storage/GPU-I/O specifics explained; OS/arch background assumed</span>
+      <span>⏱ ~20 min read</span>
+    </div>
+    <div class="rule-plaque">
+      <div class="glyph">🗂️</div>
+      <p>Keep exactly <span class="ro">ONE authoritative copy</span> of file metadata — on the <span class="ro">device</span> — so CPU and GPU never need to <span class="wo">synchronize with each other</span>.<br><em style="font-size:.9rem">Move the controller off both endpoints, onto the thing they already share.</em></p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar-outer">
+  <div class="tabbar" role="tablist">
+    <button class="tab-btn active" data-tab="start"><span class="n">01</span>Start Here</button>
+    <button class="tab-btn" data-tab="idea"><span class="n">02</span>The Big Idea</button>
+    <button class="tab-btn" data-tab="analogies"><span class="n">03</span>Analogies</button>
+    <button class="tab-btn" data-tab="how"><span class="n">04</span>How It Works</button>
+    <button class="tab-btn" data-tab="examples"><span class="n">05</span>Worked Examples</button>
+    <button class="tab-btn" data-tab="practice"><span class="n">06</span>Practice</button>
+    <button class="tab-btn" data-tab="faq"><span class="n">07</span>FAQ</button>
+    <button class="tab-btn" data-tab="reference"><span class="n">08</span>Reference</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ TAB 1: START HERE ============ -->
+<section class="tab-panel active" id="tab-start">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Before you begin</div>
+      <h2>Acronyms first, then the concepts</h2>
+      <p class="sub">A quick-reference glossary, then eight short primers. Skim the glossary, open only the primers covering something unfamiliar.</p>
+    </div>
+
+    <div class="subhead">Quick glossary</div>
+    <div class="gloss">
+      <div class="term-def"><b>GDS</b><span>GPUDirect Storage — DMAs SSD data straight into GPU memory, bypassing host RAM. CPU still issues the request.</span></div>
+      <div class="term-def"><b>BaM</b><span>Big accelerator Memory — GPU threads post NVMe commands themselves, no host in the loop; raw blocks only, no file abstraction.</span></div>
+      <div class="term-def"><b>MDS</b><span>Metadata Server — here, DevMeta-MDS, the single authoritative metadata service running on the device.</span></div>
+      <div class="term-def"><b>DPU</b><span>Data Processing Unit — a programmable SmartNIC/SoC (e.g. BlueField) that can run storage logic near the data.</span></div>
+      <div class="term-def"><b>FTL</b><span>Flash Translation Layer — SSD firmware mapping logical blocks to physical NAND. Co-locating DevMeta's block map with the FTL may help, but the paper leaves safely unifying the two bookkeeping logs as open work.</span></div>
+      <div class="term-def"><b>NVMe</b><span>The queue-based command protocol CPUs <i>and</i> GPUs use to talk to the SSD directly.</span></div>
+      <div class="term-def"><b>DMA</b><span>Direct Memory Access — the engine that moves bytes between device and host/GPU memory without CPU copying.</span></div>
+      <div class="term-def"><b>CPUIOLib / GPUIOLib</b><span>DevMeta's stateless client libraries — open/read/write/lseek on each processor, holding no authoritative metadata.</span></div>
+    </div>
+
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:var(--dram)"></i> device-resident (DevMeta)</span>
+      <span><i style="background:var(--honey)"></i> CPU-resident baseline (GeminiFS)</span>
+      <span><i style="background:var(--ltram)"></i> DevMeta's machinery</span>
+      <span><i style="background:var(--optane)"></i> GPU-resident baseline (GoFS) / sync cost</span>
+    </div>
+
+    <div class="primer-grid">
+      <details class="primer">
+        <summary><span class="pnum">1</span>Control path vs. data path<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Any I/O has two parts: the <b>control path</b> (deciding where the bytes live, and whether the request is even valid) and the <b>data path</b> (actually moving the bytes). GPUDirect Storage made the data path fast — DMA straight from SSD to GPU memory. The paper's whole argument is that the <b>control path</b>, which still has to resolve a file offset into a physical block, is where the cost now hides.</p>
+          <div class="ready"><b>Now you're ready:</b> most of the paper's findings are about the control path's latency — though Finding 2 shows the asymmetry also drags down delivered bandwidth, not just latency.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">2</span>GDS vs. BaM — who issues the request<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Under <b>GDS</b>, a host thread calls <code>cuFile</code> to start the I/O; the SSD then DMAs data into GPU memory. The CPU is on the control path for every request. <b>BaM</b> removes that: GPU threads build NVMe commands in GPU memory and issue them directly. But BaM exposes raw blocks — no naming, no allocation, no offset translation.</p>
+          <div class="ready"><b>Now you're ready:</b> DevMeta wants GPU threads to issue requests without the host, the way BaM does, <i>plus</i> real file semantics — which means somebody still has to own metadata.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">3</span>File data vs. file metadata<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Data is the bytes a program wants. <b>Metadata</b> — inodes, offset→block maps, directory entries, free-space state — is what tells you <i>where</i ⁠>those bytes physically are, and whether you're even allowed to read them. GPU-direct data access is free to be fast; it's metadata lookup that gates every open, append, or truncate.</p>
+          <div class="ready"><b>Now you're ready:</b> "bypassing the CPU" for data says nothing about who resolves metadata — that's a separate, and harder, problem.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">4</span>CPU-resident metadata — GeminiFS<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>GeminiFS keeps the file system on the host and embeds each file's offset→block mapping inside preallocated files so the GPU can cache and use it locally. It assumes predictable access so the mapping stays stable — but anything that evolves at runtime (length, allocation state, namespace) still needs host coordination.</p>
+          <div class="ready"><b>Now you're ready:</b> the paper's Finding 1–2 measure exactly this residual coordination cost: a shared <code>append</code>.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">5</span>GPU-resident metadata — GoFS<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>GoFS flips the placement: file-system management runs on the GPU as a persistent kernel, and the CPU is now the guest that must synchronize through it. This removes the CPU from the common GPU I/O path, but CPU operations still stall on the GPU-resident controller when shared state changes.</p>
+          <div class="ready"><b>Now you're ready:</b> Finding 3 shows this is not a fix — it's the same asymmetry, pointed the other way.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">6</span>Computational storage / programmable SSDs<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Modern SSDs and DPUs have embedded cores and on-device DRAM capable of running real logic, not just the FTL. DevFS and CrossFS already showed allocation, mapping, and permission checks can run <i>inside</i> a storage device.</p>
+          <div class="ready"><b>Now you're ready:</b> DevMeta is this lineage applied specifically to CPU–GPU shared files, where neither endpoint wants to be the controller.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">7</span>Stateless clients vs. cached mappings<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>A client could cache a file's offset→block map locally to translate offsets itself — but that map is <b>mutable</b>: it changes on append, on truncate, and under a log-structured backend even on in-place overwrite. A cached copy must then be kept in sync with the device, reintroducing the very synchronization being removed.</p>
+          <div class="ready"><b>Now you're ready:</b> DevMeta's clients hold nothing authoritative; they name data by <code>(handle, offset, length)</code> and let the device resolve it.</div>
+        </div>
+      </details>
+      <details class="primer">
+        <summary><span class="pnum">8</span>Hot metadata caching with device-controlled invalidation<span class="chev">▾</span></summary>
+        <div class="body">
+          <p>Caching normally means a copy can go stale. DevMeta's Profiler caches only <b>read-only, hot, unwritten</b> metadata in GPU memory, tagged with a valid bit the device itself clears via DMA the instant a conflicting write arrives — before that write takes effect.</p>
+          <div class="ready"><b>Now you're ready:</b> this is the one place DevMeta does cache on the GPU — but the cache is non-authoritative and device-managed, not a second source of truth.</div>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 2: THE BIG IDEA ============ -->
+<section class="tab-panel" id="tab-idea">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The whole story in one place</div>
+      <h2>DevMeta in a nutshell</h2>
+      <p class="sub">The problem, the measurement that exposes it, and the fix.</p>
+    </div>
+    <div class="prose">
+      <p>A CPU and a GPU sharing one file inevitably share its metadata too. GPUDirect Storage made the <b>data</b> path direct — SSD to GPU memory, no host bounce buffer — but the <b>control</b> path, resolving an offset to a physical block and keeping length/allocation state current, still runs wherever the file system lives. Put it on the CPU (<span class="mem-chip chip-sat">GeminiFS</span>) and the GPU pays a cross-PCIe hop on every metadata-touching op. Put it on the GPU (<span class="mem-chip chip-lru">GoFS</span>) and the CPU pays instead, and worse, can stall the GPU's own kernel.</p>
+      <p>The paper's claim: <b>metadata synchronization, not I/O bandwidth, is the bottleneck</b>. Its fix is <strong>DevMeta</strong>: move the entire metadata controller onto the SSD (or DPU) itself. <span class="mem-chip chip-ucp">DevMeta-MDS</span> holds the one authoritative copy of every file's metadata; <span class="mem-chip chip-ucp">CPUIOLib/GPUIOLib</span> turn both processors into equal, stateless clients that name data by <code>(handle, offset, length)</code> instead of caching a mutable mapping. Because there's one copy and one arrival order at the device, the two processors stay consistent through that order — not through a protocol between them.</p>
+      <p>To keep the embedded controller from becoming the new bottleneck under GPU-scale concurrency, two modules help it along: <span class="mem-chip chip-ucp">DevMeta-Profiler</span> pushes read-only hot metadata into GPU memory under device-controlled invalidation, and <span class="mem-chip chip-ucp">DevMeta-Scheduler</span> coalesces small, scattered I/Os into large sequential ones.</p>
+    </div>
+
+    <div class="card" style="background:var(--honey-soft);border-color:#EFD9AC">
+      <h3 style="color:#6e4a09">🍯 Key takeaways</h3>
+      <ul style="margin:0;padding-left:20px;color:#6e4a09">
+        <li>CPU-resident metadata (GeminiFS): GPU pays a <b>38%</b> latency tax on a shared append, and the host controller's single lock means <b>throughput halves and queueing latency grows 254×</b> from 1→128 GPU threads.</li>
+        <li>GPU-resident metadata (GoFS): just reverses who pays — CPU I/O slows <b>34×</b> under heavy GPU load, and GPU I/O stalls <b>1.58×</b> during CPU metadata updates.</li>
+        <li>Fix: one authoritative metadata copy, on the device. Both processors become stateless clients — no local mapping to keep in sync.</li>
+        <li><b>DevMeta-Profiler</b> relieves controller pressure by caching hot, read-only metadata in GPU memory with device-initiated invalidation.</li>
+        <li><b>DevMeta-Scheduler</b> coalesces small I/Os to cut per-request controller work and write amplification.</li>
+        <li>This is a design-and-measurement paper (HotStorage), not a full implementation — numbers come from emulating the device cost on real hardware, not a working DevMeta prototype.</li>
+      </ul>
+    </div>
+
+    <!-- SIGNATURE FIGURE -->
+    <figure class="viz reveal">
+      <div class="viz-title">Three places to put the file system</div>
+      <div class="viz-kicker">who pays the cross-processor hop, and how much</div>
+      <svg class="full" viewBox="0 0 760 330" role="img" aria-label="Comparison of CPU-resident, GPU-resident, and device-resident file system placements">
+        <!-- Panel A: CPU-resident -->
+        <g font-family="JetBrains Mono" font-size="10">
+          <text x="130" y="24" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#6e4a09">(a) CPU-resident</text>
+          <rect x="70" y="40" width="120" height="34" rx="6" fill="#F6E8C9" stroke="#B07816" stroke-width="2"/><text x="130" y="61" text-anchor="middle" fill="#6e4a09">CPU [fs]</text>
+          <rect x="190" y="110" width="120" height="34" rx="6" fill="#FFFDF8" stroke="#D8C8AC" stroke-width="2"/><text x="250" y="131" text-anchor="middle" fill="#332C24">GPU</text>
+          <rect x="70" y="180" width="120" height="34" rx="6" fill="#FFFDF8" stroke="#D8C8AC" stroke-width="2"/><text x="130" y="201" text-anchor="middle" fill="#332C24">NVMe SSD</text>
+          <path d="M250 110 L140 74" stroke="#B8472F" stroke-width="2" fill="none"/><text x="178" y="98" fill="#9a3a22">1 meta req</text>
+          <path d="M130 74 L130 180" stroke="#B07816" stroke-width="2" fill="none"/><text x="136" y="130" fill="#6e4a09">2 fs</text>
+          <path d="M250 144 L160 196" stroke="#1F8A72" stroke-width="2" fill="none" stroke-dasharray="3 3"/><text x="150" y="176" fill="#145b4a">3 direct data</text>
+        </g>
+        <!-- Panel B: GPU-resident -->
+        <g font-family="JetBrains Mono" font-size="10">
+          <text x="400" y="24" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#9a3a22">(b) GPU-resident</text>
+          <rect x="340" y="40" width="120" height="34" rx="6" fill="#FFFDF8" stroke="#D8C8AC" stroke-width="2"/><text x="400" y="61" text-anchor="middle" fill="#332C24">CPU</text>
+          <rect x="460" y="110" width="120" height="34" rx="6" fill="#F3DCD2" stroke="#B8472F" stroke-width="2"/><text x="520" y="131" text-anchor="middle" fill="#9a3a22">GPU [fs]</text>
+          <rect x="340" y="180" width="120" height="34" rx="6" fill="#FFFDF8" stroke="#D8C8AC" stroke-width="2"/><text x="400" y="201" text-anchor="middle" fill="#332C24">NVMe SSD</text>
+          <path d="M400 74 L500 110" stroke="#9a3a22" stroke-width="2" fill="none"/><text x="420" y="98" fill="#9a3a22">1 meta req</text>
+          <path d="M520 144 L430 196" stroke="#B8472F" stroke-width="2" fill="none"/><text x="446" y="176" fill="#9a3a22">2 fs</text>
+        </g>
+        <!-- Panel C: Device-resident -->
+        <g font-family="JetBrains Mono" font-size="10">
+          <text x="640" y="24" text-anchor="middle" font-family="Fraunces" font-size="14" font-weight="600" fill="#145b4a">(c) Device-resident</text>
+          <rect x="590" y="40" width="100" height="34" rx="6" fill="#FFFDF8" stroke="#D8C8AC" stroke-width="2"/><text x="640" y="61" text-anchor="middle" fill="#332C24">CPU</text>
+          <rect x="690" y="40" width="60" height="34" rx="6" fill="#FFFDF8" stroke="#D8C8AC" stroke-width="2" style="display:none"/>
+          <rect x="690" y="110" width="0" height="0" style="display:none"/>
+          <rect x="690" y="40" width="0" height="0" style="display:none"/>
+          <rect x="690" y="40" width="0" height="0" style="display:none"/>
+          <rect x="590" y="110" width="100" height="34" rx="6" fill="#D7EEE6" stroke="#1F8A72" stroke-width="2"/><text x="640" y="131" text-anchor="middle" fill="#145b4a">SSD [fs]</text>
+          <rect x="590" y="180" width="100" height="34" rx="6" fill="#FFFDF8" stroke="#D8C8AC" stroke-width="2"/><text x="640" y="201" text-anchor="middle" fill="#332C24">GPU</text>
+          <path d="M640 74 L640 110" stroke="#1F8A72" stroke-width="2" fill="none"/><text x="648" y="94" fill="#145b4a">1</text>
+          <path d="M640 180 L640 144" stroke="#1F8A72" stroke-width="2" fill="none"/><text x="648" y="166" fill="#145b4a">2</text>
+        </g>
+        <line x1="320" y1="20" x2="320" y2="310" stroke="#E7DBC6" stroke-dasharray="2 4"/>
+        <text x="130" y="248" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22" font-weight="700">+38% append · 254× queue @128 threads</text>
+        <text x="460" y="248" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#9a3a22" font-weight="700">34× CPU I/O delay · +58% GPU stall</text>
+        <text x="640" y="248" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#145b4a" font-weight="700">no cross-processor hop</text>
+      </svg>
+      <figcaption><b>Same two arrows, different owner.</b> In (a) and (b), reaching metadata means hopping through the other processor. In (c) the SSD is the neutral party both already talk to — the hop disappears for both sides. (Based on paper Fig. 1 and Findings 1–3; redrawn, not a reproduction.)</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TAB 3: ANALOGIES ============ -->
+<section class="tab-panel" id="tab-analogies">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Five everyday pictures</div>
+      <h2>How to think about DevMeta</h2>
+      <p class="sub">Each stands alone. Every card ends with where the picture stops being true.</p>
+    </div>
+    <div class="analogy-grid">
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <circle cx="40" cy="48" r="20" fill="#F6E8C9" stroke="#B07816" stroke-width="2.5"/>
+          <circle cx="100" cy="48" r="20" fill="#FFFDF8" stroke="#9A8E7C" stroke-width="2.5"/>
+          <rect x="60" y="20" width="20" height="16" rx="3" fill="#D7EEE6" stroke="#1F8A72" stroke-width="2"/>
+          <path d="M55 42 L68 32 M85 42 L72 32" stroke="#1F8A72" stroke-width="2"/>
+        </svg></div>
+        <span class="term">The core idea · Neutral authority</span>
+        <h3>One shared calendar, not two diaries</h3>
+        <p>Two roommates each keeping a private diary of the apartment's chore schedule must constantly cross-check and correct each other. Keep one shared calendar on the fridge instead, and each roommate just reads/writes it — there is nothing to reconcile because there is only one record. DevMeta-MDS is that fridge calendar for file metadata.</p>
+        <div class="breaks"><b>Where it breaks:</b> a fridge calendar has no capacity limit; the SSD's embedded controller does — hence the Profiler and Scheduler.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="18" y="56" width="36" height="30" rx="4" fill="#F6E8C9" stroke="#B07816" stroke-width="2.5"/>
+          <rect x="86" y="56" width="36" height="30" rx="4" fill="#F3DCD2" stroke="#B8472F" stroke-width="2.5"/>
+          <path d="M54 68 l32 0" stroke="#9A8E7C" stroke-width="2" stroke-dasharray="4 3"/>
+          <path d="M70 56 l0 -16" stroke="#9A8E7C" stroke-width="2"/>
+          <circle cx="70" cy="34" r="6" fill="#DCEFE9" stroke="#1F8A72" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Why placement matters · Asymmetric cost</span>
+        <h3>A seesaw with the fulcrum off-center</h3>
+        <p>Put the pivot on one side and that side barely moves while the other end swings wildly. Putting the file system on the CPU (GeminiFS) makes the GPU do the swinging — 38% extra latency, collapsing concurrency. Putting it on the GPU (GoFS) just moves the pivot and makes the CPU swing instead — 34× slower CPU I/O. Centering the pivot on the SSD, something neither end "owns," balances the seesaw.</p>
+        <div class="breaks"><b>Where it breaks:</b> a seesaw has only two riders; real systems have many CPU/GPU processes contending at once, which is why ordering (not just placement) matters.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="30" y="20" width="80" height="16" rx="2" fill="#fff" stroke="#332C24" stroke-width="2"/>
+          <rect x="30" y="40" width="80" height="16" rx="2" fill="#E6E6F7" stroke="#5B5FC7" stroke-width="2"/>
+          <rect x="30" y="60" width="80" height="16" rx="2" fill="#E6E6F7" stroke="#5B5FC7" stroke-width="2"/>
+          <text x="70" y="32" text-anchor="middle" font-family="monospace" font-size="8" fill="#332C24">queue</text>
+          <text x="70" y="52" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">req A</text>
+          <text x="70" y="72" text-anchor="middle" font-family="monospace" font-size="8" fill="#3a409a">req B</text>
+        </svg></div>
+        <span class="term">Consistency · Ordering, not locking</span>
+        <h3>One teller's window, not a race to the counter</h3>
+        <p>If every customer rushes the same counter, you need a lock (or chaos) to decide who goes first. Put one teller at one window and customers just line up — the order they arrive <i>is</i> the resolution, no extra negotiation needed. DevMeta's shared I/O command queue works the same way: operations on the same file are serialized by arrival order at the device, not by a lock either processor holds.</p>
+        <div class="breaks"><b>Where it breaks:</b> a teller serves one customer at a time; DevMeta parallelizes across <i>different</i> files, so the single-queue picture only applies within one file.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="24" y="30" width="42" height="40" rx="4" fill="#D7EEE6" stroke="#1F8A72" stroke-width="2.5"/>
+          <rect x="78" y="30" width="42" height="40" rx="4" fill="#fff" stroke="#9A8E7C" stroke-width="2.5" stroke-dasharray="4 3"/>
+          <circle cx="99" cy="26" r="5" fill="#D9A23D"/>
+          <path d="M94 20 l10 10 M104 20 l-10 10" stroke="#B07816" stroke-width="1.6"/>
+        </svg></div>
+        <span class="term">Profiler · Lease with instant recall</span>
+        <h3>A library's reserve-shelf pass</h3>
+        <p>A library lets regulars keep a photocopy of a popular reference page at their desk — but only while nobody's editing the original, and the librarian can revoke that copy the instant an edit happens, before the edit is visible to anyone else. The Profiler's GPU-side metadata cache is exactly this: read-only, hot, valid-bit tagged, revoked by the device itself the moment a write would make it stale.</p>
+        <div class="breaks"><b>Where it breaks:</b> a librarian's recall is a courtesy call; the Profiler's invalidation is designed so the device issues the DMA before applying the update — the paper proposes this ordering, it doesn't formally prove races are impossible.</div>
+      </div>
+
+      <div class="analogy reveal">
+        <div class="ill"><svg viewBox="0 0 140 96" fill="none">
+          <rect x="20" y="40" width="14" height="14" fill="#E6E6F7" stroke="#5B5FC7" stroke-width="1.5"/>
+          <rect x="38" y="40" width="14" height="14" fill="#E6E6F7" stroke="#5B5FC7" stroke-width="1.5"/>
+          <rect x="56" y="40" width="14" height="14" fill="#E6E6F7" stroke="#5B5FC7" stroke-width="1.5"/>
+          <path d="M72 47 L94 47" stroke="#332C24" stroke-width="2"/>
+          <rect x="96" y="34" width="26" height="26" rx="3" fill="#D7EEE6" stroke="#1F8A72" stroke-width="2"/>
+        </svg></div>
+        <span class="term">Scheduler · Batching small requests</span>
+        <h3>Combining errands into one trip</h3>
+        <p>Three small errands to the same store cost three trips if run separately, one if combined. DevMeta-Scheduler sees every client's requests by file and offset — across <i>both</i> CPU and GPU — and merges adjacent small reads/writes into one large sequential operation, cutting the controller's per-request overhead and write amplification.</p>
+        <div class="breaks"><b>Where it breaks:</b> errands can wait for a convenient batching moment; latency-sensitive I/O can't wait indefinitely for a batch to fill, so the scheduler must bound how long it holds a request.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 4: HOW IT WORKS ============ -->
+<section class="tab-panel" id="tab-how">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">The full explanation</div>
+      <h2>How it actually works</h2>
+      <p class="sub">Three pieces: one authoritative controller, two stateless clients, two mechanisms to keep the controller from choking.</p>
+    </div>
+
+    <div class="prose">
+      <h3>1 · DevMeta-MDS — the single authoritative copy</h3>
+      <p>DevMeta-MDS runs on the device and holds the one copy of every file's metadata: length, inode, block map, allocation state. Both CPU and GPU post requests to a shared I/O command queue; the MDS serves them in arrival order. Per-process state (open flags, file offset) stays per-process; the file's <i>shared</i> metadata stays single. Operations on different files proceed in parallel; operations on the same file are serialized by queue order, so two processors writing one file are ordered by the device, not by a lock either side holds.</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">An append is visible with no reconciliation</div>
+      <div class="viz-kicker">§4.1's worked case — one length, two readers</div>
+      <svg class="full" viewBox="0 0 700 180" role="img" aria-label="CPU append visible to GPU reader through single metadata copy">
+        <rect x="20" y="20" width="140" height="40" rx="6" fill="#F6E8C9" stroke="#B07816" stroke-width="2"/><text x="90" y="44" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#6e4a09">CPU: open(O_APPEND)</text>
+        <rect x="20" y="120" width="140" height="40" rx="6" fill="#FFFDF8" stroke="#D8C8AC" stroke-width="2"/><text x="90" y="144" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">GPU: open(pathA)</text>
+        <rect x="280" y="70" width="140" height="40" rx="6" fill="#D7EEE6" stroke="#1F8A72" stroke-width="2"/><text x="350" y="94" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#145b4a">MDS: length = L</text>
+        <path d="M160 40 L280 80" stroke="#B07816" stroke-width="2" fill="none"/><text x="195" y="55" font-family="JetBrains Mono" font-size="10" fill="#6e4a09">write → length = L+Δ</text>
+        <path d="M420 90 L600 70" stroke="#1F8A72" stroke-width="2" fill="none"/><text x="440" y="75" font-family="JetBrains Mono" font-size="10" fill="#145b4a">reads L+Δ</text>
+        <rect x="600" y="50" width="80" height="40" rx="6" fill="#FFFDF8" stroke="#D8C8AC" stroke-width="2"/><text x="640" y="74" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#332C24">lseek()</text>
+        <path d="M160 140 L600 90" stroke="#9A8E7C" stroke-width="1.5" fill="none" stroke-dasharray="3 3"/>
+      </svg>
+      <figcaption><b>No protocol between CPU and GPU, because there's nothing to reconcile:</b> the write updates the one copy; the next read — from either processor — sees it. (Paper §4.1.)</figcaption>
+    </figure>
+
+    <div class="prose">
+      <h3>2 · CPUIOLib / GPUIOLib — stateless clients</h3>
+      <p>Both libraries expose <code>open/read/write/lseek</code> and turn each call into a request on the shared queue; GPUIOLib lets GPU threads issue requests themselves, without going through the host. Neither library holds authoritative metadata — a request names data as <code>(handle, offset, length)</code>, and the MDS resolves the physical location as it serves the request. A reply is an acknowledgement (plus, for an append, the offset the device chose) — never a mapping for the client to cache.</p>
+      <div class="callout why"><span class="ic">💡</span><div><b>Why this kills the truncate race:</b> if the CPU truncates a file the GPU is reading, the MDS shrinks the file and frees trailing blocks. A later GPU read of a removed offset still just names <code>(handle, offset)</code> — the device replies "end of file," the normal answer for a read past the end. There's no client-side mapping to invalidate, so a stale read of another file's reused blocks can't happen: the only route to those blocks is the device's mapping, which no longer points there.</div></div>
+    </div>
+
+    <div class="prose">
+      <h3>3 · DevMeta-Profiler — shedding load to the GPU</h3>
+      <p>The Profiler watches request traffic and tracks per-file hotness. When the device saturates and a hot file is read by many GPU threads but not written, the MDS DMAs a read-only copy of that file's mapping into a small GPU-side cache, tagged valid. The GPU checks the valid bit and, while set, resolves offsets and reads locally — bypassing the MDS entirely. The moment the file is written, the device clears the valid bit by DMA <i>before</i> the write takes effect; the GPU falls back to naming the MDS, and freed blocks are reused only after the GPU acknowledges the change.</p>
+    </div>
+
+    <div class="prose">
+      <h3>4 · DevMeta-Scheduler — raising the granularity</h3>
+      <p>Because every request passes through the device, the scheduler merges contiguous reads or writes sitting in the queue — e.g. a run of adjacent 4 KB reads into one 64 KB read — cutting the per-request name-resolution and mapping-lookup work, and turning many small NAND operations into fewer large ones (lowering write amplification). Because the MDS sees every client's requests by file and offset, it coalesces across <i>both</i> processors, which a scheduler seeing only raw blocks could not.</p>
+      <pre class="sketch"><span class="cm"># request shape, either processor</span>
+req = (handle, offset, length, op)     <span class="cm"># no mapping attached — ever</span>
+MDS.resolve(req)                       <span class="hl"># offset → physical block, here</span>
+<span class="kw">if</span> op == APPEND: reply.offset = MDS.grow(handle, length)
+<span class="kw">else</span>:            reply.ack</pre>
+      <div class="callout note"><span class="ic">🌱</span><div>Together, Profiler and Scheduler are the paper's answer to one worry: an embedded controller is weaker than a host CPU, and under GPU-scale concurrency it could become the <i>new</i> bottleneck. Neither mechanism changes who's authoritative — they just reduce how often the MDS has to do full work.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 5: WORKED EXAMPLES ============ -->
+<section class="tab-panel" id="tab-examples">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Follow the numbers</div>
+      <h2>Worked examples</h2>
+      <p class="sub">Four traces through the paper's own measurements.</p>
+    </div>
+
+    <div class="card reveal">
+      <h3>① The 38% append tax</h3>
+      <p style="color:var(--ink-soft)">A direct GPU-initiated append has normalized latency 1.00. Routing it through CPU-resident metadata (GeminiFS-style) raises that to 1.38. What is the extra cost, and where does it live?</p>
+      <ol class="seq">
+        <li><b>Overhead = 1.38 − 1.00 = 0.38</b>, i.e. +38% of the direct latency.</li>
+        <li>The data path is identical in both cases — standard GPU-direct write.</li>
+        <li>So the entire 0.38 is the cross-PCIe request to the host plus the host's allocation decision, paid <i>before</i> the GPU is allowed to write.</li>
+        <li>This is a per-operation tax: every shared append, regardless of size, pays it.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> a "direct" data path says nothing about the control path riding on top of it — the bottleneck lives entirely in metadata resolution, not transfer.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>② Concurrency collapses the host controller</h3>
+      <p style="color:var(--ink-soft)">Raising concurrent appending GPU threads from 1 to 128: host-mediated bandwidth falls by half; queuing latency at the host grows 254×. GPU-direct data path keeps scaling to the SSD's bandwidth limit. Why the divergence?</p>
+      <ol class="seq">
+        <li>Every appending thread must serialize on the <b>single</b> host metadata controller and its lock.</li>
+        <li>As thread count rises 128×, contention for that one lock rises much faster than linearly — queueing latency grows 254×, far outpacing the 128× increase in demand.</li>
+        <li>Delivered bandwidth actually <b>drops</b> (to ~50%) because threads spend more time waiting than transferring.</li>
+        <li>The GPU-direct data path has no such single point — it scales until it hits the SSD's own physical bandwidth ceiling, not a software lock.</li>
+      </ol>
+      <div class="callout why"><span class="ic">💡</span><div>This is Finding 2's core point: the asymmetry doesn't just add fixed latency, it <i>actively worsens</i> as you add the GPU parallelism the whole system exists to exploit.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>③ GoFS reverses, not removes, the cost</h3>
+      <p style="color:var(--ink-soft)">Moving the controller to the GPU (GoFS): CPU-initiated I/O under heavy concurrent GPU I/O pressure is 34× slower than direct CPU-native I/O (Fig. 3a). A CPU core continuously issuing metadata updates causes GPU I/O to run at 1.58× its DevMeta baseline (Fig. 3b) — i.e. fully stalling while the atomic update finishes.</p>
+      <ol class="seq">
+        <li><b>34×</b>: CPU-initiated requests must wait for in-flight GPU operations to complete before the GPU-resident controller services them.</li>
+        <li><b>1.58×</b> (+58%): when the CPU issues metadata updates (append, allocation, invalidation), <i>all</i> subsequent GPU I/O must fully stall until that atomic update finishes on the GPU.</li>
+        <li>Both numbers describe the same structural fact as Findings 1–2, just with the roles of CPU and GPU swapped.</li>
+      </ol>
+      <div class="callout warn"><span class="ic">⚠</span><div><b>The lesson, stated plainly:</b> whichever processor does <i>not</i> own the file system pays a cross-processor hop on the path of its own I/O. Placement alone — CPU or GPU — never removes that hop; it only decides who pays it.</div></div>
+    </div>
+
+    <div class="card reveal">
+      <h3>④ Tracing the Profiler's invalidation</h3>
+      <p style="color:var(--ink-soft)">A hot file is read by many GPU threads and not written. Walk through what happens when a CPU write finally arrives.</p>
+      <ol class="seq">
+        <li>Profiler detects the file is hot and read-only; MDS DMAs its offset→block mapping into a GPU-side cache, valid bit set.</li>
+        <li>GPU threads check the valid bit, see it set, resolve offsets locally, and read directly — zero MDS round-trips per read.</li>
+        <li>A CPU write to that file arrives at the MDS.</li>
+        <li>Before applying the update, the device DMA-writes the GPU's valid bit to invalid, over the same path it posts completions on.</li>
+        <li>GPU threads now see the invalid bit, fall back to naming the MDS per request; freed/changed blocks are reused only after the GPU has acknowledged the change.</li>
+      </ol>
+      <div class="callout takeaway"><span class="ic">🍯</span><div><b>Insight:</b> the invalidation is a single device-initiated DMA, not a cross-processor protocol — it costs one message, not a round trip.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 6: PRACTICE ============ -->
+<section class="tab-panel" id="tab-practice">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Test yourself</div>
+      <h2>Practice problems</h2>
+      <p class="sub">Try before opening the answer. Each ends with the misconception it checks.</p>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 1 · easy</span>
+      <div class="qtext">GPUDirect Storage DMAs data straight from SSD to GPU memory, "bypassing host memory." Does this mean the CPU is out of the GPU's I/O path?</div>
+      <details><summary>Show answer</summary><div class="ans">No. GDS bypasses the host memory <i>bounce buffer</i> on the data path, but a host thread still invokes <code>cuFile</code> to issue the request — the control path remains CPU-initiated. "Direct" describes where the bytes go, not who decides where they go.<span class="mis">Misconception: that bypassing host memory means bypassing the host. The two are independent — BaM is what actually removes the CPU from issuing the request.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 2 · medium</span>
+      <div class="qtext">GeminiFS preallocates fixed-size files so the GPU's cached block mapping stays stable, avoiding most synchronization. What metadata still requires CPU–GPU coordination, and why doesn't preallocation fix it?</div>
+      <details><summary>Show answer</summary><div class="ans">File length, allocation state, and namespace information (renames, new files) still evolve at runtime and aren't fixed by preallocating block layout. Preallocation only stabilizes the offset→block <i>map</i> for data that's already placed — it says nothing about metadata that inherently changes, like how much of the file is valid right now.<span class="mis">Misconception: that caching a mapping is a general synchronization fix. It only works for the subset of metadata that's predictable in advance.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 3 · medium</span>
+      <div class="qtext">Why doesn't moving the file system onto the GPU (GoFS) solve the CPU–GPU synchronization problem?</div>
+      <details><summary>Show answer</summary><div class="ans">Because the problem was never "the CPU is in the way" — it's that <i>whichever</i> processor doesn't own the controller must cross to the one that does. Moving the controller to the GPU just makes the CPU the one crossing: CPU-initiated I/O now waits behind in-flight GPU operations (34× slower under load) and can fully stall GPU I/O when it issues metadata updates (+58%).<span class="mis">Misconception: that the asymmetry is caused by a specific processor's design, rather than by splitting authority across two processors at all.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag hard">Problem 4 · hard</span>
+      <div class="qtext">The CPU truncates a shared file while a GPU thread is mid-read. DevMeta gives clients no local mapping and no invalidation message to the GPU. Why doesn't the GPU read stale, reused blocks?</div>
+      <details><summary>Show answer</summary><div class="ans">The GPU never held a mapping to begin with — every read names <code>(handle, offset, length)</code> and the device resolves it fresh, at the moment of the request. After truncation, the MDS has already shrunk the file and freed the trailing blocks in its single authoritative map. A read of a now-removed offset simply gets "end of file," the ordinary answer for reading past a file's end — there is no stale mapping to consult because the client never cached one. The freed blocks are only reachable through the device's current mapping, which no longer points there.<span class="mis">Misconception: that correctness here requires an explicit invalidation protocol to the GPU. It doesn't — statelessness removes the thing that would need invalidating.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag medium">Problem 5 · medium</span>
+      <div class="qtext">A skeptic says "DevMeta's Profiler just caches metadata on the GPU — isn't that exactly what GeminiFS does?" What's the structural difference?</div>
+      <details><summary>Show answer</summary><div class="ans">GeminiFS's GPU-side copy is relied upon as a working mapping the GPU uses to translate offsets on an ongoing basis, with staleness handled by assuming stable, preallocated layout. The Profiler's cache is explicitly non-authoritative, read-only, restricted to hot files with no concurrent writers, and invalidated by a device-initiated DMA before a conflicting update takes effect — the GPU never has to assume stability itself; the device is designed to enforce it via the valid bit, though the paper presents this as a design, not a formally proven guarantee.<span class="mis">Misconception: that any GPU-side metadata copy reintroduces the synchronization problem. The difference is who's authoritative and who enforces invalidation — the device, not the GPU client.</span></div></details>
+    </div>
+
+    <div class="prob reveal">
+      <span class="ptag easy">Problem 6 · easy</span>
+      <div class="qtext">The paper argues the bottleneck is metadata synchronization, not I/O bandwidth. Which measured finding most directly supports this, and why?</div>
+      <details><summary>Show answer</summary><div class="ans">Finding 2: as GPU thread count rises 128×, the GPU-direct <i>data</i> path keeps scaling right up to the SSD's physical bandwidth limit — bandwidth was never the constraint. Meanwhile the host-mediated <i>metadata</i> path collapses (bandwidth halves, queueing latency grows 254×) under the exact same load, because it serializes on one controller's lock. Same hardware, same SSD — the only difference is whether the operation touches shared metadata.<span class="mis">Misconception: that more GPU threads or faster SSDs would fix the slowdown. The ceiling is architectural (one lock, one controller), not physical.</span></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 7: FAQ ============ -->
+<section class="tab-panel" id="tab-faq">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Quick answers</div>
+      <h2>Frequently asked questions</h2>
+      <p class="sub">Nine questions newcomers ask most.</p>
+    </div>
+    <div class="faq">
+      <details><summary><span class="q">Q1</span>What does "device-resident" mean, precisely?<span class="chev">▾</span></summary><div class="a">The <i>metadata controller</i> — allocation, block mapping, naming — runs inside the SSD or DPU's embedded processor, not just data sitting on the device. It's a different claim than "computational storage runs some offload function"; here the entire file system's authority lives on the device.</div></details>
+      <details><summary><span class="q">Q2</span>Why can't CPU and GPU each just cache the block map locally?<span class="chev">▾</span></summary><div class="a">Because the map is mutable — it changes on append, truncate, and (under a log-structured backend) even in-place overwrite. A cached copy would need reconciling with the device on every such change, which is exactly the synchronization cost the paper is trying to remove.</div></details>
+      <details><summary><span class="q">Q3</span>Doesn't GPUDirect Storage already solve this by removing the CPU?<span class="chev">▾</span></summary><div class="a">It removes the host-memory bounce buffer from the <i>data</i> path. The <i>control</i> path — issuing the request, resolving metadata — is unaffected: under GDS a host thread still invokes <code>cuFile</code> for every I/O.</div></details>
+      <details><summary><span class="q">Q4</span>How is BaM different from DevMeta?<span class="chev">▾</span></summary><div class="a">BaM lets GPU threads issue NVMe commands directly but exposes raw blocks with no file abstraction — no naming, allocation, or offset translation. DevMeta's GPUIOLib similarly lets GPU threads issue requests without going through the host, but adds a real file system, with the controller on the device instead of missing entirely.</div></details>
+      <details><summary><span class="q">Q5</span>What stops the embedded SSD controller, which is weaker than a host CPU, from becoming the new bottleneck?<span class="chev">▾</span></summary><div class="a">Two mechanisms: DevMeta-Profiler selectively pushes read-only hot metadata into GPU memory when it's useful, letting some hot reads skip the controller, and DevMeta-Scheduler coalesces small requests into large ones to cut per-request controller work. Both are explicitly load-shedding, not changes to authority.</div></details>
+      <details><summary><span class="q">Q6</span>How does the Profiler's GPU-side cache stay correct without a round-trip invalidation protocol?<span class="chev">▾</span></summary><div class="a">It only ever caches read-only, hot metadata with no concurrent writers. The moment a write to that file arrives, the device itself clears the GPU's valid bit via its own DMA engine before the write takes effect — a single device-initiated message, not a negotiated protocol with the GPU.</div></details>
+      <details><summary><span class="q">Q7</span>Why is crash consistency harder here than for a normal file system?<span class="chev">▾</span></summary><div class="a">The metadata service must journal or log-structure its updates to flash so a power loss leaves a recoverable state — without a host's memory or mature recovery code. Co-locating the file-system mapping with the flash translation layer may help (both manage block state), but safely unifying the two logs is an open question the paper flags, not a solved one.</div></details>
+      <details><summary><span class="q">Q8</span>Does DevMeta help if there's no GPU-scale concurrency — just one CPU process and one GPU process?<span class="chev">▾</span></summary><div class="a">The base win (no cross-processor metadata hop) still applies — the 38% append tax and the GoFS reversal happen even at low concurrency. The Profiler and Scheduler specifically matter once you're near the controller's capacity; at low concurrency they have little to do.</div></details>
+      <details><summary><span class="q">Q9</span>How would this scale to multiple SSDs or DPUs?<span class="chev">▾</span></summary><div class="a">The paper points to borrowing InfiniFS's fine-grained metadata partitioning to distribute metadata objects across devices while preserving locality and load balance, with file data independently striped across SSDs for aggregate bandwidth. This is listed as an open direction, not something evaluated in the paper.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB 8: REFERENCE ============ -->
+<section class="tab-panel" id="tab-reference">
+  <div class="wrap">
+    <div class="panel-head">
+      <div class="kicker">Look it up</div>
+      <h2>Glossary &amp; source notes</h2>
+      <p class="sub">Every term in one place, then exactly what's paper fact vs. my framing.</p>
+    </div>
+
+    <div class="subhead">Core terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>DevMeta</b><span>The paper's proposal: run the entire file system, especially its metadata controller, on the storage device so CPU and GPU share one authoritative view.</span></div>
+      <div class="term-def"><b>DevMeta-MDS</b><span>The device-resident metadata server holding the single authoritative copy of inodes, block maps, and allocation state.</span></div>
+      <div class="term-def"><b>CPUIOLib / GPUIOLib</b><span>Stateless client libraries on each processor; expose open/read/write/lseek, hold no authoritative metadata, name data by (handle, offset, length).</span></div>
+      <div class="term-def"><b>DevMeta-Profiler</b><span>Monitors request traffic, identifies hot read-only metadata, and pushes it into GPU memory under device-controlled, DMA-enforced invalidation.</span></div>
+      <div class="term-def"><b>DevMeta-Scheduler</b><span>Coalesces scattered small I/O requests (across both processors) into larger sequential device operations to cut controller overhead and write amplification.</span></div>
+      <div class="term-def"><b>GeminiFS</b><span>CPU-resident baseline: host owns the file system; GPU caches a preallocated file's stable offset→block mapping to self-translate.</span></div>
+      <div class="term-def"><b>GoFS</b><span>GPU-resident baseline: file-system management runs as a persistent GPU kernel; CPU operations synchronize through it.</span></div>
+    </div>
+
+    <div class="subhead">Supporting terms</div>
+    <div class="gloss">
+      <div class="term-def"><b>GDS</b><span>GPUDirect Storage — direct SSD→GPU-memory DMA for data; CPU still issues the request.</span></div>
+      <div class="term-def"><b>BaM</b><span>GPU threads issue NVMe commands directly from GPU memory; raw blocks, no file-system abstraction.</span></div>
+      <div class="term-def"><b>FTL</b><span>Flash Translation Layer — SSD firmware's logical-to-physical block map; a candidate to share bookkeeping with DevMeta's own map.</span></div>
+      <div class="term-def"><b>Write amplification</b><span>Extra NAND writes caused by small, scattered I/O; the Scheduler's coalescing reduces it.</span></div>
+      <div class="term-def"><b>Valid bit</b><span>Per-entry flag marking a Profiler-cached mapping as currently trustworthy; cleared by device DMA before a conflicting write lands.</span></div>
+      <div class="term-def"><b>Stateless client</b><span>A processor that issues requests by name (handle, offset, length) and keeps no mutable metadata of its own to go stale.</span></div>
+    </div>
+
+    <div class="subhead">Results at a glance</div>
+    <figure class="viz reveal" id="resultsFig" style="box-shadow:none;border:1px solid var(--line)">
+      <div class="viz-title">What synchronization costs (vs. device-resident DevMeta)</div>
+      <div class="viz-kicker">measured on A100 + PCIe Gen4 NVMe SSD, dual-socket Xeon · lower would be better</div>
+      <div class="bars" id="resultsBars">
+        <div class="bar-row"><div class="bar-label">CPU-resident append tax<small>Finding 1</small></div><div class="bar-track"><div class="bar-fill bf-hi" data-w="38"><span>+38% latency</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">Host-path bandwidth drop<small>1→128 threads, Finding 2</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="50"><span>−50% throughput</span></div></div></div>
+        <div class="bar-row"><div class="bar-label">GoFS GPU stall<small>CPU metadata update, Finding 3b</small></div><div class="bar-track"><div class="bar-fill bf-lru" data-w="58"><span>+58% (1.58×)</span></div></div></div>
+      </div>
+      <p style="font-size:.85rem;font-family:var(--mono);color:var(--ink-faint);text-align:right;margin:4px 0 0">scale: 0 ▏▏▏▏▏▏▏▏▏▏ +60%</p>
+      <div class="callout warn" style="margin-top:14px"><span class="ic">⚠</span><div><b>Off-chart multiples (Finding 2 &amp; 3a):</b> host-path queueing latency grows <b>254×</b> from 1→128 GPU threads; CPU-initiated I/O under heavy GPU load is <b>34×</b> slower under GoFS. Both dwarf the 0–60% scale above and are reported here as exact multiples, not bar widths.</div></div>
+      <figcaption>All five numbers are the paper's own measured findings (§3.1–3.2); DevMeta itself is evaluated as a design, not benchmarked end-to-end in this HotStorage paper.</figcaption>
+    </figure>
+
+    <div class="subhead">Source notes — provenance</div>
+    <div class="card" style="margin-top:0">
+      <h3 style="font-size:1.1rem">Paper facts</h3>
+      <p style="font-size:.95rem;color:var(--ink-soft)">Testbed: NVIDIA A100 SXM4 GPU + PCIe Gen4 NVMe SSD, dual-socket Xeon, GPU/SSD co-located on one socket; the device-resident path is <i>emulated</i> by throttling memory bandwidth and adding PCIe latency (methodology following DevFS/CrossFS), not run on a real programmable SSD. All five headline numbers (38%, 50% drop, 254×, 34×, 1.58×/+58%) and the architecture (MDS, CPUIOLib/GPUIOLib, Profiler, Scheduler) are stated directly in the paper. This is a HotStorage position/design paper — DevMeta's own mechanisms are a design sketch with open challenges, not an evaluated full implementation.</p>
+      <h3 style="font-size:1.1rem;margin-top:16px">My framing</h3>
+      <p style="font-size:.95rem;color:var(--ink-soft);margin-bottom:0">The three-panel SVG, all five analogies, the "control path vs. data path" framing, and the grouping of findings into bar-chart vs. "off-chart multiples" are my organization, not the paper's. Worth noting for your own tiering work: putting the single source of truth in a neutral third location to avoid cross-domain coordination is the same structural move memory-tiering systems make when centralizing hot/cold page-state tracking (e.g., in the kernel or a CXL-attached controller) rather than splitting it across NUMA nodes — DevMeta is that idea applied to file metadata instead of page metadata.</p>
+    </div>
+
+    <div class="subhead">Related work</div>
+    <div class="read-item reveal"><h4>GeminiFS: A Companion File System for GPUs <span class="diff med">medium</span></h4><div class="meta">Qiu et al. · FAST 2025</div><p>The CPU-resident baseline whose preallocation trick and residual sync gap motivates Findings 1–2.</p></div>
+    <div class="read-item reveal"><h4>Managing Scalable Direct Storage Accesses for GPUs with GoFS <span class="diff med">medium</span></h4><div class="meta">Li, Zhou, Xue, Xu, Huang · SOSP 2025</div><p>The GPU-resident baseline measured in Finding 3; moves the controller but not the asymmetry.</p></div>
+    <div class="read-item reveal"><h4>GPU-Initiated On-Demand High-Throughput Storage Access (BaM) <span class="diff med">medium</span></h4><div class="meta">Qureshi et al. · ASPLOS 2023</div><p>Lets GPU threads issue NVMe commands directly; DevMeta's GPUIOLib adopts a similar host-free issuance approach and adds file semantics.</p></div>
+    <div class="read-item reveal"><h4>Designing a True Direct-Access File System with DevFS <span class="diff hard">hard</span></h4><div class="meta">Kannan et al. · FAST 2018</div><p>Established that file-system logic (allocation, mapping, permissions) can run inside a storage device — DevMeta's direct lineage.</p></div>
+    <div class="read-item reveal"><h4>CrossFS: A Cross-layered Direct-Access File System <span class="diff hard">hard</span></h4><div class="meta">Ren, Min, Kannan · OSDI 2020</div><p>Splits file-system functions across host and device by capability — the model cited for preserving host-side optimizations alongside DevMeta.</p></div>
+    <div class="read-item reveal"><h4>InfiniFS: An Efficient Metadata Service for Large-Scale Distributed Filesystems <span class="diff hard">hard</span></h4><div class="meta">Lv et al. · FAST 2022</div><p>The fine-grained metadata partitioning DevMeta proposes reusing for multi-device scalability.</p></div>
+    <div class="read-item reveal"><h4>ByteFS: System Support for (CXL-based) Memory-Semantic SSDs <span class="diff hard">hard</span></h4><div class="meta">Li, Zhou, Ren, Huang · ASPLOS 2025</div><p>Coordinates host-side caching with device-side storage management — the model cited for not discarding page-cache/read-ahead optimizations under DevMeta.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><b>Paper:</b> Chen, Chen, Ren &amp; Zhang, "Bridging CPU and GPU I/O with a Device-Resident File System" (HotStorage '26)</span>
+    <span><b>Format:</b> Interactive field guide · numbers verified against the source</span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function scrollToContentStart(){
+    var nav = document.querySelector('.tabbar-outer');
+    if(!nav){ window.scrollTo({top:0, behavior: reduce ? 'auto' : 'smooth'}); return; }
+    var target = nav.getBoundingClientRect().top + window.pageYOffset;
+    window.scrollTo({top: target, behavior: reduce ? 'auto' : 'smooth'});
+  }
+
+  /* ---- TABS ---- */
+  var btns = Array.prototype.slice.call(document.querySelectorAll('.tab-btn'));
+  var panels = {};
+  document.querySelectorAll('.tab-panel').forEach(function(p){ panels[p.id.replace('tab-','')] = p; });
+  function activate(name){
+    btns.forEach(function(b){ b.classList.toggle('active', b.dataset.tab === name); });
+    Object.keys(panels).forEach(function(k){ panels[k].classList.toggle('active', k === name); });
+    requestAnimationFrame(function(){ runReveals(); maybeAnimateBars(); });
+    scrollToContentStart();
+    if(history.replaceState) history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(function(b){ b.addEventListener('click', function(){ activate(b.dataset.tab); }); });
+  var initial = (location.hash||'').replace('#','');
+  if(initial && panels[initial]) activate(initial);
+
+  /* ---- SCROLL REVEAL ---- */
+  var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(entries){
+    entries.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'}) : null;
+  function runReveals(){
+    document.querySelectorAll('.tab-panel.active .reveal:not(.in)').forEach(function(el){
+      if(reduce || !io){ el.classList.add('in'); }
+      else { var r = el.getBoundingClientRect(); if(r.top < window.innerHeight) el.classList.add('in'); else io.observe(el); }
+    });
+  }
+
+  /* ---- RESULTS BARS ---- */
+  var barsDone = false, MAXP = 60;
+  function maybeAnimateBars(){
+    var fig = document.getElementById('resultsFig');
+    if(!fig || barsDone || !fig.closest('.tab-panel').classList.contains('active')) return;
+    document.querySelectorAll('#resultsBars .bar-fill').forEach(function(f,i){
+      var w = Math.min(100,(parseFloat(f.dataset.w)/MAXP)*100);
+      setTimeout(function(){ f.style.width = w + '%'; }, reduce ? 0 : 110*i);
+    });
+    document.getElementById('resultsBars').classList.add('shown');
+    barsDone = true;
+  }
+
+  /* ---- INIT ---- */
+  runReveals(); maybeAnimateBars();
+  window.addEventListener('scroll', runReveals, {passive:true});
+})();
+</script>
+<script src="../rate.js"></script>
+<script src="../readlog.js"></script>
+<footer class="legal-footer" style="max-width:900px;margin:44px auto 64px;padding:18px 22px;border-top:1px solid #E7DBC6;font-family:'Mulish',system-ui,sans-serif;font-size:.78rem;line-height:1.6;color:#9A8E7C"><b style="color:#6E6456">Personal study aid — not affiliated with the authors, institutions, or venues.</b> A non-commercial educational summary made for private study, commentary, and teaching. Any figures reproduced from the original paper remain the copyright of their respective authors/publishers and are shown under fair use (17 U.S.C. &sect;107) for commentary and education, each captioned with its source; all other diagrams and text are original, created by the site owner with AI assistance. No infringement is intended and no ownership is claimed over third-party material. Rights holders who wish a figure removed may <a href="https://github.com/davidshim0/study-guides/issues" style="color:#5A61B4">open an issue</a> and it will be removed promptly.</footer>
+</body>
+</html>
