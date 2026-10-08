@@ -334,8 +334,9 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
       <div class="term-def"><b>pmap</b><span>ESX's per-VM table translating the guest's fake "physical" page numbers to real machine pages.</span></div>
       <div class="term-def"><b>PPN / MPN</b><span>"physical" page number (the guest's illusion) vs. machine page number (actual RAM).</span></div>
       <div class="term-def"><b>Ballooning</b><span>a driver inside the guest that "inflates," pinning pages so the guest's own OS chooses what to give up.</span></div>
-      <div class="term-def"><b>Demand paging (ESX)</b><span>the forced fallback — ESX itself swaps a VM's less-used pages out to its own disk-based swap area (not the guest's), using randomized victim choice since it has no reliable usage signal of its own; used only when ballooning can't reclaim fast enough.</span></div>
+      <div class="term-def"><b>Demand paging (ESX)</b><span>a <i>host-side</i> mechanism — ESX/the VMM itself (not the guest) swaps a VM's less-used machine pages out to ESX's own disk-based swap area, using randomized victim choice since it has no reliable usage signal of its own; used only when ballooning can't reclaim fast enough. Entirely separate from whatever swapping the guest OS does on its own.</span></div>
       <div class="term-def"><b>Copy-on-write (COW)</b><span>letting two mappings share one physical page until either side writes, then splitting.</span></div>
+      <div class="term-def"><b>Hint frame</b><span>a cheap, unconfirmed record of one scanned page's content hash — not yet shared, not yet COW — kept in case a future page's hash matches it.</span></div>
       <div class="term-def"><b>Idle memory tax</b><span>charging more shares-per-page for memory a VM isn't actively touching, so it drifts toward whoever needs it.</span></div>
       <div class="term-def"><b>Proportional-share allocation</b><span>dividing a resource by "shares" owned by each client, like a weighted lottery.</span></div>
       <div class="term-def"><b>Working set</b><span>the pages a program is actually using right now, as opposed to everything it's ever touched.</span></div>
@@ -421,7 +422,7 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     </div>
     <div class="prose">
       <p>ESX Server needed to overcommit memory across virtual machines running <b>unmodified</b> commodity operating systems — no source changes, no new APIs, no guest cooperation it couldn't opt out of. A naive approach — a meta-level page-replacement policy that picks victim pages from outside each VM — is fundamentally under-informed: only the guest OS knows which of its own pages are least valuable, and a second, uncoordinated eviction policy can even cause the same page to be paged out <i>twice</i> (the "double paging" problem).</p>
-      <p>ESX's answer is <span class="mem-chip chip-hi">ballooning</span>: a tiny driver installed in the guest inflates on command, forcing the guest's own memory manager to decide what to reclaim, using its native paging device if needed. When ballooning isn't available or fast enough, ESX falls back to <span class="mem-chip chip-lru">demand paging</span> to its own swap area, using randomized replacement specifically to avoid pathological guest interactions.</p>
+      <p>ESX's answer is <span class="mem-chip chip-hi">ballooning</span>: a tiny driver installed in the guest inflates on command, forcing the guest's own memory manager to decide what to reclaim, using its native paging device if needed. When ballooning isn't available or fast enough, ESX falls back to <span class="mem-chip chip-lru">demand paging</span> to its own swap area — this fallback runs entirely on the <b>host</b> side: it's ESX itself swapping a VM's machine pages out to ESX's own disk, using randomized replacement, with the guest never involved or even aware it happened.</p>
       <p>Layered on top, an <span class="mem-chip chip-sat">idle memory tax</span> extends proportional-share allocation with a statistically-sampled working-set estimate, so idle VMs are charged more per page and their unused memory drifts to active VMs — without breaking each VM's minimum-share guarantee. Two more mechanisms conserve memory system-wide: <span class="mem-chip chip-ucp">content-based page sharing</span> deduplicates identical pages across VMs by hashing content, and <span class="mem-chip chip-ucp">hot I/O page remapping</span> moves frequently-DMA'd pages into low, DMA-addressable memory to avoid bounce-buffer copies.</p>
       <p><strong>The payoff:</strong> ballooning tracks native performance within 1.4–4.4% overhead; page sharing found up to 67% content overlap among identical VMs (reclaiming nearly 60% of their memory) and reclaimed 7.2–32.9% of memory in three production deployments, at under 0.5% space overhead and negligible CPU cost; raising the idle tax from 0% to 75% increased a memory-starved VM's throughput by over 30%.</p>
     </div>
@@ -574,6 +575,80 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     </div>
 
     <div class="prose">
+      <h3>0 · ESX, VMkernel, and VMM — who's who</h3>
+      <p>"ESX Server" is the umbrella name for the whole product. Underneath that name are two distinct kinds of component: one <b>VMkernel</b>, shared across the whole host, which is the privileged resource-management kernel that schedules CPU, allocates memory, and multiplexes disk/network across every VM running on that machine; and one <b>VMM</b> (virtual machine monitor) <i>per running VM</i>, which is the component that does the actual low-level virtualization work for that one VM specifically, trapping its privileged instructions and maintaining its pmap and shadow page table. So "the VMM" and "the VMkernel" are not the same thing, and neither is simply "ESX" — ESX is VMkernel + one VMM per VM + a thin management layer on top.</p>
+      <p>This is also a <b>bare-metal (type-1)</b> design, not <b>hosted (type-2)</b>, and the difference matters for everything in this guide. Compare them directly:</p>
+    </div>
+
+    <figure class="viz reveal">
+      <div class="viz-title">Bare-metal (ESX) vs. hosted virtualization</div>
+      <div class="viz-kicker">who sits directly on the hardware</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px">
+        <svg viewBox="0 0 320 300" role="img" aria-label="ESX bare-metal architecture">
+          <rect x="10" y="20" width="90" height="70" rx="8" fill="#fff" stroke="#D8C8AC"/>
+          <text x="55" y="48" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#332C24">Guest OS</text>
+          <text x="55" y="64" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#332C24">+ Apps</text>
+          <text x="55" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#6E6456">VM 1</text>
+          <rect x="115" y="20" width="90" height="70" rx="8" fill="#fff" stroke="#D8C8AC"/>
+          <text x="160" y="48" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#332C24">Guest OS</text>
+          <text x="160" y="64" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#332C24">+ Apps</text>
+          <text x="160" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#6E6456">VM 2</text>
+          <rect x="220" y="20" width="90" height="70" rx="8" fill="#fff" stroke="#D8C8AC"/>
+          <text x="265" y="48" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#332C24">Guest OS</text>
+          <text x="265" y="64" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#332C24">+ Apps</text>
+          <text x="265" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#6E6456">VM 3</text>
+          <path d="M55 90 v15 M160 90 v15 M265 90 v15" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a3)"/>
+          <rect x="10" y="115" width="90" height="55" rx="8" fill="#E6E8F8" stroke="#4C5FC7"/>
+          <text x="55" y="140" text-anchor="middle" font-family="Fraunces" font-size="11" fill="#3a409a">VMM</text>
+          <text x="55" y="156" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#3a409a">pmap + shadow PT</text>
+          <rect x="115" y="115" width="90" height="55" rx="8" fill="#E6E8F8" stroke="#4C5FC7"/>
+          <text x="160" y="140" text-anchor="middle" font-family="Fraunces" font-size="11" fill="#3a409a">VMM</text>
+          <text x="160" y="156" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#3a409a">pmap + shadow PT</text>
+          <rect x="220" y="115" width="90" height="55" rx="8" fill="#E6E8F8" stroke="#4C5FC7"/>
+          <text x="265" y="140" text-anchor="middle" font-family="Fraunces" font-size="11" fill="#3a409a">VMM</text>
+          <text x="265" y="156" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#3a409a">pmap + shadow PT</text>
+          <path d="M160 170 v15" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a3)"/>
+          <rect x="10" y="195" width="300" height="50" rx="8" fill="#DAF0EA" stroke="#1F8577"/>
+          <text x="160" y="216" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#1f5b51">VMkernel</text>
+          <text x="160" y="233" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">runs directly on hardware — no host OS beneath it</text>
+          <rect x="10" y="30" width="300" height="215" rx="12" fill="none" stroke="#B06D10" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <text x="160" y="22" text-anchor="middle" font-family="JetBrains Mono" font-size="9" font-weight="600" fill="#B06D10">— "ESX Server" —</text>
+          <path d="M160 245 v15" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a3)"/>
+          <rect x="10" y="260" width="300" height="34" rx="8" fill="#FCEBCE" stroke="#B06D10"/>
+          <text x="160" y="282" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#6e4a09">Physical hardware (CPU, RAM, disk, NIC)</text>
+          <defs><marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#9A8E7C"/></marker></defs>
+        </svg>
+        <svg viewBox="0 0 320 300" role="img" aria-label="hosted virtualization architecture">
+          <rect x="10" y="20" width="135" height="70" rx="8" fill="#fff" stroke="#D8C8AC"/>
+          <text x="77" y="48" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#332C24">Guest OS</text>
+          <text x="77" y="64" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#332C24">+ Apps</text>
+          <text x="77" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#6E6456">VM 1</text>
+          <rect x="175" y="20" width="135" height="70" rx="8" fill="#fff" stroke="#D8C8AC"/>
+          <text x="242" y="48" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#332C24">Guest OS</text>
+          <text x="242" y="64" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#332C24">+ Apps</text>
+          <text x="242" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#6E6456">VM 2</text>
+          <path d="M77 90 v15 M242 90 v15" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a4)"/>
+          <rect x="10" y="115" width="300" height="55" rx="8" fill="#E6E8F8" stroke="#4C5FC7"/>
+          <text x="160" y="140" text-anchor="middle" font-family="Fraunces" font-size="12" fill="#3a409a">Hypervisor (kernel module + process)</text>
+          <text x="160" y="156" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#3a409a">one VMM-equivalent per VM, same idea as ESX</text>
+          <path d="M160 170 v8" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a4)"/>
+          <rect x="10" y="183" width="140" height="30" rx="6" fill="#F6E1D7" stroke="#BE5B3B"/>
+          <text x="80" y="202" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9a3a22">ordinary host apps</text>
+          <rect x="170" y="183" width="140" height="30" rx="6" fill="#F6E1D7" stroke="#BE5B3B"/>
+          <text x="240" y="202" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#9a3a22">ordinary host apps</text>
+          <path d="M160 213 v15" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a4)"/>
+          <rect x="10" y="228" width="300" height="42" rx="8" fill="#DAF0EA" stroke="#1F8577"/>
+          <text x="160" y="246" text-anchor="middle" font-family="Fraunces" font-size="13" font-weight="600" fill="#1f5b51">Host OS</text>
+          <text x="160" y="262" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1f5b51">a real, general-purpose OS — Windows/Linux/macOS</text>
+          <path d="M160 270 v10" stroke="#9A8E7C" stroke-width="2" marker-end="url(#a4)"/>
+          <rect x="10" y="280" width="300" height="20" rx="6" fill="#FCEBCE" stroke="#B06D10" opacity="0"/>
+          <defs><marker id="a4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#9A8E7C"/></marker></defs>
+        </svg>
+      </div>
+      <figcaption><b>The difference that matters:</b> on the left (ESX), the VMkernel runs <i>directly</i> on hardware — there's no general-purpose OS underneath it at all, and "host" just means this same privileged layer. On the right (hosted, e.g. VMware Workstation/VirtualBox), a real OS with its own ordinary applications sits on the hardware first, and the hypervisor is a privileged add-on riding on top of that OS, borrowing its drivers and scheduler rather than owning the hardware directly. Either way, each VM still gets its own VMM-equivalent doing the same pmap/shadow-page-table trick described throughout this guide — the difference is only what, if anything, sits underneath that layer.</figcaption>
+    </figure>
+
+    <div class="prose">
       <h3>1 · Virtualizing memory — one extra layer of indirection</h3>
       <p>ESX gives each VM a zero-based "physical" address space backed by a per-VM <b>pmap</b> translating PPNs to MPNs. Guest attempts to manipulate page tables or the TLB are intercepted; a separate <b>shadow page table</b> holds true virtual-to-machine mappings for the hardware to use directly, so ordinary accesses incur zero extra overhead. This indirection is what makes every later trick possible: ESX can remap a "physical" page's backing MPN completely transparently to the guest.</p>
       <p><b>Where does each of these three things actually live?</b> The guest's own page tables (VPN→PPN) are <b>guest-managed and guest-visible</b>: they physically occupy some of the guest's own "physical" pages, exactly like any OS's page tables occupy real RAM on bare metal, and the guest reads them freely. ESX only intercepts <i>writes</i> to them, by write-protecting those pages, so it can observe every change the guest makes. The <b>pmap and the shadow page table are the opposite</b>: both are maintained entirely by the VMM, in the hypervisor's own privileged memory, completely outside the guest's address space — one instance of each per VM (recall from earlier: ESX runs one per-VM VMM instance per running virtual machine), but "per-VM" means the VMM keeps a separate copy of its own bookkeeping for each VM, not that the bookkeeping lives inside that VM. The guest has no instruction, no API, and no memory access that can read or touch its own pmap or shadow page table; as far as the guest can tell, neither one exists.</p>
@@ -610,6 +685,7 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
       <h3>2 · Reclamation: ballooning first, paging as forced fallback</h3>
       <p>ESX prefers <b>ballooning</b>: a guest-resident driver polls once per second for a target size, then allocates (or frees) pinned pages via native OS interfaces (<code>get_free_page()</code> on Linux; <code>MmAllocatePagesForMdl()</code> on Windows). The guest's own memory manager decides what to evict to satisfy that allocation — sidestepping the fundamental problem that only the guest knows which of its pages are least valuable.</p>
       <p>When ballooning is unavailable (driver missing, guest booting, insufficient headroom), ESX falls back to <b>demand paging</b> to its own swap area, using deliberately <b>randomized</b> replacement — not a "smarter" policy — specifically to avoid the double-paging pathology and unintended interference with the guest's native algorithms.</p>
+      <div class="callout note"><span class="ic">🖥️</span><div><b>Where does demand paging actually run?</b> Entirely on the <i>host</i> side — it's the VMkernel/VMM itself, not the guest, choosing a victim machine page, writing its contents out to ESX's own disk-based swap file, and clearing that PPN's pmap entry. The guest OS has no part in this and no idea it happened; it's a completely separate mechanism from whatever paging the guest OS does to its own virtual disk-backed swap device. Two independent swap systems exist stacked on top of each other: the guest's own (which ballooning deliberately leans on), and ESX's forced fallback underneath it, invisible to the guest.</div></div>
       <p><b>Why "ballooning," and whose code is it?</b> The name describes the driver's own footprint inside the guest: "inflating" means pinning more and more pages, which squeezes out other consumers of the guest's fixed-size memory exactly like a balloon expanding inside a sealed box displaces whatever else is in there; "deflating" shrinks that pinned region back down and frees the space for ordinary use. The driver itself (<code>vmmemctl</code>, shipped as part of VMware Tools) runs <i>inside</i> the guest kernel, using the guest's own allocation APIs — ESX distributes it, but it executes entirely in guest context, not inside the hypervisor. The VMM side only ever talks to it over a private channel to set a target size; it never touches guest memory directly.</p>
       <p><b>What "target" actually means.</b> It's each VM's <b>target allocation</b> — how much machine memory that VM is currently entitled to hold — not a quota of how much it owes back. Targets differ per VM: they fall out of the same shares-plus-idle-memory-tax formula from §4, so a low-share, mostly-idle VM gets a lower target than a high-share, fully-active one, and a VM starting up gets whatever target the admission-control reservation guarantees it. Ballooning and demand paging are just the two mechanisms that nudge a VM's <i>actual</i> holdings toward its current target — inflating/paging when actual exceeds target, deflating when a VM's target rises and it needs memory back.</p>
       <p><b>Does the guest ever think it's giving up "idle" memory, or could it try to reclaim a ballooned page later?</b> No — ownership genuinely passes to the driver, by the guest's own rules, which is exactly why the trick works:</p>
@@ -629,6 +705,7 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="prose">
       <h3>3 · Content-based page sharing</h3>
       <p>ESX hashes each scanned page's contents (a 64-bit hash) and looks it up in a global table. A match triggers a full byte comparison to rule out hash collisions, then both PPNs are remapped to one MPN and marked copy-on-write; a subsequent write faults and creates a private copy. Unmatched pages are kept as cheap <b>hint frames</b> rather than immediately marked COW, avoiding needless write-fault overhead. Each table entry is a compact <b>16 bytes</b>, and highly-shared pages (like the all-zero page) use a small reference count with overflow, keeping total space overhead under <b>0.5%</b> of system memory.</p>
+      <p><b>What's a hint frame, exactly?</b> You're right that an unmatched page has nothing to do with copy-on-write yet, that's exactly the point. A hint frame is just a cheap table entry recording "this PPN had this hash, as of the last scan" — the page itself stays completely ordinary: full read/write access, not write-protected, not shared, not COW. Write-protecting it only pays off if something else eventually matches; if ESX write-protected every scanned page up front on the chance of a future match, the owning VM's very next ordinary write to that page would trigger a write fault for no reason, since nothing was actually being shared yet. So the hash is stored as a lightweight hint and the page keeps running untouched. Only when a <i>second</i> page is later scanned and its hash matches an existing hint does ESX do the expensive part — the full byte comparison, then write-protecting both pages and remapping them to one shared MPN. A hint frame is essentially a sharing opportunity on hold, promoted into real COW sharing only the moment a second match actually shows up.</p>
     </div>
 
     <div class="prose">
