@@ -33,7 +33,7 @@ def css_rules(css):
 HEX=r'#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})\b'
 def full(c):
     c=c.lstrip('#'); return c if len(c)==6 else ''.join(x*2 for x in c)
-def darkify_literals(s):
+def darkify_literals(s, vals):
     D=':root[data-theme="dark"]'; rules=[]
     style=s[s.index('<style>')+7:s.index('</style>')] if '<style>' in s else ''
     style=re.sub(re.escape(MARK_A)+r'.*?'+re.escape(MARK_B),'',style,flags=re.S)
@@ -47,9 +47,20 @@ def darkify_literals(s):
             c=hx(full(m.group(1)))
             if cr(c,CARD)<4.5: decl.append('color:%s' % h(lighten(c, 7.0)))
         m=re.search(r'background(?:-color)?:\s*'+HEX,body)
+        mr=re.search(r'background(?:-color)?:\s*rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\)',body)
         if m:
             c=hx(full(m.group(1)))
             if lum(c)>0.45: decl.append('background:%s' % h(mix(c,CARD,.12)))
+        elif mr:
+            c=tuple(int(mr.group(i)) for i in (1,2,3)); a=float(mr.group(4) or 1)
+            if lum(c)>0.45 and a>0.3: decl.append('background:rgba(%d,%d,%d,%s)' % (tuple(int(v) for v in mix(c,CARD,.12))+(mr.group(4) or '1',)))
+        mb=re.search(r'background(?:-color)?:\s*var\(--(ink|honey)\)',body)
+        if mb:
+            if mb.group(1)=='ink':
+                decl=['background:#3A342B','color:var(--ink)','border-color:var(--ink-faint)']
+            elif 'honey' in vals:
+                hv=hx(vals['honey'])
+                decl=['background:%s' % h(mix(hv,CARD,.28)),'color:%s' % h(lighten(hv,7.0)),'border-color:%s' % vals['honey']]
         if decl:
             parts=[x.strip() for x in sel.split(',') if x.strip()]
             parts=[x if x.startswith(D) else D+' '+x for x in parts]
@@ -91,7 +102,10 @@ def block(s):
     css += [
       '%s :is(figure.viz,figure.paperfig,.analogy .ill){background:var(--card) !important;border-color:var(--line) !important}' % D,
       '%s :is(figure.viz,.analogy .ill) svg{filter:invert(.88) hue-rotate(180deg)}' % D,
-      '%s figure.paperfig img{filter:brightness(.88)}' % D,
+      '%s :is(figure,.analogy .ill) img{filter:invert(.88) hue-rotate(180deg)}' % D,
+      '%s{color-scheme:dark}' % D,
+      '%s :is(input,select,textarea){background:var(--card) !important;color:var(--ink) !important;border-color:var(--line-strong) !important}' % D,
+      '%s .bar-fill{filter:brightness(.8)}' % D,
       '%s .viz-title{color:var(--ink) !important}' % D,
       '%s .viz-kicker{color:var(--ink-faint) !important}' % D,
       '%s :is(figure.viz,figure.paperfig) figcaption,%s figure.viz .legend span{color:var(--ink-soft) !important}' % (D, D),
@@ -100,7 +114,7 @@ def block(s):
       '%s .card[style*="-soft"] :is(h3,h4,ul,ol,li,p,span,div,td,th){color:var(--ink) !important}' % D,
       '%s .card[style*="-soft"] :is(em,i){color:var(--ink-soft) !important}' % D,
       '%s [style*="-soft"] [style*="color:#"],%s [style*="-soft"][style*="color:#"]{color:var(--ink) !important}' % (D, D),
-      ] + darkify_literals(s) + [MARK_B]
+      ] + darkify_literals(s, vals) + [MARK_B]
     return '\n'.join(css)
 for p in sys.argv[1:]:
     s = open(p, encoding='utf-8').read()
