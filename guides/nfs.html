@@ -1319,6 +1319,102 @@ then the attributes (type, mode, nlink, uid, gid, size, ... as 4-byte fields).</
     <!-- ===== M7 ===== -->
     <div class="prose" id="nfs-m7">
       <h3>M7 · Kernel contexts: nfsd on the server, block I/O daemons on the client</h3>
+      <div class="callout note" style="margin:14px 0 18px"><span class="ic">ℹ</span><div><b>Start here: what a "kernel context" is.</b> Read this before the TL;DR below.</div></div>
+      <ol style="padding-left:20px">
+        <li><b>User mode and kernel mode.</b> A program like <code>cat</code> runs in user mode. When it calls <code>read()</code>, it traps into the kernel, and the kernel code for that read runs <i>on behalf of that process</i>, on that process's own kernel stack. That is a <b>process context</b> (the paper says "user context"): kernel code running inside some process.</li>
+        <li><b>Sleeping needs a process.</b> When kernel code must wait (for a disk transfer or a network reply), it calls sleep: it saves where it is on the process's kernel stack and lets the scheduler run something else; a wakeup later resumes it. In 4.2BSD the only thing the scheduler can put to sleep and resume is a process. There are no kernel threads.</li>
+        <li><b>Interrupt code cannot sleep.</b> When a network packet arrives, the device interrupt runs kernel code that belongs to no process (it borrowed the CPU from whatever was running). It may queue the packet, but it must not wait for anything.</li>
+        <li><b>The server's problem.</b> An NFS request arrives as a packet, so it starts in interrupt context. Serving it means reading or writing the disk, which means sleeping. Nobody is there to sleep. <b>Fix: nfsd.</b> At boot the server starts a few ordinary processes that immediately make an <code>nfsd</code> system call that never returns. Each one is now permanently inside the kernel with its own process context: it waits for a request on the NFS socket, serves it (sleeping on the disk as needed), replies, and loops. They show up in <code>ps</code> like user processes, but all their work happens in the kernel. They run <b>on the server</b>.</li>
+        <li><b>The client's problem.</b> A normal client read is easy: the RPC runs in the reading process's context, and that process sleeps until the reply. But read-ahead (fetch the next block before it is asked for) and write-behind (send a dirty block later while the program keeps going) must happen without blocking the program, so someone else has to wait for those RPC replies. <b>Fix: block I/O daemons</b> (usually called biod). Same trick: processes that enter the kernel and never return, taking queued read-ahead and write-behind jobs, doing the RPC and sleeping for the reply. They run <b>on the client</b>.</li>
+        <li><b>Not to be confused with</b> the MOUNT daemon, which is a genuinely ordinary user-level program on the server (it reads /etc/exports and runs in user mode). The paper calls nfsd and the block I/O daemons a temporary fix; the plan was lightweight kernel processes, which is what later systems use (Linux runs nfsd as kernel threads).</li>
+      </ol>
+      <figure class="viz reveal">
+        <div class="viz-title">Who sleeps where: processes borrowed as kernel contexts</div>
+        <div class="viz-kicker">dashed processes cross into the kernel once and never come back</div>
+        <svg class="full" viewBox="0 0 820 400" role="img" aria-label="Client and server, each split into user space and kernel. On the client, cat's read system call runs NFS client code in cat's context, and two block I/O daemons live in the kernel serving an async queue. On the server, the MOUNT daemon is an ordinary user process; three nfsd processes live in the kernel, taking requests from the socket queue filled by the network interrupt and sleeping on the disk.">
+          <defs><marker id="nfs-kc-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6E6456"/></marker></defs>
+          <g font-family="Mulish, sans-serif">
+            <!-- headers -->
+            <text x="200" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="#2F6E9B">CLIENT workstation</text>
+            <text x="620" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="#5E4FA6">SERVER (has the disk)</text>
+            <line x1="410" y1="8" x2="410" y2="392" stroke="#D8C8AC" stroke-width="1.5"/>
+            <!-- boundary -->
+            <line x1="14" y1="112" x2="806" y2="112" stroke="#9A8E7C" stroke-width="1.5" stroke-dasharray="6 4"/>
+            <text x="18" y="104" font-size="10.5" fill="#6E6456">user mode</text>
+            <text x="18" y="126" font-size="10.5" fill="#6E6456">kernel mode</text>
+            <!-- client user -->
+            <rect x="80" y="42" width="84" height="40" rx="6" fill="#DCE8F2" stroke="#2F6E9B"/>
+            <text x="122" y="61" text-anchor="middle" font-size="12" font-weight="700" fill="#1F4E70">cat</text>
+            <text x="122" y="75" text-anchor="middle" font-size="10" fill="#1F4E70">ordinary process</text>
+            <rect x="232" y="42" width="66" height="40" rx="6" fill="#FFFFFF" stroke="#2F6E9B" stroke-dasharray="4 3"/>
+            <text x="265" y="66" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1F4E70">biod 1</text>
+            <rect x="310" y="42" width="66" height="40" rx="6" fill="#FFFFFF" stroke="#2F6E9B" stroke-dasharray="4 3"/>
+            <text x="343" y="66" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1F4E70">biod 2</text>
+            <!-- client kernel -->
+            <path d="M122,82 L122,142" stroke="#6E6456" stroke-width="1.5" marker-end="url(#nfs-kc-arr)"/>
+            <text x="128" y="100" font-size="10.5" fill="#6E6456">read()</text>
+            <rect x="30" y="144" width="184" height="78" rx="6" fill="#DCE8F2" stroke="#2F6E9B"/>
+            <text x="122" y="163" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1F4E70">NFS client code</text>
+            <text x="122" y="179" text-anchor="middle" font-size="10.5" fill="#1F4E70">runs in cat's context:</text>
+            <text x="122" y="194" text-anchor="middle" font-size="10.5" fill="#1F4E70">send RPC, cat sleeps</text>
+            <text x="122" y="209" text-anchor="middle" font-size="10.5" fill="#1F4E70">until the reply</text>
+            <path d="M265,82 L265,142 M343,82 L343,142" stroke="#2F6E9B" stroke-width="1.5" stroke-dasharray="4 3" fill="none" marker-end="url(#nfs-kc-arr)"/>
+            <text x="304" y="100" text-anchor="middle" font-size="10" fill="#2F6E9B" stroke="#FFFDF8" stroke-width="5" paint-order="stroke">enter once, never return</text>
+            <rect x="226" y="144" width="166" height="78" rx="6" fill="#FFFFFF" stroke="#2F6E9B" stroke-dasharray="4 3"/>
+            <text x="309" y="163" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1F4E70">biod loop</text>
+            <text x="309" y="179" text-anchor="middle" font-size="10.5" fill="#1F4E70">take a read-ahead or</text>
+            <text x="309" y="194" text-anchor="middle" font-size="10.5" fill="#1F4E70">write-behind job, send RPC,</text>
+            <text x="309" y="209" text-anchor="middle" font-size="10.5" fill="#1F4E70">sleep until the reply</text>
+            <rect x="226" y="240" width="166" height="40" rx="6" fill="#F4E7CC" stroke="#CF9A35"/>
+            <text x="309" y="258" text-anchor="middle" font-size="10.5" fill="#7A5A16">async queue, filled when cat</text>
+            <text x="309" y="272" text-anchor="middle" font-size="10.5" fill="#7A5A16">reads block n or dirties a block</text>
+            <path d="M309,240 L309,224" stroke="#CF9A35" stroke-width="1.5" marker-end="url(#nfs-kc-arr)"/>
+            <text x="24" y="246" font-size="10.5" fill="#6E6456">cat keeps running;</text>
+            <text x="24" y="260" font-size="10.5" fill="#6E6456">biods wait for the</text>
+            <text x="24" y="274" font-size="10.5" fill="#6E6456">read-ahead and</text>
+            <text x="24" y="288" font-size="10.5" fill="#6E6456">write-behind replies</text>
+            <!-- network -->
+            <rect x="120" y="320" width="580" height="30" rx="6" fill="#F3EADA" stroke="#9A8E7C"/>
+            <text x="410" y="340" text-anchor="middle" font-size="11.5" fill="#332C24">network: RPC requests and replies as UDP datagrams</text>
+            <path d="M160,222 L200,318" stroke="#6E6456" stroke-width="1.3" marker-end="url(#nfs-kc-arr)"/>
+            <path d="M309,282 L330,318" stroke="#6E6456" stroke-width="1.3" marker-end="url(#nfs-kc-arr)"/>
+            <!-- server user -->
+            <rect x="432" y="42" width="110" height="40" rx="6" fill="#E7E3F5" stroke="#5E4FA6"/>
+            <text x="487" y="60" text-anchor="middle" font-size="11.5" font-weight="700" fill="#3A2F78">MOUNT daemon</text>
+            <text x="487" y="74" text-anchor="middle" font-size="10" fill="#3A2F78">ordinary user program</text>
+            <rect x="572" y="42" width="66" height="40" rx="6" fill="#FFFFFF" stroke="#5E4FA6" stroke-dasharray="4 3"/>
+            <text x="605" y="66" text-anchor="middle" font-size="11.5" font-weight="700" fill="#3A2F78">nfsd 1</text>
+            <rect x="648" y="42" width="66" height="40" rx="6" fill="#FFFFFF" stroke="#5E4FA6" stroke-dasharray="4 3"/>
+            <text x="681" y="66" text-anchor="middle" font-size="11.5" font-weight="700" fill="#3A2F78">nfsd 2</text>
+            <rect x="724" y="42" width="66" height="40" rx="6" fill="#FFFFFF" stroke="#5E4FA6" stroke-dasharray="4 3"/>
+            <text x="757" y="66" text-anchor="middle" font-size="11.5" font-weight="700" fill="#3A2F78">nfsd 3</text>
+            <path d="M605,82 L605,142 M681,82 L681,142 M757,82 L757,142" stroke="#5E4FA6" stroke-width="1.5" stroke-dasharray="4 3" fill="none" marker-end="url(#nfs-kc-arr)"/>
+            <text x="681" y="100" text-anchor="middle" font-size="10" fill="#5E4FA6" stroke="#FFFDF8" stroke-width="5" paint-order="stroke">nfsd() system call, never returns</text>
+            <!-- server kernel -->
+            <rect x="572" y="144" width="218" height="94" rx="6" fill="#FFFFFF" stroke="#5E4FA6" stroke-dasharray="4 3"/>
+            <text x="681" y="163" text-anchor="middle" font-size="11.5" font-weight="700" fill="#3A2F78">nfsd loop (each nfsd)</text>
+            <text x="681" y="180" text-anchor="middle" font-size="10.5" fill="#3A2F78">sleep until a request is queued,</text>
+            <text x="681" y="195" text-anchor="middle" font-size="10.5" fill="#3A2F78">decode it, do the file operation</text>
+            <text x="681" y="210" text-anchor="middle" font-size="10.5" fill="#3A2F78">(sleeping on the disk), write to</text>
+            <text x="681" y="225" text-anchor="middle" font-size="10.5" fill="#3A2F78">disk before replying, reply, loop</text>
+            <rect x="432" y="196" width="122" height="52" rx="6" fill="#F4E7CC" stroke="#CF9A35"/>
+            <text x="493" y="216" text-anchor="middle" font-size="10.5" fill="#7A5A16">NFS socket queue:</text>
+            <text x="493" y="231" text-anchor="middle" font-size="10.5" fill="#7A5A16">requests waiting</text>
+            <text x="493" y="244" text-anchor="middle" font-size="10.5" fill="#7A5A16">for a free nfsd</text>
+            <path d="M556,220 L570,200" stroke="#CF9A35" stroke-width="1.5" marker-end="url(#nfs-kc-arr)"/>
+            <rect x="432" y="262" width="122" height="46" rx="6" fill="#F5DEDA" stroke="#B0453A"/>
+            <text x="493" y="281" text-anchor="middle" font-size="10.5" fill="#7A2A22">network interrupt:</text>
+            <text x="493" y="296" text-anchor="middle" font-size="10.5" fill="#7A2A22">no process, cannot sleep</text>
+            <path d="M493,262 L493,250" stroke="#B0453A" stroke-width="1.5" marker-end="url(#nfs-kc-arr)"/>
+            <path d="M493,320 L493,310" stroke="#6E6456" stroke-width="1.3" marker-end="url(#nfs-kc-arr)"/>
+            <rect x="640" y="262" width="110" height="44" rx="6" fill="#F3EADA" stroke="#9A8E7C"/>
+            <text x="695" y="289" text-anchor="middle" font-size="11.5" font-weight="700" fill="#332C24">disk</text>
+            <path d="M695,240 L695,260" stroke="#6E6456" stroke-width="1.3" marker-end="url(#nfs-kc-arr)"/>
+            <text x="20" y="376" font-size="11" fill="#332C24">Solid box = runs in its own process. Dashed = a process started in user mode that lives in the kernel, only so kernel code has a context that can sleep.</text>
+          </g>
+        </svg>
+        <figcaption>The 4.2BSD kernel can only put a process to sleep, so every wait needs a process. On the server, nfsd processes give the NFS server code something to sleep in while it waits for the disk; on the client, block I/O daemons give read-ahead and write-behind something to sleep in while they wait for RPC replies. The MOUNT daemon is unrelated: it is a normal user-level program. (Paper, Server Side and Client Side; the name biod and the drawn counts are general knowledge and illustrative.)</figcaption>
+      </figure>
       <div class="subhead">TL;DR</div>
       <div style="overflow-x:auto"><table class="tbl"><tbody>
         <tr><th>Problem</th><td>The 4.2 kernel can only sleep in a process context, but the NFS server runs in the kernel, and the client's read-ahead and write-behind must wait on blocking RPCs.</td></tr>
