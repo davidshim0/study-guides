@@ -607,6 +607,54 @@ pre.sketch .kw{color:#e8a33d} pre.sketch .cm{color:#8a9a7c;font-style:italic} pr
     <div class="prose">
       <h3>1 · The protocol: procedures over RPC, made safe by statelessness</h3>
       <p>NFS is a set of remote procedures (lookup, read, write, create, remove and so on, sixteen in all) defined in XDR and called with Sun RPC over UDP. Calls are synchronous. Because UDP loses packets, the client retries; because the server is stateless and the requests are (mostly) idempotent, retries are harmless and a server crash needs no recovery. Files are named by opaque file handles that the server builds from the filesystem id, inode number and inode generation number.</p>
+      <div class="subhead" style="margin-top:22px">All 16 procedures (the paper's outline)</div>
+      <p>Every procedure names its target by file handle (fh) or directory handle (dirfh) plus explicit values, so the server needs nothing remembered from earlier calls. "New handle" marks the three procedures that hand the client a handle it did not have; the first handle of all, the filesystem root, comes from the separate MOUNT protocol.</p>
+      <div style="overflow-x:auto"><table class="tbl">
+        <thead><tr><th>#</th><th>Call</th><th>Returns</th><th>What it does</th><th>Changes server state</th><th>New handle</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><code>null()</code></td><td>()</td><td>Does nothing; used to ping the server and measure round-trip time.</td><td>no</td><td></td></tr>
+          <tr><td>2</td><td><code>lookup(dirfh, name)</code></td><td>(fh, attr)</td><td>Finds one name in one directory; returns its handle and attributes. Pathnames are walked one component per call.</td><td>no</td><td>yes</td></tr>
+          <tr><td>3</td><td><code>create(dirfh, name, attr)</code></td><td>(newfh, attr)</td><td>Creates a file in the directory.</td><td>yes</td><td>yes</td></tr>
+          <tr><td>4</td><td><code>remove(dirfh, name)</code></td><td>(status)</td><td>Removes a file from a directory.</td><td>yes</td><td></td></tr>
+          <tr><td>5</td><td><code>getattr(fh)</code></td><td>(attr)</td><td>Returns the file's attributes, like stat.</td><td>no</td><td></td></tr>
+          <tr><td>6</td><td><code>setattr(fh, attr)</code></td><td>(attr)</td><td>Sets mode, uid, gid, size, access time and modify time; size 0 truncates.</td><td>yes</td><td></td></tr>
+          <tr><td>7</td><td><code>read(fh, offset, count)</code></td><td>(attr, data)</td><td>Returns up to count bytes starting at offset, plus the attributes.</td><td>no</td><td></td></tr>
+          <tr><td>8</td><td><code>write(fh, offset, count, data)</code></td><td>(attr)</td><td>Writes count bytes at offset; returns the attributes after the write. Committed to disk before the reply.</td><td>yes</td><td></td></tr>
+          <tr><td>9</td><td><code>rename(dirfh, name, tofh, toname)</code></td><td>(status)</td><td>Renames name in dirfh to toname in tofh.</td><td>yes</td><td></td></tr>
+          <tr><td>10</td><td><code>link(dirfh, name, tofh, toname)</code></td><td>(status)</td><td>Creates toname in tofh as a hard link to name in dirfh.</td><td>yes</td><td></td></tr>
+          <tr><td>11</td><td><code>symlink(dirfh, name, string)</code></td><td>(status)</td><td>Creates a symbolic link whose value is string; the server stores the string without interpreting it.</td><td>yes</td><td></td></tr>
+          <tr><td>12</td><td><code>readlink(fh)</code></td><td>(string)</td><td>Returns a symbolic link's string.</td><td>no</td><td></td></tr>
+          <tr><td>13</td><td><code>mkdir(dirfh, name, attr)</code></td><td>(fh, newattr)</td><td>Creates a directory.</td><td>yes</td><td>yes</td></tr>
+          <tr><td>14</td><td><code>rmdir(dirfh, name)</code></td><td>(status)</td><td>Removes an empty directory.</td><td>yes</td><td></td></tr>
+          <tr><td>15</td><td><code>readdir(dirfh, cookie, count)</code></td><td>(entries)</td><td>Returns up to count bytes of entries; each entry has a name, a file id and a cookie (opaque pointer to the next entry). Cookie 0 starts at the first entry.</td><td>no</td><td></td></tr>
+          <tr><td>16</td><td><code>statfs(fh)</code></td><td>(fsstats)</td><td>Returns filesystem information such as block size and free blocks.</td><td>no</td><td></td></tr>
+        </tbody>
+      </table></div>
+      <p style="font-size:.95rem;color:var(--ink-soft)">Not in the protocol: open, close, seek and lock. Open and close exist only on the client; the file position lives in the client's file table and travels as the explicit offset; locking is left to a separate service. (Paper, NFS Protocol section.)</p>
+
+      <div class="subhead" style="margin-top:22px">An XDR example: what lookup(dirfh, "notes") looks like on the wire</div>
+      <p>XDR (External Data Representation) fixes how each basic type is laid out so any machine can decode it: every item takes a multiple of 4 bytes, integers are 4-byte big-endian, variable-length opaque data and strings are written as a 4-byte length followed by the bytes, padded with zeros to a 4-byte boundary, and fixed-size opaque data (like the 32-byte handle) is written as is with no length word. The protocol is written in XDR's C-like data definition language, and generated stubs marshal to and unmarshal from the byte stream. The paper describes XDR only in general terms; the declarations, sizes and procedure number below are from the later published NFS version 2 specification (RFC 1094, 1989), general knowledge, not in the paper.</p>
+<pre class="sketch">/* XDR data definition language (NFS version 2) */
+typedef opaque fhandle[32];        /* fixed size: exactly 32 bytes, no length word */
+typedef string filename&lt;255&gt;;      /* variable size: length word + bytes + padding */
+
+struct diropargs {                 /* argument of LOOKUP (procedure 4) */
+    fhandle  dir;
+    filename name;
+};</pre>
+<pre class="sketch">Bytes of the argument for lookup(dirfh, "notes")   (44 bytes)
+
+offset  bytes (hex)                               meaning
+ 0..31  xx xx xx ... xx  (32 bytes)               dir: the opaque directory handle, sent as is
+32..35  00 00 00 05                               name length = 5 (big-endian integer)
+36..40  6E 6F 74 65 73                            "n" "o" "t" "e" "s"
+41..43  00 00 00                                  padding to the next 4-byte boundary
+
+The server's stub reads 32 bytes into an fhandle, reads the length 5, reads 5 bytes,
+skips 3 bytes of padding, and calls its lookup routine with (dir, "notes").
+The reply is encoded the same way: a 4-byte status, then the new 32-byte fhandle,
+then the attributes (type, mode, nlink, uid, gid, size, ... as 4-byte fields).</pre>
+      <p>Two things follow. First, a big-endian 68010 client and a little-endian VAX server agree on every byte, because neither side's native layout is on the wire. Second, all of this is one more copy of every argument and result; the paper's bcopy fix (M16) cut a copy by making XDR encode straight into and decode straight out of the network buffers (mbuf chains).</p>
     </div>
     <div class="prose">
       <h3>2 · The server: commit before replying</h3>
